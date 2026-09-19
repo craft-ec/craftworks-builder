@@ -32,8 +32,8 @@
   .addr b { color:var(--ink); font-weight:600; }
   #tree, #map { font-size:12px; }
   .rng { margin-bottom:8px; }
-  .rng > .h { color:var(--mute); display:flex; gap:6px; align-items:baseline; }
-  .rng > .h code { color:var(--ink); }
+  .rng > .h, #tree-root .h { color:var(--mute); display:flex; gap:6px; align-items:baseline; }
+  .rng > .h code, #tree-root .h code { color:var(--ink); }
   .path { display:block; margin:3px 0 0 10px; padding:3px 6px; border-radius:6px; border:1px solid transparent; cursor:pointer; font:11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap:anywhere; }
   .path:hover { border-color:var(--line); } .path.hl { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 12%, transparent); }
   .path small { display:block; font-family:system-ui, sans-serif; color:var(--mute); }
@@ -43,6 +43,11 @@
   .kv code, .tag { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
   .tag { display:inline-block; padding:1px 6px; margin:0 3px 3px 0; border:1px solid var(--line); border-radius:999px; }
   .note { color:var(--mute); margin-top:8px; }
+  #tree-root { margin-bottom:12px; }
+  #tree-root .root { display:flex; align-items:center; gap:6px; margin:3px 0 0 10px; }
+  #tree-root .root code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #tree-root .copy { font-size:10px; padding:1px 5px; }
+  .rootstats { display:flex; gap:10px; margin:4px 0 0 10px; color:var(--mute); font-size:11px; }
   .schema input, .schema select { margin-bottom:4px; }
   .frow { display:grid; grid-template-columns:1fr 74px 18px 26px; gap:4px; align-items:center; }
   .frow button { padding:2px 0; }
@@ -68,7 +73,7 @@
   <button class="pri" id="publish" disabled title="Publishing lands in phase 3">Publish</button>
 </header>
 <main>
-  <aside class="l"><h3>Tree</h3><div id="tree"></div><h3 style="margin-top:16px">Components</h3><div id="palette"></div></aside>
+  <aside class="l"><h3>Tree</h3><div id="tree-root"></div><div id="tree"></div><h3 style="margin-top:16px">Components</h3><div id="palette"></div></aside>
   <section id="canvas"></section>
   <aside class="r"><h3>Properties</h3><div id="props"></div><h3 style="margin-top:16px">Data mapping</h3><div id="map"></div><h3 style="margin-top:16px">App definition</h3><pre id="def"></pre></aside>
 </main>

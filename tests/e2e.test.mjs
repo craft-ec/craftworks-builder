@@ -63,7 +63,89 @@ try {
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited"]);
   assert.match(await evaluate(`return ${tree}`), /1 record\b/);
 
+  // ---- the real tree, shown to the user -------------------------------------
+  const root = `document.getElementById("root-hash")?.title ?? ""`;
+  const short = `document.getElementById("root-hash")?.textContent ?? ""`;
+  const stats = `document.getElementById("root-stats")?.textContent ?? ""`;
+
+  const r1 = await evaluate(`return ${root}`);
+  assert.match(r1, /^[0-9a-f]{64}$/, "the panel shows a 32-byte root hash");
+  assert.ok((await evaluate(`return ${short}`)).startsWith(r1.slice(0, 12)), "shown short, full in the title");
+  assert.match(await evaluate(`return ${stats}`), /height \d+/);
+  assert.match(await evaluate(`return ${stats}`), /\d+ blocks/);
+
+  // A write moves the root, and the stats follow.
+  await add("third");
+  const r2 = await evaluate(`return ${root}`);
+  assert.notStrictEqual(r2, r1, "adding a record must move the root");
+  const blocksOf = t => Number(t.match(/(\d+) blocks/)[1]);
+  assert.ok(blocksOf(await evaluate(`return ${stats}`)) > 1, "blocks are counted");
+
+  // HISTORY INDEPENDENCE, the way the tree means it: the root is a function of
+  // the CONTENTS, not of the route taken to them. Add a record and delete it
+  // again and the root must come back to exactly what it was.
+  //
+  // (The issue asked for the same records added in a different order in a fresh
+  //  session. That cannot produce the same root through this UI: a record's key
+  //  is its rkey = timestamp ‖ device ‖ tail, and device is random per session,
+  //  so two sessions never hold the same keys. See the PR.)
+  await add("temporary");
+  assert.notStrictEqual(await evaluate(`return ${root}`), r2, "the extra record moved it");
+  await evaluate(`[...document.querySelectorAll(".rt-comp tbody tr")].find(tr => tr.cells[0].textContent === "temporary").querySelectorAll("button")[1].click();`);
+  assert.strictEqual(await evaluate(`return ${root}`), r2, "same contents, same root");
+
+  // An edit and an edit BACK does not restore the root, and that is right: a
+  // record carries its own `updated` time, so typing the old title back leaves
+  // different CONTENTS. The root follows the contents, not the screen.
+  const r3 = await evaluate(`return ${root}`);
+  await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
+  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "changed"; document.querySelector(".rt-comp button.pri").click();`);
+  assert.notStrictEqual(await evaluate(`return ${root}`), r3, "an edit moves it");
+  await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
+  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
+  assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited", "third"], "the title is back");
+  assert.notStrictEqual(
+    await evaluate(`return ${root}`),
+    r3,
+    "but `updated` moved, so the contents differ and so must the root"
+  );
+
+  // A record the SDK refuses: its message is shown, and the root does not move.
+  const before = await evaluate(`return ${root}`);
+  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "x".repeat(300 * 1024); document.querySelector(".rt-comp button.pri").click();`);
+  const msg = await evaluate(`return document.querySelector(".rt-err").textContent`);
+  assert.match(msg, /262144/, "the SDK's limit is shown to the user");
+  assert.match(msg, /file|blob/, "and what to do instead");
+  assert.strictEqual(await evaluate(`return ${root}`), before, "a refused write must not move the root");
+
+  // Delete everything: back to the empty tree.
+  await evaluate(`
+    let guard = 0;
+    while (document.querySelector(".rt-comp tbody tr") && guard++ < 50)
+      document.querySelector(".rt-comp tbody tr").querySelectorAll("button")[1].click();
+  `);
+  assert.deepStrictEqual(await evaluate(`return ${rows}`), []);
+  const empty = await evaluate(`return ${root}`);
+  assert.notStrictEqual(empty, before);
+  assert.match(await evaluate(`return ${stats}`), /height 1/, "one empty leaf");
+
   console.log("ok e2e: add, refuse, edit, delete through the page; tree count follows");
+  console.log(`ok e2e: root shown and live; same contents give the same root; empty tree ${empty.slice(0, 12)}…`);
+
+  // ---- the control ----------------------------------------------------------
+  // With the panel frozen on its first root, the assertions above must FAIL.
+  // Without this, "the root followed the tree" would also be true of a panel
+  // that printed a constant.
+  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#preview=1&stale-root=1&app=${encodeURIComponent(JSON.stringify(app))}` });
+  await until(`!!document.querySelector(".rt-comp input[name=title]")`, "form rendered again");
+  await until(`!!document.getElementById("root-hash")`, "root panel again");
+  const s1 = await evaluate(`return ${root}`);
+  await add("one"); await add("two");
+  const s2 = await evaluate(`return ${root}`);
+  assert.strictEqual(s1, s2, "the control must genuinely freeze the panel");
+  assert.deepStrictEqual(await evaluate(`return ${rows}`), ["one", "two"], "while the tree really did change");
+  console.log("ok e2e control: a panel that stops following the tree is detected");
+
   done(0);
 } catch (e) {
   console.error("e2e FAILED:", e.message);

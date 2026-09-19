@@ -73,7 +73,32 @@ function pathRow(path, idxs, isSet) {
   return row;
 }
 
+// The root the panel last showed. `#stale-root=1` freezes it: the negative
+// control for the e2e, which must fail when the panel stops following the tree.
+let shownRoot = null;
+const freezeRoot = () => location.hash.includes("stale-root=1");
+
+/** The real tree behind the preview: its root, and what it holds. */
+function renderRoot() {
+  if (!liveDb) { $("tree-root").replaceChildren(); shownRoot = null; return; }
+  const root = liveDb.root();
+  if (!freezeRoot() || shownRoot === null) shownRoot = root;
+  const s = liveDb.stats();
+  const copy = el("button", { className: "copy", textContent: "copy", title: "Copy the full root hash" });
+  copy.onclick = () => navigator.clipboard?.writeText(root);
+  $("tree-root").replaceChildren(
+    el("div", { className: "h" }, el("code", { textContent: "root" }), "this tree, in 32 bytes"),
+    el("div", { className: "root" },
+      el("code", { id: "root-hash", textContent: shownRoot.slice(0, 12) + "\u2026", title: shownRoot }),
+      copy),
+    el("div", { className: "rootstats", id: "root-stats" },
+      el("span", { textContent: `height ${s.height}` }),
+      el("span", { textContent: `${s.blocks} blocks` }),
+      el("span", { textContent: `${s.bytes.toLocaleString()} B` })));
+}
+
 function renderTree() {
+  renderRoot();
   const { ranges, sets } = treeView(app);
   const blocks = Object.entries(RANGES).filter(([r]) => ranges[r]).map(([r, info]) =>
     el("div", { className: "rng" },
