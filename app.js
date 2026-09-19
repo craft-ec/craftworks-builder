@@ -84,12 +84,21 @@ function renderRoot() {
   const root = liveDb.root();
   if (!freezeRoot() || shownRoot === null) shownRoot = root;
   const s = liveDb.stats();
-  const copy = el("button", { className: "copy", textContent: "copy", title: "Copy the full root hash" });
-  copy.onclick = () => navigator.clipboard?.writeText(root);
+  // A root is a block id: `node:<64 hex>`. The SDK splits it, rather than this
+  // file splitting on ":" — the format belongs to the SDK, and an app that
+  // takes a copy of it is how the tag and the hex drift apart.
+  const { tag, hex } = sdkReady.parseBlockId(shownRoot);
+  // The tag is a label, so the 12 characters of hash on screen are 12
+  // characters of HASH. Copy and the tooltip carry the whole tagged id,
+  // because that is the thing that can be pasted back and checked.
+  const copy = el("button", { className: "copy", textContent: "copy", title: "Copy the full block id" });
+  copy.dataset.copy = shownRoot;
+  copy.onclick = () => navigator.clipboard?.writeText(shownRoot);
   $("tree-root").replaceChildren(
     el("div", { className: "h" }, el("code", { textContent: "root" }), "this tree, in 32 bytes"),
     el("div", { className: "root" },
-      el("code", { id: "root-hash", textContent: shownRoot.slice(0, 12) + "\u2026", title: shownRoot }),
+      el("span", { className: "tag", id: "root-tag", textContent: tag, title: "the kind of block this id names" }),
+      el("code", { id: "root-hash", textContent: hex.slice(0, 12) + "\u2026", title: shownRoot }),
       copy),
     el("div", { className: "rootstats", id: "root-stats" },
       el("span", { textContent: `height ${s.height}` }),

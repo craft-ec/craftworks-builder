@@ -68,9 +68,33 @@ try {
   const short = `document.getElementById("root-hash")?.textContent ?? ""`;
   const stats = `document.getElementById("root-stats")?.textContent ?? ""`;
 
+  const tag = `document.getElementById("root-tag")?.textContent ?? ""`;
+  const copied = `document.querySelector("#tree-root .copy")?.dataset.copy ?? ""`;
+  // What the SDK makes of the string the panel is showing. Asked of the SDK,
+  // not of a regex here: the builder does not own this format, and a test that
+  // restated it would agree with a panel that had drifted.
+  const parsed = `JSON.stringify(window.craftec.parseBlockId(${root}))`;
+
   const r1 = await evaluate(`return ${root}`);
-  assert.match(r1, /^[0-9a-f]{64}$/, "the panel shows a 32-byte root hash");
-  assert.ok((await evaluate(`return ${short}`)).startsWith(r1.slice(0, 12)), "shown short, full in the title");
+  assert.match(r1, /^node:[0-9a-f]{64}$/, "the panel shows a tagged tree-node block id");
+  const p1 = JSON.parse(await evaluate(`return ${parsed}`));
+  assert.strictEqual(p1.tag, "node");
+  assert.strictEqual(await evaluate(`return ${tag}`), "node", "the tag is shown as its own label");
+  // The 12 characters on screen must be 12 characters of HASH — the bug this
+  // change exists to prevent is the tag eating the visible hash, and a prefix
+  // test against the whole string would pass while showing `node:8e3a91c`.
+  const shown = await evaluate(`return ${short}`);
+  assert.ok(shown.startsWith(p1.hex.slice(0, 12)), `short hash ${shown} must be a prefix of the HEX part`);
+  assert.ok(!shown.includes(":"), "the tag must not be inside the short hash");
+  assert.ok(!shown.startsWith(p1.tag), "the short hash must not start with the tag");
+  // The copied text is the whole id, and it parses back through the SDK: what
+  // a user pastes elsewhere has to be something that can be read.
+  const c1 = await evaluate(`return ${copied}`);
+  assert.strictEqual(c1, r1, "copy carries the full tagged id, not the short form");
+  assert.strictEqual(
+    JSON.parse(await evaluate(`return JSON.stringify(window.craftec.parseBlockId(${copied}))`)).id,
+    c1,
+    "the copied string round-trips through the SDK parser");
   assert.match(await evaluate(`return ${stats}`), /height \d+/);
   assert.match(await evaluate(`return ${stats}`), /\d+ blocks/);
 

@@ -46,6 +46,9 @@
   #tree-root { margin-bottom:12px; }
   #tree-root .root { display:flex; align-items:center; gap:6px; margin:3px 0 0 10px; }
   #tree-root .root code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* The pill carries its own margin for the tag lists it was made for; inside
+     this row the flex gap does the spacing, so zero it or the row looks askew. */
+  #tree-root .root .tag { margin:0; padding:0 6px; color:var(--mute); }
   #tree-root .copy { font-size:10px; padding:1px 5px; }
   .rootstats { display:flex; gap:10px; margin:4px 0 0 10px; color:var(--mute); font-size:11px; }
   .schema input, .schema select { margin-bottom:4px; }
