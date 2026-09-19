@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Craftec Builder</title>
+<style>
+  :root { --bg:#f6f5f2; --panel:#fff; --ink:#1d1d1f; --mute:#6b6b70; --line:#e3e1dc; --acc:#2f5bea; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16171a; --panel:#1f2125; --ink:#ececee; --mute:#9a9aa2; --line:#2e3036; --acc:#7b9bff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:grid; grid-template-rows:auto 1fr; }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header b { font-size:15px; } header .sp { flex:1; }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); cursor:pointer; }
+  button.pri { background:var(--acc); border-color:var(--acc); color:#fff; }
+  main { display:grid; grid-template-columns:200px 1fr 260px; min-height:0; }
+  aside { background:var(--panel); padding:12px; overflow:auto; }
+  aside.l { border-right:1px solid var(--line); } aside.r { border-left:1px solid var(--line); }
+  h3 { margin:0 0 8px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
+  .chip { display:block; width:100%; text-align:left; margin-bottom:6px; }
+  .chip[disabled] { opacity:.45; cursor:not-allowed; }
+  .chip small { display:block; color:var(--mute); }
+  #canvas { padding:20px; overflow:auto; }
+  .comp { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; cursor:pointer; }
+  .comp.sel { border-color:var(--acc); box-shadow:0 0 0 2px color-mix(in srgb, var(--acc) 25%, transparent); }
+  .comp .t { font-weight:600; } .comp .b { color:var(--mute); font-size:12px; }
+  .empty { color:var(--mute); text-align:center; margin-top:18vh; }
+  label { display:block; margin:10px 0 4px; color:var(--mute); font-size:12px; }
+  input, select { width:100%; padding:6px 8px; font:inherit; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:11px; overflow:auto; max-height:40vh; }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } aside.l, aside.r { border:0; border-bottom:1px solid var(--line); } }
+</style>
+
+<header>
+  <b>Craftec Builder</b><span class="b" style="color:var(--mute)">phase 0 shell</span>
+  <span class="sp"></span>
+  <button id="clear">Clear</button>
+  <button class="pri" id="publish" disabled title="Publishing lands in phase 3">Publish</button>
+</header>
+<main>
+  <aside class="l"><h3>Components</h3><div id="palette"></div></aside>
+  <section id="canvas"></section>
+  <aside class="r"><h3>Properties</h3><div id="props"></div><h3 style="margin-top:16px">App definition</h3><pre id="def"></pre></aside>
+</main>
+
+<script>
+// A component binds UI to a path in the tree. `phase` is when the substrate
+// capability behind it lands (ARCHITECTURE.md §21); until then it is disabled.
+const COMPONENTS = [
+  { type:'table',    label:'Table',        bind:'collection', phase:1 },
+  { type:'form',     label:'Form',         bind:'collection', phase:1 },
+  { type:'list',     label:'List',         bind:'collection', phase:1 },
+  { type:'profile',  label:'Profile',      bind:'identity',   phase:4 },
+  { type:'feed',     label:'Feed',         bind:'stream',     phase:4 },
+  { type:'comments', label:'Comments',     bind:'inbox',      phase:6 },
+  { type:'votes',    label:'Votes',        bind:'tally',      phase:6 },
+  { type:'search',   label:'Search',       bind:'index',      phase:7 },
+  { type:'vault',    label:'Vault',        bind:'sealed',     phase:8 },
+  { type:'files',    label:'File explorer',bind:'file',       phase:9 },
+  { type:'media',    label:'Media player', bind:'blob',       phase:9 },
+  { type:'pay',      label:'Pay button',   bind:'ledger',     phase:10 },
+  { type:'chat',     label:'Chat',         bind:'conversation', phase:12 },
+];
+const MODES = ['owned','shared','document','ledger'];
+const BUILT_PHASE = 0;
+
+let app = { name:'Untitled app', components:[] }, sel = -1;
+try { const s = localStorage.getItem('craftec.builder.app'); if (s) app = JSON.parse(s); } catch (_) {}
+const save = () => { try { localStorage.setItem('craftec.builder.app', JSON.stringify(app)); } catch (_) {} };
+const $ = id => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+
+function render() {
+  $('palette').replaceChildren(...COMPONENTS.map(c => {
+    const ready = c.phase <= BUILT_PHASE + 1; // next phase's components are placeable for design
+    const b = el('button', { className:'chip', disabled:!ready, title: ready ? '' : `lands in phase ${c.phase}` },
+      c.label, el('small', { textContent:`${c.bind} · phase ${c.phase}` }));
+    b.onclick = () => { app.components.push({ type:c.type, path:`d/${c.type}s`, mode:'owned' }); sel = app.components.length - 1; save(); render(); };
+    return b;
+  }));
+  const cv = $('canvas');
+  cv.replaceChildren(...(app.components.length ? app.components.map((c, i) => {
+    const d = el('div', { className:'comp' + (i === sel ? ' sel' : '') },
+      el('div', { className:'t', textContent: COMPONENTS.find(x => x.type === c.type)?.label || c.type }),
+      el('div', { className:'b', textContent:`${c.path} · ${c.mode}` }));
+    d.onclick = () => { sel = i; render(); };
+    return d;
+  }) : [el('p', { className:'empty', textContent:'Add a component from the left. It binds to a path in the tree.' })]));
+  const p = $('props'), c = app.components[sel];
+  if (!c) p.replaceChildren(el('p', { style:'color:var(--mute)', textContent:'Select a component.' }));
+  else {
+    const path = el('input', { value:c.path }); path.oninput = () => { c.path = path.value; save(); renderDef(); };
+    const mode = el('select'); MODES.forEach(m => mode.append(el('option', { value:m, textContent:m, selected:m === c.mode })));
+    mode.onchange = () => { c.mode = mode.value; save(); render(); };
+    const rm = el('button', { textContent:'Remove', style:'margin-top:12px' }); rm.onclick = () => { app.components.splice(sel, 1); sel = -1; save(); render(); };
+    p.replaceChildren(el('label', { textContent:'Tree path' }), path, el('label', { textContent:'Consistency' }), mode, rm);
+  }
+  renderDef();
+}
+const renderDef = () => { $('def').textContent = JSON.stringify(app, null, 2); };
+$('clear').onclick = () => { app.components = []; sel = -1; save(); render(); };
+render();
+</script>
