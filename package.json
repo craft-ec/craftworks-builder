@@ -2,5 +2,5 @@
   "name": "craftworks-builder",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node tests/catalogue.test.mjs && node tests/sdk-load.test.mjs" }
+  "scripts": { "test": "node tests/catalogue.test.mjs && node tests/sdk-load.test.mjs && node tests/runtime.test.mjs && node tests/e2e.test.mjs" }
 }

@@ -1,22 +1,26 @@
 import { loadSdk } from "./sdk-loader.js";
-import { COMPONENTS, RANGES, MODES, byType, mapping, treeView } from "./catalogue.js";
+import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
+import { mountApp } from "./runtime.js";
+import { defaultSchema, KINDS } from "./runtime-logic.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
-const BUILT_PHASE = 0;
+const BUILT_PHASE = 1;
 
 const $ = id => document.getElementById(id);
-const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat()); return e; };
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
-let app = { name: "Untitled app", tree: { realm: "public", identity: null }, components: [] };
+let app = { name: "Untitled app", tree: { realm: "public", identity: null }, components: [], schemas: {}, seed: {} };
 try { const s = localStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
 // An app definition can arrive in the URL (`#app=<json>`): shareable, and testable.
 try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) app = { ...app, ...JSON.parse(h) }; } catch (_) {}
 const save = () => { try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (_) {} };
+app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
+let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
 
 loadSdk().then(
-  sdk => { $("sdk").textContent = `SDK ${sdk.version()}`; window.craftec = sdk; },
+  sdk => { $("sdk").textContent = `SDK ${sdk.version()}`; window.craftec = sdk; sdkReady = sdk; render(); },
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
 );
 
@@ -33,7 +37,7 @@ function renderPalette() {
     const ready = c.phase <= BUILT_PHASE + 1;
     const b = el("button", { className: "chip", disabled: !ready, title: `${c.primitives.join(" + ")} · ${c.schema} — ${c.note}${ready ? "" : ` (lands in phase ${c.phase})`}` },
       c.label, el("small", { textContent: ready ? c.schema : `phase ${c.phase}` }));
-    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0] }); sel = app.components.length - 1; save(); render(); };
+    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0] }); sel = app.components.length - 1; liveDb = null; save(); render(); };
     return b;
   }));
 }
@@ -41,6 +45,11 @@ function renderPalette() {
 function usesPath(i, path) { const m = mapping(app.components[i]); return m.keys.includes(path) || m.sets.includes(path); }
 
 function renderCanvas() {
+  if (preview) {
+    if (!sdkReady) { $("canvas").replaceChildren(el("p", { className: "empty", textContent: "Loading the SDK…" })); return; }
+    if (!liveDb) liveDb = mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); });
+    return;
+  }
   $("canvas").replaceChildren(...(app.components.length ? app.components.map((inst, i) => {
     const m = mapping(inst);
     const d = el("div", { className: "comp" + (i === sel || (hoverPath && usesPath(i, hoverPath)) ? " sel" : "") },
@@ -53,8 +62,11 @@ function renderCanvas() {
 
 function pathRow(path, idxs, isSet) {
   const hl = sel >= 0 && usesPath(sel, path);
+  const m = !isSet && /^d\/([^/]+)\//.exec(path);
+  let live = "";
+  if (preview && liveDb && m) { try { const n = liveDb.count(m[1]); live = ` — ${n} record${n === 1 ? "" : "s"}`; } catch (_) {} }
   const row = el("span", { className: "path" + (isSet ? " set" : "") + (hl ? " hl" : "") }, path,
-    el("small", { textContent: idxs.map(i => byType[app.components[i].type].label).join(" · ") }));
+    el("small", { textContent: idxs.map(i => byType[app.components[i].type].label).join(" · ") + live }));
   row.onmouseenter = () => { hoverPath = path; renderCanvas(); };
   row.onmouseleave = () => { hoverPath = null; renderCanvas(); };
   row.onclick = () => { sel = idxs[0]; render(); };
@@ -78,14 +90,37 @@ function renderProps() {
   if (!inst) { $("props").replaceChildren(el("p", { className: "note", textContent: "Select a component." })); $("map").replaceChildren(); return; }
   const c = byType[inst.type];
   const domain = el("input", { value: inst.domain });
-  domain.oninput = () => { inst.domain = domain.value.trim(); save(); renderCanvas(); renderTree(); renderMap(); renderDef(); };
+  domain.oninput = () => { inst.domain = domain.value.trim(); liveDb = null; save(); renderCanvas(); renderTree(); renderMap(); renderDef(); };
   const mode = el("select");
   c.modes.forEach(m => mode.append(el("option", { value: m, textContent: m, selected: m === inst.mode })));
   mode.onchange = () => { inst.mode = mode.value; save(); render(); };
   const rm = el("button", { textContent: "Remove", style: "margin-top:12px" });
-  rm.onclick = () => { app.components.splice(sel, 1); sel = -1; save(); render(); };
-  $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode, rm);
+  rm.onclick = () => { app.components.splice(sel, 1); sel = -1; liveDb = null; save(); render(); };
+  $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode,
+    el("label", { textContent: `Schema of “${inst.domain}” — shared by every component on it` }), schemaEditor(inst.domain), rm);
   renderMap();
+}
+
+function schemaEditor(domain) {
+  const schema = (app.schemas[domain] ??= defaultSchema(domain));
+  const touch = () => { save(); liveDb = null; renderDef(); };
+  const type = el("input", { value: schema.type, title: "Record type name" });
+  type.oninput = () => { schema.type = type.value.trim(); touch(); };
+  const rows = schema.fields.map((f, i) => {
+    const name = el("input", { value: f.name });
+    name.oninput = () => { f.name = name.value.trim(); touch(); };
+    const kind = el("select");
+    KINDS.forEach(k => kind.append(el("option", { value: k, textContent: k, selected: k === f.kind })));
+    kind.onchange = () => { f.kind = kind.value; touch(); };
+    const req = el("input", { type: "checkbox", checked: !!f.required, title: "required" });
+    req.onchange = () => { f.required = req.checked; touch(); };
+    const del = el("button", { textContent: "×", title: "Remove field" });
+    del.onclick = () => { schema.fields.splice(i, 1); touch(); renderProps(); };
+    return el("div", { className: "frow" }, name, kind, req, del);
+  });
+  const add = el("button", { textContent: "+ field" });
+  add.onclick = () => { schema.fields.push({ name: `field${schema.fields.length + 1}`, kind: "text" }); touch(); renderProps(); };
+  return el("div", { className: "schema" }, type, rows, add);
 }
 
 function renderMap() {
@@ -108,7 +143,12 @@ function renderMap() {
 }
 
 const renderDef = () => { $("def").textContent = JSON.stringify(app, null, 2); };
-function render() { renderAddr(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef(); }
+function render() {
+  $("preview").textContent = preview ? "Back to design" : "Preview";
+  document.body.classList.toggle("previewing", preview);
+  renderAddr(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef();
+}
 
-$("clear").onclick = () => { app.components = []; sel = -1; save(); render(); };
+$("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; liveDb = null; save(); render(); };
+$("preview").onclick = () => { preview = !preview; liveDb = null; render(); };
 render();
