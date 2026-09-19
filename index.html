@@ -43,12 +43,27 @@
   .kv code, .tag { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
   .tag { display:inline-block; padding:1px 6px; margin:0 3px 3px 0; border:1px solid var(--line); border-radius:999px; }
   .note { color:var(--mute); margin-top:8px; }
+  .schema input, .schema select { margin-bottom:4px; }
+  .frow { display:grid; grid-template-columns:1fr 74px 18px 26px; gap:4px; align-items:center; }
+  .frow button { padding:2px 0; }
+  .rt-comp { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  .rt-comp h4 { margin:0 0 10px; font-size:12px; color:var(--mute); font-weight:600; }
+  .rt-row { display:grid; grid-template-columns:110px 1fr; gap:8px; align-items:center; margin:0 0 8px; color:var(--ink); font-size:13px; }
+  .rt-row input[type=checkbox] { width:auto; justify-self:start; }
+  .rt-actions { display:inline-flex; gap:6px; } .rt-actions button { padding:3px 9px; font-size:12px; }
+  .rt-err { color:#c0392b; margin:6px 0 0; font-size:12px; } .rt-empty { color:var(--mute); margin:0; }
+  .rt-scroll { overflow-x:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); } th { color:var(--mute); font-weight:600; font-size:11px; }
+  .rt-list { list-style:none; margin:0; padding:0; } .rt-list li { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); }
+  .rt-list small { color:var(--mute); }
+  body.previewing #palette, body.previewing #palette-h { opacity:.4; pointer-events:none; }
   @media (max-width:760px) { main { grid-template-columns:1fr; } aside.l, aside.r { border:0; border-bottom:1px solid var(--line); } }
 </style>
 
 <header>
   <b>Craftec Builder</b><span id="sdk" class="b" style="color:var(--mute)">loading SDK…</span>
   <span id="tree-addr" class="addr" title="The tree this app works on"></span><span class="sp"></span>
+  <button id="preview">Preview</button>
   <button id="clear">Clear</button>
   <button class="pri" id="publish" disabled title="Publishing lands in phase 3">Publish</button>
 </header>
