@@ -30,7 +30,7 @@
 </style>
 
 <header>
-  <b>Craftec Builder</b><span class="b" style="color:var(--mute)">phase 0 shell</span>
+  <b>Craftec Builder</b><span id="sdk" class="b" style="color:var(--mute)">loading SDK…</span>
   <span class="sp"></span>
   <button id="clear">Clear</button>
   <button class="pri" id="publish" disabled title="Publishing lands in phase 3">Publish</button>
@@ -41,7 +41,13 @@
   <aside class="r"><h3>Properties</h3><div id="props"></div><h3 style="margin-top:16px">App definition</h3><pre id="def"></pre></aside>
 </main>
 
-<script>
+<script type="module">
+import { loadSdk } from "./sdk-loader.js";
+loadSdk().then(
+  sdk => { document.getElementById('sdk').textContent = `SDK ${sdk.version()}`; window.craftec = sdk; },
+  err => { const e = document.getElementById('sdk'); e.textContent = 'SDK failed to load — run ./build.sh and ./serve.sh'; e.title = String(err); },
+);
+
 // A component binds UI to a path in the tree. `phase` is when the substrate
 // capability behind it lands (ARCHITECTURE.md §21); until then it is disabled.
 const COMPONENTS = [

@@ -1,0 +1,6 @@
+{
+  "name": "craftworks-builder",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node tests/sdk-load.test.mjs" }
+}
