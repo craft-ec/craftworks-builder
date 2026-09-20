@@ -41,10 +41,36 @@ try {
 
   const rows = `[...document.querySelectorAll(".rt-comp tbody tr")].map(tr => tr.cells[0].textContent)`;
   const tree = `document.querySelector("#tree .path small")?.textContent ?? ""`;
-  const add = title => evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; document.querySelector(".rt-comp button.pri").click();`);
+  // A write is a ROUND TRIP once this runs over the engine, so every helper
+  // here clicks and then WAITS for the screen to catch up. The old ones
+  // clicked and read immediately, which worked only while a write was
+  // synchronous — and failed intermittently the moment it was not, which is
+  // worse than failing every time.
+  const settle = async before => {
+    for (let i = 0; i < 60; i++) {
+      if ((await evaluate(`return ${body}`)) !== before) return;
+      await sleep(50);
+    }
+    throw new Error("the table did not change after a write");
+  };
+  const body = `document.querySelector(".rt-comp tbody")?.textContent ?? ""`;
+  const add = async (title, expectChange = true) => {
+    const before = await evaluate(`return ${body}`);
+    await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; document.querySelector(".rt-comp button.pri").click();`);
+    // A REFUSED write changes nothing, so waiting for a change would hang on
+    // exactly the case the next assertion is about.
+    if (expectChange) await settle(before);
+    else await sleep(150);
+  };
+  /// Click a button and wait for the table to change because of it.
+  const clickAndSettle = async expr => {
+    const before = await evaluate(`return ${body}`);
+    await evaluate(expr);
+    await settle(before);
+  };
 
   // refused write: the required field is blank → message shown, nothing stored
-  await add("");
+  await add("", false);
   assert.match(await evaluate(`return document.querySelector(".rt-err").textContent`), /title.*required/);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), []);
 
@@ -54,12 +80,12 @@ try {
 
   // edit the first row through the UI
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  assert.strictEqual(await evaluate(`return document.querySelector(".rt-comp input[name=title]").value`), "first");
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]").value === "first"`, "the edit form to load the row");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited", "second"]);
 
   // delete the second row
-  await evaluate(`document.querySelectorAll(".rt-comp tbody tr")[1].querySelectorAll("button")[1].click();`);
+  await clickAndSettle(`document.querySelectorAll(".rt-comp tbody tr")[1].querySelectorAll("button")[1].click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited"]);
   assert.match(await evaluate(`return ${tree}`), /1 record\b/);
 
@@ -115,7 +141,7 @@ try {
   //  so two sessions never hold the same keys. See the PR.)
   await add("temporary");
   assert.notStrictEqual(await evaluate(`return ${root}`), r2, "the extra record moved it");
-  await evaluate(`[...document.querySelectorAll(".rt-comp tbody tr")].find(tr => tr.cells[0].textContent === "temporary").querySelectorAll("button")[1].click();`);
+  await clickAndSettle(`[...document.querySelectorAll(".rt-comp tbody tr")].find(tr => tr.cells[0].textContent === "temporary").querySelectorAll("button")[1].click();`);
   assert.strictEqual(await evaluate(`return ${root}`), r2, "same contents, same root");
 
   // An edit and an edit BACK does not restore the root, and that is right: a
@@ -123,10 +149,12 @@ try {
   // different CONTENTS. The root follows the contents, not the screen.
   const r3 = await evaluate(`return ${root}`);
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "changed"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]")?.value === "first, edited"`, "the edit form");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "changed"; document.querySelector(".rt-comp button.pri").click();`);
   assert.notStrictEqual(await evaluate(`return ${root}`), r3, "an edit moves it");
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]")?.value === "changed"`, "the edit form again");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited", "third"], "the title is back");
   assert.notStrictEqual(
     await evaluate(`return ${root}`),
@@ -143,11 +171,19 @@ try {
   assert.strictEqual(await evaluate(`return ${root}`), before, "a refused write must not move the root");
 
   // Delete everything: back to the empty tree.
-  await evaluate(`
-    let guard = 0;
-    while (document.querySelector(".rt-comp tbody tr") && guard++ < 50)
-      document.querySelector(".rt-comp tbody tr").querySelectorAll("button")[1].click();
-  `);
+  //
+  // One click, then WAIT for the row to go, then the next. The old loop
+  // clicked fifty times inside one synchronous pass, which worked only while a
+  // write was synchronous — it clicked the same stale button over and over and
+  // removed one row. A write is a round trip once this runs over the engine,
+  // so the test drives it the way a person does: act, wait for the screen to
+  // catch up, act again.
+  for (let guard = 0; guard < 50; guard++) {
+    const left = await evaluate(`return document.querySelectorAll(".rt-comp tbody tr").length`);
+    if (left === 0) break;
+    await evaluate(`document.querySelector(".rt-comp tbody tr").querySelectorAll("button")[1].click();`);
+    await until(`document.querySelectorAll(".rt-comp tbody tr").length < ${left}`, `a row to be deleted (${left} left)`);
+  }
   assert.deepStrictEqual(await evaluate(`return ${rows}`), []);
   const empty = await evaluate(`return ${root}`);
   assert.notStrictEqual(empty, before);
@@ -170,8 +206,165 @@ try {
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["one", "two"], "while the tree really did change");
   console.log("ok e2e control: a panel that stops following the tree is detected");
 
+  // ---------------------------------------------------------------------
+  // THE BACKEND THAT ANSWERS LATER.
+  //
+  // Every other test in this file — and every other test in this repo — runs
+  // the app over the IN-MEMORY database, whose reads are synchronous. The
+  // engine-backed one's are not: a cold `schema`, `count` or `scan` is a read
+  // over the network, so it returns a Promise.
+  //
+  // That is a difference no existing test could see, because all of them
+  // share the sync backend. What it cost: `render` called `db.schema(domain)`
+  // synchronously, a Promise is truthy, so it went straight past the
+  // `!schema` guard into `schema.fields.map` — and PUBLISHING A PROJECT
+  // REPLACED THE WHOLE APP with "Cannot read properties of undefined (reading
+  // 'map')". The button said Published. It fired only after the backend
+  // switched, which is precisely the moment this repo claims nothing changes.
+  //
+  // So: mount over a backend that answers LATER, and require the app to be
+  // there. No node and no network — the async-ness is the whole subject.
+  {
+    const mounted = await evaluate(`
+      const { mountApp } = await import("./runtime.js");
+      // A hand-rolled backend. Every READ resolves on a later turn, which is
+      // the only thing that distinguishes it from the in-memory one.
+      const later = v => new Promise(r => setTimeout(() => r(v), 0));
+      const rows = [];
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text", required: true }] };
+      let snap = [];
+      const db = {
+        define: async () => {},
+        put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
+        update: async () => {}, delete: async () => {},
+        // A SCHEMA READ THAT REFUSES, the way a cold one really can.
+        // The runtime must not need it: openApp was handed the schema and
+        // passed it to define, so asking the network to say it back is a
+        // question that can only add failure modes. Measured against a real
+        // node: it answered NotLoaded moments after a publish and both
+        // components rendered "No schema" for a domain just defined.
+        schema: () => { const e = new Error("this range has not been loaded yet"); e.code = "NOT_LOADED"; return Promise.reject(e); },
+        domains: () => later(["notes"]),
+        count: d => later(rows.length),
+        scan: () => later(rows.slice()),
+        get: () => later(null),
+        // A REAL BINDING: listeners included, because the thing under test is
+        // whether anything listens.
+        bind: () => {
+          const ls = new Set();
+          const b = {
+            getSnapshot: () => snap,
+            subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
+            reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },
+            liveMode: () => ({ mode: "Polled" }),
+          };
+          window.__binds = window.__binds ?? [];
+          window.__binds.push(b);
+          return b;
+        },
+        liveMode: () => ({ mode: "Polled" }),
+      };
+      window.__rows = rows;
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      window.__root = root;
+      const app = {
+        components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA },
+        // A SEED ROW, so the table has something to fail to show. A binding
+        // starts empty on the engine-backed backend, so a mount that renders
+        // before reloading draws an empty table — in a preview it would have
+        // been full, which is the two-screens-one-component failure.
+        seed: { notes: [{ title: "seeded" }] },
+      };
+      await mountApp(root, {}, app, () => {}, db, "published");
+      return {
+        inputs: root.querySelectorAll("input[name=title]").length,
+        comps: root.querySelectorAll(".rt-comp").length,
+        rows: root.querySelectorAll("tbody tr").length,
+        errors: [...root.querySelectorAll(".rt-err")].map(e => e.textContent).filter(Boolean),
+      };`);
+    assert.strictEqual(mounted.comps, 2, "the app did not mount over an async backend at all");
+    assert.strictEqual(mounted.inputs, 1,
+      "the form is not there over a backend whose reads answer later — which is what publishing switches to");
+    assert.deepStrictEqual(mounted.errors, [],
+      `the app mounted with errors on screen: ${JSON.stringify(mounted.errors)}`);
+    assert.strictEqual(mounted.rows, 1,
+      "the table is EMPTY on a backend whose bindings start empty. The first " +
+      "frame was drawn before anything reloaded, so a preview would have shown " +
+      "the row and a published project would not — the same component, two screens");
+    console.log("ok e2e: the app mounts over a backend whose reads answer LATER, fills its table, and its schema read REFUSES");
+  }
+
+  // ---------------------------------------------------------------------
+  // DATA THAT CHANGES UNDERNEATH MUST REACH THE SCREEN, WITH NO APP CALL.
+  //
+  // A write reaching the network, or another tab's row arriving, changes a
+  // binding's rows without anybody clicking anything. Components read
+  // `getSnapshot()`, so unless something SUBSCRIBES, the new rows sit in the
+  // binding and the screen keeps showing the old ones.
+  //
+  // Measured against a real node: `db.scan()` returned rows CLEAN three
+  // seconds after a write while the chips on screen still said "saving" ten
+  // seconds later, and a second tab never showed the first tab's row at all.
+  // Every acceptance item about data appearing failed on this.
+  // ---------------------------------------------------------------------
+  {
+    const before = await evaluate(`return window.__root.querySelectorAll("tbody tr").length;`);
+    const after = await evaluate(`
+      // Nothing here touches the app: a row appears in the backing store and
+      // the binding is reloaded, exactly as a notification or a tick does it.
+      window.__rows.push({ id: "b", fields: { title: "arrived" }, state: "CLEAN" });
+      for (const b of window.__binds) await b.reload();
+      await new Promise(r => setTimeout(r, 0));
+      return window.__root.querySelectorAll("tbody tr").length;`);
+    assert.strictEqual(after, before + 1,
+      "a row that arrived underneath never reached the screen: the binding has " +
+      "the rows and nothing re-rendered. Components read getSnapshot(), so " +
+      "something must subscribe — the app cannot be the only thing that redraws");
+    console.log("ok e2e: **a row arriving underneath re-renders, with no app call**");
+  }
+
+  // THE CONTROL. The same mount with SYNCHRONOUS reads must also work —
+  // otherwise the test above would pass on a runtime that had simply stopped
+  // reading schemas at all, and both backends have to keep working.
+  {
+    const mounted = await evaluate(`
+      const { mountApp } = await import("./runtime.js");
+      const rows = [];
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text", required: true }] };
+      let snap = [];
+      const db = {
+        define: async () => {}, update: async () => {}, delete: async () => {},
+        put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
+        schema: () => SCHEMA, domains: () => ["notes"], count: () => rows.length,
+        scan: () => rows.slice(), get: () => null,
+        bind: () => {
+          const ls = new Set();
+          return {
+            getSnapshot: () => snap,
+            subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
+            reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },
+            liveMode: () => ({ mode: "Polled" }),
+          };
+        },
+        liveMode: () => ({ mode: "Polled" }),
+      };
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      await mountApp(root, {}, {
+        components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA },
+      }, () => {}, db, "published");
+      return { inputs: root.querySelectorAll("input[name=title]").length };`);
+    assert.strictEqual(mounted.inputs, 1, "the synchronous backend stopped working");
+    console.log("ok e2e CONTROL: and over one whose reads answer at once");
+  }
+
   done(0);
 } catch (e) {
   console.error("e2e FAILED:", e.message);
+  // The line that failed, because a diff with no location costs a re-run.
+  console.error(String(e.stack).split("\n").filter(l => l.includes("e2e.test")).slice(0, 2).join("\n"));
   done(1);
 }

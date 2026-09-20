@@ -45,19 +45,58 @@ export const headline = schema => (schema.fields.find(f => f.kind === "text") ??
 export const domainsOf = app => [...new Set(app.components.map(c => c.domain).filter(Boolean))];
 
 /**
- * Open the app's data: define every domain, load seed records. Returns the db and
- * anything that went wrong (a refused schema or seed row), so the UI can say so.
+ * Open the app's data: define every domain, load seed records. Returns the db
+ * and anything that went wrong (a refused schema or seed row), so the UI can
+ * say so.
+ *
+ * `db` is supplied rather than constructed, because the SAME function opens an
+ * app on either backend. That is what Publish switches, and it is why every
+ * call here is awaited even though the in-memory backend answers at once:
+ * writing it synchronous now and async later is how one surface becomes two,
+ * and the divergence would appear exactly at the moment a project is published.
+ *
+ * A problem is RECORDED and the rest of the app still opens. One refused seed
+ * row must not leave a person staring at a blank canvas with no idea which
+ * row it was.
  */
-export function openApp(sdk, app) {
-  const db = new sdk.Db();
+export async function openApp(sdk, app, db = new sdk.Db()) {
   const problems = [];
+  // THE SCHEMAS THIS APP IS OPENED WITH, returned rather than read back.
+  //
+  // These are the exact values handed to `define`, so they are what the
+  // domains ARE. Reading them back from the db was a round trip to learn
+  // something already in hand, and over the engine-backed backend it was a
+  // round trip that can legitimately answer "not loaded yet" — which a
+  // renderer then had to turn into either a wrong screen or a wait.
+  //
+  // Measured: it answered exactly that, against a real node, moments after a
+  // publish. Both components rendered "No schema for “notes”." for a domain
+  // whose schema was three lines above in the app definition.
+  const schemas = {};
   for (const d of domainsOf(app)) {
-    try { db.define(d, app.schemas?.[d] ?? defaultSchema(d)); } catch (e) { problems.push(`${d}: ${e.message}`); }
+    const schema = app.schemas?.[d] ?? defaultSchema(d);
+    schemas[d] = schema;
+    try { await db.define(d, schema); }
+    catch (e) { problems.push(`${d}: ${e.message}`); }
   }
   for (const [d, rows] of Object.entries(app.seed ?? {})) {
     for (const row of rows) {
-      try { db.put(d, row); } catch (e) { problems.push(`${d} seed: ${e.message}`); }
+      try { await db.put(d, row); } catch (e) { problems.push(`${d} seed: ${e.message}`); }
     }
   }
-  return { db, problems };
+  return { db, problems, schemas };
 }
+
+/**
+ * The domains this app will read on open, each once.
+ *
+ * Handed to the engine before the first frame so a cold read is answered
+ * from memory rather than from a round trip. It names DOMAINS and not key
+ * ranges: what a range is, is the SDK's business, and a builder that encoded
+ * one would pin a layout that could then never change (craftworks-sdk#66).
+ *
+ * Derived from the CANVAS, not from the schemas: a domain nobody has placed a
+ * component for is not read on open, and loading it would spend the first
+ * frame's bandwidth on data nothing is going to show.
+ */
+export const preloadManifest = app => domainsOf(app);

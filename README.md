@@ -53,6 +53,26 @@ is an alarm in every profile.
 pins where each value came from, by reading the same artefacts independently. The
 second one is what a constant typed into `versions.js` would fail.
 
+### Commit, then rebuild, then test — in that order
+
+`build-info.json` records the revision **at the moment `build.sh` ran**, and the
+provenance gate checks it against `HEAD`. So a build made *before* a commit is
+correctly stale the instant the commit lands, and `npm test` fails until the
+build is redone. That is the gate working, not a flake.
+
+    git commit …        # first
+    ./build.sh          # then: build-info.json picks up the new HEAD
+    npm test            # only now does a green run mean anything
+
+Running the suite between the commit and the rebuild reports a failure that has
+nothing to do with the change — which is exactly the kind of red a person
+learns to wave past, so it is written down here instead.
+
+`CRAFTWORKS_CONTRACTS` must be the same for the build and the test run: the
+provenance test resolves the contracts checkout by a relative path that does not
+exist from a git worktree, and a build made *with* contracts checked against a
+test run made *without* disagrees about whether the hashes should say `unknown`.
+
 ## Screenshots of the palette
 
 | file | state |

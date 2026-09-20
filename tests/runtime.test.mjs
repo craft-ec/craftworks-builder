@@ -28,13 +28,13 @@ const app = { components: [{ type: "table", domain: "tasks" }, { type: "form", d
   schemas: { notes: { type: "Note", fields: [{ name: "text", kind: "text", required: true }] } },
   seed: { tasks: [{ title: "one" }, { title: 7 }, { title: "two", done: true }], notes: [{ text: "hi" }] } };
 assert.deepStrictEqual(domainsOf(app), ["tasks", "notes"]);
-const { db, problems } = openApp(sdk, app);
-assert.deepStrictEqual(db.domains(), ["notes", "tasks"]);
-assert.strictEqual(db.count("tasks"), 2);
-assert.strictEqual(db.count("notes"), 1);
+const { db, problems } = await openApp(sdk, app);
+assert.deepStrictEqual(await db.domains(), ["notes", "tasks"]);
+assert.strictEqual(await db.count("tasks"), 2);
+assert.strictEqual(await db.count("notes"), 1);
 assert.strictEqual(problems.length, 1);
 assert.match(problems[0], /tasks seed: .*must be text/);
 // what a form saves is what a table reads back
-const saved = db.put("tasks", toFields(db.schema("tasks"), { title: "from form", done: true }));
-assert.deepStrictEqual(db.scan("tasks", { reverse: true, limit: 1 })[0], saved);
+const saved = await db.put("tasks", toFields(await db.schema("tasks"), { title: "from form", done: true }));
+assert.deepStrictEqual((await db.scan("tasks", { reverse: true, limit: 1 }))[0], saved);
 console.log("ok runtime logic");

@@ -3,7 +3,11 @@ import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
-import { defaultSchema, KINDS } from "./runtime-logic.js";
+import { defaultSchema, KINDS, preloadManifest } from "./runtime-logic.js";
+import { LIVE_NOTE, isLive } from "./publish-state.js";
+import { buttonFor, publish } from "./publish.js";
+import { render as renderTrace } from "./trace-view.js";
+import { treeStats, NO_ROOT } from "./tree-stats.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -20,6 +24,25 @@ const save = () => { try { localStorage.setItem("craftec.builder.app.v2", JSON.s
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
+// The engine-backed database, once Publish has switched the backend, and a
+// sentinel so an async mount cannot be started twice.
+let publishedDb = null, mounting = false;
+// Where publishing has got to, and what went wrong if it did.
+let publishPhase = "idle", publishError = "";
+/**
+ * Record counts per domain, resolved asynchronously and READ synchronously.
+ *
+ * The tree panel renders in one pass, and `db.count` is a round trip on the
+ * engine-backed backend. So the round trip happens where the db tells us
+ * something changed, and the panel reads what it produced.
+ */
+const counts = {};
+async function refreshCounts(db, app) {
+  if (!db) return;
+  for (const d of new Set(app.components.map(c => c.domain))) {
+    try { counts[d] = await db.count(d); } catch (_) { delete counts[d]; }
+  }
+}
 
 // The panel's baked half renders at once; the SDK's self-report is filled in
 // when the wasm arrives. It does NOT force a load: a panel that pulled in the
@@ -107,10 +130,99 @@ loadSdk().then(
 
 function renderAddr() {
   const { realm, identity } = app.tree;
+  // The address bar stops saying "in-memory, not published" when the project
+  // IS published — and not a moment before. It is the one line a person reads
+  // to decide whether closing the tab loses their work, so it tracks what the
+  // node has actually confirmed rather than what was asked for.
+  const note = publishPhase === "published" ? "" : "  · in-memory, not published";
   $("tree-addr").replaceChildren(
     "craftec://", el("b", { textContent: realm }), "/", el("b", { textContent: identity ?? "‹you›" }), "/",
-    el("span", { textContent: identity ? "" : "  · in-memory, not published" }),
+    el("span", { textContent: note }),
   );
+}
+
+/**
+ * Which node this builder publishes to.
+ *
+ * From `#node=<port>` in the URL, and from nowhere else. There is no default:
+ * publishing installs code and hands over a signing key, and a default would
+ * eventually point at a node somebody else is running. A development build
+ * should say which node it means.
+ */
+function nodePort() {
+  const p = Number(new URLSearchParams(location.hash.slice(1)).get("node"));
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : 0;
+}
+
+function renderPublish() {
+  const b = buttonFor(publishPhase, { error: publishError });
+  const btn = $("publish");
+  btn.textContent = b.label;
+  btn.disabled = !b.enabled;
+  btn.title = b.hint;
+  btn.className = `pri ${b.tone}`.trim();
+
+  // The reason is SHOWN, not hidden in the tooltip. It was in `title` only,
+  // which renders as nothing in a screenshot and needs a hover to find — so
+  // the one thing that makes a failure fixable was the one thing invisible.
+  const note = $("publish-note");
+  if (note) note.textContent = publishPhase === "failed" ? publishError : "";
+}
+
+/**
+ * Publish this project: move it off this tab and onto the node.
+ *
+ * Every decision below this call is in Rust — what to send, whether the node
+ * is already set up, whether an install would destroy a key. The delegate
+ * refuses a second install on its own, so pressing this twice cannot cost a
+ * signing key however many times it is pressed.
+ */
+async function doPublish() {
+  if (!sdkReady) return;
+  publishError = "";
+  try {
+    const { db } = await publish(app, {
+      open: sdkReady.open,
+      artefacts: sdkReady.SHIPPED_ARTEFACTS,
+      // NAMED, never defaulted. The node to publish to is a decision: it
+      // gets a delegate installed and a signing key handed to it. A default
+      // points at whatever is listening, and what was listening here was the
+      // owner's own node.
+      port: nodePort(),
+    }, (phase, err = "") => {
+      publishPhase = phase;
+      publishError = err;
+      renderPublish(); renderAddr();
+    });
+    // PRELOAD before the first frame, so a read the canvas is about to make
+    // is answered from memory instead of from a round trip. Generated from
+    // the canvas: a domain nobody has placed a component for is not read on
+    // open, and fetching it would spend the first frame on data nothing
+    // shows. Naming DOMAINS and not key ranges is deliberate — what a range
+    // is, is the SDK's business (craftworks-sdk#66).
+    //
+    // A preload that fails is not a failed publish. The data is all still
+    // reachable; the first read simply pays for it. So it is recorded and
+    // the publish goes on.
+    try { await db.preload(preloadManifest(app)); }
+    catch (e) { publishError = `preload: ${e.message}`; }
+
+    // The backend is switched by REMOUNTING on the new database: the app
+    // definition, the components and the bindings are all rebuilt against it.
+    // Nothing in the app changes, which is the whole promise of Publish.
+    publishedDb = db;
+    liveDb = null; mounting = false;
+    publishPhase = "published";
+    render();
+  } catch (e) {
+    publishPhase = "failed";
+    // `publish` already reported a reason through `onPhase`, and its reason
+    // says what to DO. Overwriting it with the raw exception replaced advice
+    // a person can act on with a message they cannot — which is what this
+    // line used to do.
+    if (!publishError) publishError = e.message;
+    renderPublish(); renderAddr();
+  }
 }
 
 function renderPalette() {
@@ -128,7 +240,22 @@ function usesPath(i, path) { const m = mapping(app.components[i]); return m.keys
 function renderCanvas() {
   if (preview) {
     if (!sdkReady) { $("canvas").replaceChildren(el("p", { className: "empty", textContent: "Loading the SDK…" })); return; }
-    if (!liveDb) liveDb = mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); });
+    // Guarded by a SENTINEL rather than by `liveDb`: mounting is async now,
+    // and a second render arriving before the first finished would mount the
+    // app twice — two engines, two sets of writes, one canvas.
+    if (!mounting) {
+      mounting = true;
+      mountApp($("canvas"), sdkReady, app, db => {
+        liveDb = db;
+        renderTree();
+        // The counts the panel just rendered without. Resolved after, and the
+        // panel is drawn again with them — one extra pass, and the number is
+        // a number.
+        refreshCounts(db, app).then(renderTree);
+      }, publishedDb, publishPhase)
+        .then(db => { liveDb = db; })
+        .catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
+    }
     return;
   }
   $("canvas").replaceChildren(...(app.components.length ? app.components.map((inst, i) => {
@@ -145,7 +272,15 @@ function pathRow(path, idxs, isSet) {
   const hl = sel >= 0 && usesPath(sel, path);
   const m = !isSet && /^d\/([^/]+)\//.exec(path);
   let live = "";
-  if (preview && liveDb && m) { try { const n = liveDb.count(m[1]); live = ` — ${n} record${n === 1 ? "" : "s"}`; } catch (_) {} }
+  // FROM THE RESOLVED MAP, never by calling the db here.
+  //
+  // `count` is synchronous on the in-memory backend and ASYNC on the
+  // engine-backed one, and this row is rendered synchronously. Calling it
+  // here put a Promise in the string: once a project was published the tree
+  // panel read "— [object Promise] records", which is a wrong number shown to
+  // a person rather than a crash, so nothing would have reported it.
+  const n = counts[m?.[1]];
+  if (preview && m && n !== undefined) live = ` — ${n} record${n === 1 ? "" : "s"}`;
   const row = el("span", { className: "path" + (isSet ? " set" : "") + (hl ? " hl" : "") }, path,
     el("small", { textContent: idxs.map(i => byType[app.components[i].type].label).join(" · ") + live }));
   row.onmouseenter = () => { hoverPath = path; renderCanvas(); };
@@ -165,6 +300,24 @@ function renderRoot() {
   const root = liveDb.root();
   if (!freezeRoot() || shownRoot === null) shownRoot = root;
   const s = liveDb.stats();
+  // NO ROOT YET IS A FACT, NOT A BLANK.
+  //
+  // `root()` answers "" when the store cannot state its root — deliberately,
+  // because a zero root would render as a real tree that happens to be empty,
+  // which is the NotLoaded-versus-empty confusion the SDK exists to keep
+  // apart. It is the ORDINARY state for the first moments after a publish,
+  // before any range has landed.
+  //
+  // `parseBlockId("")` throws. Unguarded, that throw came out of `onData`
+  // inside `mountApp` and the catch there replaced the whole canvas with the
+  // exception text — the app gone, the publish button still saying Published.
+  if (!root) {
+    $("tree-root").replaceChildren(
+      el("div", { className: "h" }, el("code", { textContent: "root" }), "this tree, in 32 bytes"),
+      el("div", { className: "root" }, el("span", { className: "muted", textContent: NO_ROOT })),
+      el("div", { className: "rootstats", id: "root-stats" }, ...rootStats(s)));
+    return;
+  }
   // A root is a block id: `node:<64 hex>`. The SDK splits it, rather than this
   // file splitting on ":" — the format belongs to the SDK, and an app that
   // takes a copy of it is how the tag and the hex drift apart.
@@ -181,10 +334,16 @@ function renderRoot() {
       el("span", { className: "tag", id: "root-tag", textContent: tag, title: "the kind of block this id names" }),
       el("code", { id: "root-hash", textContent: hex.slice(0, 12) + "\u2026", title: shownRoot }),
       copy),
-    el("div", { className: "rootstats", id: "root-stats" },
-      el("span", { textContent: `height ${s.height}` }),
-      el("span", { textContent: `${s.blocks} blocks` }),
-      el("span", { textContent: `${s.bytes.toLocaleString()} B` })));
+    el("div", { className: "rootstats", id: "root-stats" }, ...rootStats(s)));
+}
+
+/** The stat chips, decided in `tree-stats.js` and rendered here. */
+function rootStats(s) {
+  return treeStats(s).map(c => el("span", {
+    className: c.tone ?? "",
+    textContent: c.text,
+    ...(c.title ? { title: c.title } : {}),
+  }));
 }
 
 function renderTree() {
@@ -209,9 +368,27 @@ function renderProps() {
   const mode = el("select");
   c.modes.forEach(m => mode.append(el("option", { value: m, textContent: m, selected: m === inst.mode })));
   mode.onchange = () => { inst.mode = mode.value; save(); render(); };
+  // LIVE, per binding, DEFAULT OFF. A subscription is a standing cost paid
+  // continuously, so it is the app author who says which of their data is
+  // worth it — nothing turns it on by inference, and an existing project
+  // opened in a newer builder stays off because `isLive` requires exactly
+  // `true` rather than anything truthy.
+  const live = el("input", { type: "checkbox", id: "live", checked: isLive(inst) });
+  live.onchange = () => {
+    // Written only when ON. An `inst.live = false` on every component would
+    // put a key in every project definition to say the default, which is how
+    // a definition stops being readable.
+    if (live.checked) inst.live = true; else delete inst.live;
+    liveDb = null; save(); render();
+  };
+  const liveRow = el("label", { className: "live" }, live,
+    el("span", { textContent: "Live — updates by itself" }));
+  const liveWhy = el("p", { className: "note", id: "live-note", textContent: LIVE_NOTE });
+
   const rm = el("button", { textContent: "Remove", style: "margin-top:12px" });
   rm.onclick = () => { app.components.splice(sel, 1); sel = -1; liveDb = null; save(); render(); };
   $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode,
+    liveRow, liveWhy,
     el("label", { textContent: `Schema of “${inst.domain}” — shared by every component on it` }), schemaEditor(inst.domain), rm);
   renderMap();
 }
@@ -258,12 +435,33 @@ function renderMap() {
 }
 
 const renderDef = () => { $("def").textContent = JSON.stringify(app, null, 2); };
+
+/**
+ * The call tree of the last operation.
+ *
+ * Only meaningful over the engine — an in-memory write has no call tree
+ * because there is nothing to call — so before Publish it says so rather
+ * than showing an empty box, which is indistinguishable from a broken one.
+ */
+function renderTracePanel() {
+  const box = $("trace");
+  if (!box) return;
+  if (!publishedDb) {
+    box.replaceChildren(el("p", { className: "note", textContent:
+      "Traces show what an operation actually did on the network. Publish this project first." }));
+    return;
+  }
+  let t = null;
+  try { t = publishedDb.trace(); } catch (_) {}
+  renderTrace(box, t, el);
+}
 function render() {
   $("preview").textContent = preview ? "Back to design" : "Preview";
   document.body.classList.toggle("previewing", preview);
-  renderAddr(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef();
+  renderAddr(); renderPublish(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef(); renderTracePanel();
 }
 
+$("publish").onclick = doPublish;
 $("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; liveDb = null; save(); render(); };
 $("preview").onclick = () => { preview = !preview; liveDb = null; render(); };
 render();
