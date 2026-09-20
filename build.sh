@@ -11,6 +11,26 @@ rev=$(tr -d ' \n' < SDK_REV)
 repo=${CRAFTWORKS_SDK:-../craftworks-sdk}
 [ -d "$repo/.git" ] || { echo "no craftworks-sdk repo at $repo (set CRAFTWORKS_SDK)"; exit 1; }
 
+# KEEP ONLY THE PINNED REVISION.
+#
+# This cache is keyed by revision and used to keep every rev it had ever
+# built, so it grew by roughly half a gigabyte on each SDK_REV bump and
+# nothing ever removed one. Three stale revs were holding 1.5 GB on a machine
+# that had fallen to 7.9 GiB free, where a build or a measurement dies
+# mid-run under 5.
+#
+# Done BEFORE the build, so the space is free when it is needed rather than
+# after. Removing the rev we are about to build would be self-defeating, so
+# it is excluded by name.
+if [ -d .sdk-build ]; then
+  for old in .sdk-build/*/; do
+    old=${old%/}
+    [ "$(basename "$old")" = "$rev" ] && continue
+    echo "  dropping cached SDK build $(basename "$old")"
+    rm -rf "$old"
+  done
+fi
+
 out=.sdk-build/$rev
 if [ ! -f "$out/pkg/web/craftworks_sdk_bg.wasm" ]; then
   git -C "$repo" cat-file -e "$rev^{commit}" 2>/dev/null ||
