@@ -52,3 +52,17 @@ is an alarm in every profile.
 `tests/versions.test.mjs` pins the comparisons; `tests/versions-provenance.test.mjs`
 pins where each value came from, by reading the same artefacts independently. The
 second one is what a constant typed into `versions.js` would fail.
+
+## Screenshots of the versions panel
+
+In `docs/`, committed rather than described, because the screenshot is a gate
+for a REVIEWER and a path on the author's machine renders as nothing for anyone
+else.
+
+| file | state |
+|---|---|
+| `versions-panel-verified.png` | the normal state: the loaded SDK matches the pinned revision |
+| `versions-panel-mismatch.png` | `sdk/` holding one build while `SDK_REV` names another — the failure the panel exists for, reproduced rather than mocked |
+| `versions-panel-contracts.png` | the four contract hashes, read from `freenet-contracts/build/hashes.toml` |
+| `versions-panel-no-drift.png` | a project on the versions it records |
+| `versions-panel-drift.png` | a project pinned to an older SDK and contract, with the upgrade offer |
