@@ -140,27 +140,41 @@ export function appSection(stamped, { baked, sdk = null, probes = {}, tMs = 1500
       ],
     };
   }
-  const rows = [
+  const d = drift(stamped, { baked, sdk });
+  const driftRow =
+    d.length === 0
+      ? {
+          label: "drift",
+          value: "none",
+          state: "ok",
+          note: "the builder is on the versions this project records",
+        }
+      : {
+          label: "drift",
+          value: `${d.length} changed`,
+          state: "info",
+          note:
+            d.map((r) => `${r.what} ${short(r.was)} → ${short(r.is)}`).join(", ") +
+            " — offered, never applied on its own",
+        };
+
+  // Drift FIRST when there is any. It is the state this section exists to
+  // report, and putting it last left it below the fold of a scrolling popover
+  // exactly when it had something to say — visible only in the case where it
+  // read "none".
+  const rows = d.length > 0 ? [driftRow] : [];
+  rows.push(
     { label: "made", value: (stamped.recorded ?? "—").replace(/\.\d+Z$/, "Z"), state: "ok", note: "" },
     { label: "SDK", value: stamped.sdkRev ?? "—", ...sdkState(stamped.sdkRev, sdk) },
-  ];
+  );
   for (const [name, hash] of Object.entries(stamped.contracts ?? {})) {
     const s = codeState(hash, baked?.released, baked?.contracts?.code?.[name]);
     rows.push({ label: name, value: short(hash), state: s.state, note: s.text });
   }
   rows.push(ownBlocksRow(stamped, probes, tMs));
-  const d = drift(stamped, { baked, sdk });
-  rows.push(
-    d.length === 0
-      ? { label: "drift", value: "none", state: "ok", note: "the builder is on the versions this project records" }
-      : {
-          label: "drift",
-          value: `${d.length} changed`,
-          state: "info",
-          note: d.map((r) => `${r.what} ${short(r.was)} → ${short(r.is)}`).join(", ") +
-            " — offered, never applied on its own",
-        },
-  );
+  // When there is no drift the row still belongs, just not at the top: "none"
+  // is worth saying and worth nothing being first.
+  if (d.length === 0) rows.push(driftRow);
   return { title: "this project", rows };
 }
 

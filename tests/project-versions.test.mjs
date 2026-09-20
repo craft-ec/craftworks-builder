@@ -103,6 +103,12 @@ const sdk = { rev: "3bf049a", prollyRev: "e2756c8", formatTag: "PT01", version: 
   assert.strictEqual(row("block").note, "current build, not released");
 
   const moved = appSection(made, { baked, sdk: { ...sdk, rev: "9999999" } });
+  // FIRST when there is drift: it is the state the section exists to report,
+  // and last put it below the fold of a scrolling popover exactly when it had
+  // something to say.
+  assert.strictEqual(moved.rows[0].label, "drift", "drift leads when it is non-empty");
+  assert.strictEqual(s.rows[0].label, "made", "and does not lead when there is none");
+  assert.strictEqual(s.rows.at(-1).label, "drift", "where it still appears, saying none");
   const d = moved.rows.find((r) => r.label === "drift");
   assert.strictEqual(d.value, "1 changed");
   assert.match(d.note, /SDK 3bf049a → 9999999/);
