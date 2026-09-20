@@ -25,6 +25,11 @@ export const TERMINAL = ["parity-complete", "conflict", "failed"];
  * moment the data survives the tab closing. `tone` picks the styling.
  */
 export const STATES = {
+  "in-memory": {
+    label: "in this tab only",
+    tone: "warn",
+    hint: "This project is not published. Nothing here has left the tab, and closing it loses everything.",
+  },
   accepted: {
     label: "saving",
     tone: "working",
@@ -76,6 +81,17 @@ export function show(state) {
     hint: "This version of the builder does not know what this state means.",
   };
 }
+
+/**
+ * What a row shows when the project has not been published.
+ *
+ * Not "saved". An unpublished project's data lives in this tab and nowhere
+ * else, so a row that said "saved" would be claiming exactly the thing
+ * Publish is for — and the person would find out by closing the tab. The
+ * address bar says "in-memory, not published" for the project; this says the
+ * same thing per row, where the decision to close is actually made.
+ */
+export const UNPUBLISHED = "in-memory";
 
 /** Is this write finished, one way or another? */
 export const settled = state => TERMINAL.includes(state);

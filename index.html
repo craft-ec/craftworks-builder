@@ -43,6 +43,13 @@
   .kv code, .tag { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
   .tag { display:inline-block; padding:1px 6px; margin:0 3px 3px 0; border:1px solid var(--line); border-radius:999px; }
   .note { color:var(--mute); margin-top:8px; }
+  .rt-state { font-size:11px; padding:2px 7px; border-radius:99px; white-space:nowrap; }
+  .rt-state.ok { background:#e7f5ec; color:#1c6b3a; }
+  .rt-state.working { background:#fff4e0; color:#8a5a00; }
+  .rt-state.warn { background:#fdf0e3; color:#8a4b00; }
+  .rt-state.bad { background:#fdeaea; color:#a11; }
+  .rt-state.unknown { background:#eee; color:#555; }
+  .rt-live { font-size:11px; margin-left:8px; padding:2px 7px; border-radius:99px; background:#e8eeff; color:#33c; font-weight:600; }
   label.live { display:flex; align-items:center; gap:8px; margin-top:12px; font-weight:600; }
   label.live input { width:auto; margin:0; }
   #live-note { font-size:12px; line-height:1.45; margin-top:4px; }

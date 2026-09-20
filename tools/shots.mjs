@@ -30,8 +30,48 @@ const APP = {
   schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }, { name: "done", kind: "bool" }] } },
 };
 
+const LIVE_APP = {
+  ...APP,
+  components: [APP.components[0], { ...APP.components[1], live: true }],
+};
+
 /** Each shot: what it is FOR, in one line, so a reviewer knows what to look at. */
 const SHOTS = [
+  {
+    name: "row-state-in-memory",
+    what: "Every row says where it actually is. An unpublished project's rows say 'in this tab only' — not 'saved', which is the thing Publish is for.",
+    hash: () => `#preview=1&app=${encodeURIComponent(JSON.stringify(APP))}`,
+    setup: `
+      for (const t of ["Buy milk", "Renew the passport"]) {
+        const i = document.querySelector(".rt-comp input[name=title]");
+        i.value = t;
+        document.querySelector(".rt-comp button.pri").click();
+        await new Promise(r => setTimeout(r, 120));
+      }`,
+    wait: `document.querySelectorAll(".rt-comp tbody tr").length === 2`,
+  },
+  {
+    name: "live-binding-marked",
+    what: "A component whose binding is LIVE says so on its heading, so nobody has to open the properties panel to find out which parts of a screen refresh themselves.",
+    // Starts in DESIGN mode and selects the live component before previewing,
+    // so the properties panel and the badge describe the SAME component. The
+    // first version went straight to preview with the Form selected: the panel
+    // showed LIVE unchecked beside a table badged live, which is true of two
+    // different components and reads as a contradiction. A reviewer would stop
+    // at that, and be right to.
+    hash: () => `#app=${encodeURIComponent(JSON.stringify(LIVE_APP))}`,
+    setup: `
+      document.querySelectorAll('.comp')[1].click();
+      await new Promise(r => setTimeout(r, 80));
+      document.getElementById("preview").click();
+      await new Promise(r => setTimeout(r, 200));
+      const i = document.querySelector(".rt-comp input[name=title]");
+      i.value = "A live list";
+      document.querySelector(".rt-comp button.pri").click();
+      await new Promise(r => setTimeout(r, 150));`,
+    wait2: `document.getElementById("live")?.checked === true`,
+    wait: `!!document.querySelector(".rt-live")`,
+  },
   {
     name: "live-switch-off",
     what: "The LIVE switch in its default state: off, with the line that says what it costs.",
@@ -82,10 +122,26 @@ try {
   let taken = 0;
   for (const shot of SHOTS) {
     if (only && shot.name !== only) continue;
-    await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/${shot.hash()}` });
+    // A UNIQUE QUERY, not just a different hash. Two shots differing only in
+    // the fragment are a FRAGMENT navigation: the browser does not reload, the
+    // app never re-runs, and the second shot photographs the first one's page.
+    // Running a shot alone passed and running the pair failed, which is the
+    // signature — and a flaky gate is one people learn to re-run.
+    await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?shot=${shot.name}${shot.hash()}` });
     await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "the SDK badge");
     if (shot.setup) await evaluate(shot.setup);
-    if (shot.wait) await until(shot.wait, `${shot.name}: ${shot.wait}`);
+    if (shot.wait2) await until(shot.wait2, `${shot.name}: ${shot.wait2}`);
+    if (shot.wait) {
+      try {
+        await until(shot.wait, `${shot.name}: ${shot.wait}`);
+      } catch (e) {
+        // A timeout with no context costs a re-run. Say what the page
+        // actually had, which is almost always the answer.
+        const seen = await evaluate(
+          `return JSON.stringify({ comps: [...document.querySelectorAll(".rt-comp h4")].map(h => h.textContent), live: document.querySelectorAll(".rt-live").length, app: (location.hash.match(/app=([^&]*)/) || [])[1]?.slice(0, 120) })`);
+        throw new Error(`${e.message}\n  page had: ${seen}`);
+      }
+    }
     await sleep(250);
     const r = await send("Page.captureScreenshot", { format: "png" });
     const data = r.result?.data;

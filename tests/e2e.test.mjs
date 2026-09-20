@@ -41,10 +41,36 @@ try {
 
   const rows = `[...document.querySelectorAll(".rt-comp tbody tr")].map(tr => tr.cells[0].textContent)`;
   const tree = `document.querySelector("#tree .path small")?.textContent ?? ""`;
-  const add = title => evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; document.querySelector(".rt-comp button.pri").click();`);
+  // A write is a ROUND TRIP once this runs over the engine, so every helper
+  // here clicks and then WAITS for the screen to catch up. The old ones
+  // clicked and read immediately, which worked only while a write was
+  // synchronous — and failed intermittently the moment it was not, which is
+  // worse than failing every time.
+  const settle = async before => {
+    for (let i = 0; i < 60; i++) {
+      if ((await evaluate(`return ${body}`)) !== before) return;
+      await sleep(50);
+    }
+    throw new Error("the table did not change after a write");
+  };
+  const body = `document.querySelector(".rt-comp tbody")?.textContent ?? ""`;
+  const add = async (title, expectChange = true) => {
+    const before = await evaluate(`return ${body}`);
+    await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; document.querySelector(".rt-comp button.pri").click();`);
+    // A REFUSED write changes nothing, so waiting for a change would hang on
+    // exactly the case the next assertion is about.
+    if (expectChange) await settle(before);
+    else await sleep(150);
+  };
+  /// Click a button and wait for the table to change because of it.
+  const clickAndSettle = async expr => {
+    const before = await evaluate(`return ${body}`);
+    await evaluate(expr);
+    await settle(before);
+  };
 
   // refused write: the required field is blank → message shown, nothing stored
-  await add("");
+  await add("", false);
   assert.match(await evaluate(`return document.querySelector(".rt-err").textContent`), /title.*required/);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), []);
 
@@ -54,12 +80,12 @@ try {
 
   // edit the first row through the UI
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  assert.strictEqual(await evaluate(`return document.querySelector(".rt-comp input[name=title]").value`), "first");
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]").value === "first"`, "the edit form to load the row");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited", "second"]);
 
   // delete the second row
-  await evaluate(`document.querySelectorAll(".rt-comp tbody tr")[1].querySelectorAll("button")[1].click();`);
+  await clickAndSettle(`document.querySelectorAll(".rt-comp tbody tr")[1].querySelectorAll("button")[1].click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited"]);
   assert.match(await evaluate(`return ${tree}`), /1 record\b/);
 
@@ -115,7 +141,7 @@ try {
   //  so two sessions never hold the same keys. See the PR.)
   await add("temporary");
   assert.notStrictEqual(await evaluate(`return ${root}`), r2, "the extra record moved it");
-  await evaluate(`[...document.querySelectorAll(".rt-comp tbody tr")].find(tr => tr.cells[0].textContent === "temporary").querySelectorAll("button")[1].click();`);
+  await clickAndSettle(`[...document.querySelectorAll(".rt-comp tbody tr")].find(tr => tr.cells[0].textContent === "temporary").querySelectorAll("button")[1].click();`);
   assert.strictEqual(await evaluate(`return ${root}`), r2, "same contents, same root");
 
   // An edit and an edit BACK does not restore the root, and that is right: a
@@ -123,10 +149,12 @@ try {
   // different CONTENTS. The root follows the contents, not the screen.
   const r3 = await evaluate(`return ${root}`);
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "changed"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]")?.value === "first, edited"`, "the edit form");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "changed"; document.querySelector(".rt-comp button.pri").click();`);
   assert.notStrictEqual(await evaluate(`return ${root}`), r3, "an edit moves it");
   await evaluate(`document.querySelector(".rt-comp tbody tr button").click();`);
-  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelector(".rt-comp input[name=title]")?.value === "changed"`, "the edit form again");
+  await clickAndSettle(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "first, edited"; document.querySelector(".rt-comp button.pri").click();`);
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["first, edited", "third"], "the title is back");
   assert.notStrictEqual(
     await evaluate(`return ${root}`),
@@ -143,11 +171,19 @@ try {
   assert.strictEqual(await evaluate(`return ${root}`), before, "a refused write must not move the root");
 
   // Delete everything: back to the empty tree.
-  await evaluate(`
-    let guard = 0;
-    while (document.querySelector(".rt-comp tbody tr") && guard++ < 50)
-      document.querySelector(".rt-comp tbody tr").querySelectorAll("button")[1].click();
-  `);
+  //
+  // One click, then WAIT for the row to go, then the next. The old loop
+  // clicked fifty times inside one synchronous pass, which worked only while a
+  // write was synchronous — it clicked the same stale button over and over and
+  // removed one row. A write is a round trip once this runs over the engine,
+  // so the test drives it the way a person does: act, wait for the screen to
+  // catch up, act again.
+  for (let guard = 0; guard < 50; guard++) {
+    const left = await evaluate(`return document.querySelectorAll(".rt-comp tbody tr").length`);
+    if (left === 0) break;
+    await evaluate(`document.querySelector(".rt-comp tbody tr").querySelectorAll("button")[1].click();`);
+    await until(`document.querySelectorAll(".rt-comp tbody tr").length < ${left}`, `a row to be deleted (${left} left)`);
+  }
   assert.deepStrictEqual(await evaluate(`return ${rows}`), []);
   const empty = await evaluate(`return ${root}`);
   assert.notStrictEqual(empty, before);
@@ -173,5 +209,7 @@ try {
   done(0);
 } catch (e) {
   console.error("e2e FAILED:", e.message);
+  // The line that failed, because a diff with no location costs a re-run.
+  console.error(String(e.stack).split("\n").filter(l => l.includes("e2e.test")).slice(0, 2).join("\n"));
   done(1);
 }

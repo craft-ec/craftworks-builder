@@ -1,6 +1,6 @@
 // The write-state vocabulary: what a row says, and what it must never say.
 import assert from "node:assert/strict";
-import { STATES, ORDER, show, settled, durable, isLive, LIVE_NOTE } from "../publish-state.js";
+import { STATES, ORDER, show, settled, durable, isLive, LIVE_NOTE, UNPUBLISHED } from "../publish-state.js";
 
 // Every state a write can reach has a description. A state the SDK reports
 // and this table has never heard of is the failure mode being guarded.
@@ -52,5 +52,13 @@ assert.ok(LIVE_NOTE.length <= 160, `the live note is ${LIVE_NOTE.length} chars; 
 assert.ok(/chat|feed|counter/i.test(LIVE_NOTE), "the note does not say what kind of data this is for");
 assert.ok(!/subscri|delta|engine|binding/i.test(LIVE_NOTE.replace("standing connection", "")),
   `the live note uses jargon: ${LIVE_NOTE}`);
+
+// An UNPUBLISHED project's rows must not say "saved". The data is in one tab
+// and nowhere else; a row claiming otherwise is claiming the exact thing
+// Publish is for, and the person finds out by closing the tab.
+assert.ok(STATES[UNPUBLISHED], "no description for the unpublished state");
+assert.equal(durable(UNPUBLISHED), false, "an unpublished row was reported as durable");
+assert.notEqual(STATES[UNPUBLISHED].label, STATES.published.label);
+assert.match(STATES[UNPUBLISHED].hint, /clos/i, "the unpublished hint does not say what closing the tab costs");
 
 console.log("ok publish-state");
