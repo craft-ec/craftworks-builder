@@ -32,12 +32,44 @@ if [ -d .sdk-build ]; then
 fi
 
 out=.sdk-build/$rev
-if [ ! -f "$out/pkg/web/craftworks_sdk_bg.wasm" ]; then
+
+# A CACHE HIT MEANS COMPLETE, NOT PRESENT.
+#
+# This asked whether ONE file existed — `pkg/web/craftworks_sdk_bg.wasm`,
+# which the SDK's build produces partway through. A run interrupted after
+# that point, by a failed environment or a killed terminal, leaves a
+# directory that answers YES and is missing everything after it. Every run
+# afterwards takes the hit, skips the build, and dies at the copy with
+# "the SDK build has no engine_delegate.wasm" — which reads like a broken
+# SDK rather than like a cache holding half a build. It cost three runs
+# before anyone doubted the cache.
+#
+# So the question is answered by a marker written LAST, after the build has
+# exited 0 and every artefact this script copies is present. A partial
+# directory has no marker, is a MISS, and is rebuilt.
+complete=$out/.complete
+if [ ! -f "$complete" ]; then
   git -C "$repo" cat-file -e "$rev^{commit}" 2>/dev/null ||
     { echo "craftworks-sdk has no commit $rev — run: git -C $repo fetch"; exit 1; }
+  [ -d "$out" ] && echo "  cached SDK build $rev is incomplete — rebuilding"
   rm -rf "$out" && mkdir -p "$out"
   git -C "$repo" archive "$rev" | tar -x -C "$out"
-  (cd "$out" && ./build.sh >/dev/null)
+  # CHECKED. Without this the build could fail and the script carried on to
+  # the copy, so a compile error also arrived as a missing-file message.
+  if ! (cd "$out" && ./build.sh >/dev/null); then
+    echo "the SDK build failed for $rev — see: (cd $out && ./build.sh)" >&2
+    exit 1
+  fi
+  # EVERY artefact this script goes on to copy, named here so the marker
+  # cannot be written over a build that produced only some of them.
+  for want in pkg/web/craftworks_sdk_bg.wasm pkg/web/engine_delegate.wasm; do
+    [ -f "$out/$want" ] || {
+      echo "the SDK build for $rev exited 0 without producing $want" >&2
+      exit 1
+    }
+  done
+  # LAST. Anything that fails above leaves no marker, so the next run rebuilds.
+  : > "$complete"
 fi
 
 rm -rf sdk && mkdir sdk
