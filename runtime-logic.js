@@ -61,8 +61,22 @@ export const domainsOf = app => [...new Set(app.components.map(c => c.domain).fi
  */
 export async function openApp(sdk, app, db = new sdk.Db()) {
   const problems = [];
+  // THE SCHEMAS THIS APP IS OPENED WITH, returned rather than read back.
+  //
+  // These are the exact values handed to `define`, so they are what the
+  // domains ARE. Reading them back from the db was a round trip to learn
+  // something already in hand, and over the engine-backed backend it was a
+  // round trip that can legitimately answer "not loaded yet" — which a
+  // renderer then had to turn into either a wrong screen or a wait.
+  //
+  // Measured: it answered exactly that, against a real node, moments after a
+  // publish. Both components rendered "No schema for “notes”." for a domain
+  // whose schema was three lines above in the app definition.
+  const schemas = {};
   for (const d of domainsOf(app)) {
-    try { await db.define(d, app.schemas?.[d] ?? defaultSchema(d)); }
+    const schema = app.schemas?.[d] ?? defaultSchema(d);
+    schemas[d] = schema;
+    try { await db.define(d, schema); }
     catch (e) { problems.push(`${d}: ${e.message}`); }
   }
   for (const [d, rows] of Object.entries(app.seed ?? {})) {
@@ -70,7 +84,7 @@ export async function openApp(sdk, app, db = new sdk.Db()) {
       try { await db.put(d, row); } catch (e) { problems.push(`${d} seed: ${e.message}`); }
     }
   }
-  return { db, problems };
+  return { db, problems, schemas };
 }
 
 /**

@@ -7,6 +7,7 @@ import { defaultSchema, KINDS, preloadManifest } from "./runtime-logic.js";
 import { LIVE_NOTE, isLive } from "./publish-state.js";
 import { buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
+import { treeStats, NO_ROOT } from "./tree-stats.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -28,6 +29,20 @@ let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("
 let publishedDb = null, mounting = false;
 // Where publishing has got to, and what went wrong if it did.
 let publishPhase = "idle", publishError = "";
+/**
+ * Record counts per domain, resolved asynchronously and READ synchronously.
+ *
+ * The tree panel renders in one pass, and `db.count` is a round trip on the
+ * engine-backed backend. So the round trip happens where the db tells us
+ * something changed, and the panel reads what it produced.
+ */
+const counts = {};
+async function refreshCounts(db, app) {
+  if (!db) return;
+  for (const d of new Set(app.components.map(c => c.domain))) {
+    try { counts[d] = await db.count(d); } catch (_) { delete counts[d]; }
+  }
+}
 
 // The panel's baked half renders at once; the SDK's self-report is filled in
 // when the wasm arrives. It does NOT force a load: a panel that pulled in the
@@ -230,7 +245,14 @@ function renderCanvas() {
     // app twice — two engines, two sets of writes, one canvas.
     if (!mounting) {
       mounting = true;
-      mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); }, publishedDb, publishPhase)
+      mountApp($("canvas"), sdkReady, app, db => {
+        liveDb = db;
+        renderTree();
+        // The counts the panel just rendered without. Resolved after, and the
+        // panel is drawn again with them — one extra pass, and the number is
+        // a number.
+        refreshCounts(db, app).then(renderTree);
+      }, publishedDb, publishPhase)
         .then(db => { liveDb = db; })
         .catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
     }
@@ -250,7 +272,15 @@ function pathRow(path, idxs, isSet) {
   const hl = sel >= 0 && usesPath(sel, path);
   const m = !isSet && /^d\/([^/]+)\//.exec(path);
   let live = "";
-  if (preview && liveDb && m) { try { const n = liveDb.count(m[1]); live = ` — ${n} record${n === 1 ? "" : "s"}`; } catch (_) {} }
+  // FROM THE RESOLVED MAP, never by calling the db here.
+  //
+  // `count` is synchronous on the in-memory backend and ASYNC on the
+  // engine-backed one, and this row is rendered synchronously. Calling it
+  // here put a Promise in the string: once a project was published the tree
+  // panel read "— [object Promise] records", which is a wrong number shown to
+  // a person rather than a crash, so nothing would have reported it.
+  const n = counts[m?.[1]];
+  if (preview && m && n !== undefined) live = ` — ${n} record${n === 1 ? "" : "s"}`;
   const row = el("span", { className: "path" + (isSet ? " set" : "") + (hl ? " hl" : "") }, path,
     el("small", { textContent: idxs.map(i => byType[app.components[i].type].label).join(" · ") + live }));
   row.onmouseenter = () => { hoverPath = path; renderCanvas(); };
@@ -270,6 +300,24 @@ function renderRoot() {
   const root = liveDb.root();
   if (!freezeRoot() || shownRoot === null) shownRoot = root;
   const s = liveDb.stats();
+  // NO ROOT YET IS A FACT, NOT A BLANK.
+  //
+  // `root()` answers "" when the store cannot state its root — deliberately,
+  // because a zero root would render as a real tree that happens to be empty,
+  // which is the NotLoaded-versus-empty confusion the SDK exists to keep
+  // apart. It is the ORDINARY state for the first moments after a publish,
+  // before any range has landed.
+  //
+  // `parseBlockId("")` throws. Unguarded, that throw came out of `onData`
+  // inside `mountApp` and the catch there replaced the whole canvas with the
+  // exception text — the app gone, the publish button still saying Published.
+  if (!root) {
+    $("tree-root").replaceChildren(
+      el("div", { className: "h" }, el("code", { textContent: "root" }), "this tree, in 32 bytes"),
+      el("div", { className: "root" }, el("span", { className: "muted", textContent: NO_ROOT })),
+      el("div", { className: "rootstats", id: "root-stats" }, ...rootStats(s)));
+    return;
+  }
   // A root is a block id: `node:<64 hex>`. The SDK splits it, rather than this
   // file splitting on ":" — the format belongs to the SDK, and an app that
   // takes a copy of it is how the tag and the hex drift apart.
@@ -286,10 +334,16 @@ function renderRoot() {
       el("span", { className: "tag", id: "root-tag", textContent: tag, title: "the kind of block this id names" }),
       el("code", { id: "root-hash", textContent: hex.slice(0, 12) + "\u2026", title: shownRoot }),
       copy),
-    el("div", { className: "rootstats", id: "root-stats" },
-      el("span", { textContent: `height ${s.height}` }),
-      el("span", { textContent: `${s.blocks} blocks` }),
-      el("span", { textContent: `${s.bytes.toLocaleString()} B` })));
+    el("div", { className: "rootstats", id: "root-stats" }, ...rootStats(s)));
+}
+
+/** The stat chips, decided in `tree-stats.js` and rendered here. */
+function rootStats(s) {
+  return treeStats(s).map(c => el("span", {
+    className: c.tone ?? "",
+    textContent: c.text,
+    ...(c.title ? { title: c.title } : {}),
+  }));
 }
 
 function renderTree() {

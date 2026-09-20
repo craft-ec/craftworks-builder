@@ -11,7 +11,7 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * (the builder's tree panel) can show live counts. Returns the db.
  */
 export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle") {
-  const { db, problems } = await openApp(sdk, app, backend ?? new sdk.Db());
+  const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db());
   const editing = {}; // domain → record being edited
 
   // ONE BINDING PER COMPONENT, and components read its snapshot rather than
@@ -24,6 +24,28 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // Reloading is a ROUND TRIP once this is over the engine, so it is awaited
   // even though the in-memory backend answers at once. Writing it synchronous
   // now and async later is how one surface becomes two.
+  // THE SCHEMAS COME FROM `openApp`, NOT FROM A READ.
+  //
+  // `db.schema(domain)` is SYNCHRONOUS on the in-memory backend and ASYNC on
+  // the engine-backed one — a schema is a read, and a read over the network
+  // can answer "not loaded yet". `render` is synchronous and is called from a
+  // dozen places, so calling it there returned a Promise, which is truthy: it
+  // sailed past the `!schema` guard below into `schema.fields.map`.
+  //
+  // MEASURED, twice, against a real node:
+  //   * calling it in `render` replaced the whole canvas with "Cannot read
+  //     properties of undefined (reading 'map')" the moment the backend
+  //     switched — the button said Published and the app was gone;
+  //   * awaiting it at mount instead got a transient NotLoaded and rendered
+  //     "No schema for “notes”." for a domain the app had just defined.
+  //
+  // The second one is the lesson: the round trip was never needed. `openApp`
+  // is handed these schemas and passes them to `define`, so it knows what
+  // every domain IS. Asking the network to say it back is a question that can
+  // only add failure modes, and NotLoaded is not "no schema" — that is the
+  // distinction the whole cached-read layer exists for, and collapsing it is
+  // how a transient becomes a wrong screen.
+
   const refresh = async () => { for (const b of bindings) await b.reload(); };
   const changed = async () => { await refresh(); render(); onData(db); };
   const guard = async (fn, box) => { try { await fn(); box.textContent = ""; } catch (e) { box.textContent = e.message; } };
@@ -97,7 +119,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     root.replaceChildren(
       ...problems.map(p => el("p", { className: "rt-err", textContent: p })),
       ...app.components.map((inst, i) => {
-        const schema = db.schema(inst.domain);
+        const schema = schemas[inst.domain];
         const body = !schema ? el("p", { className: "rt-err", textContent: `No schema for “${inst.domain}”.` })
           : RENDER[inst.type] ? RENDER[inst.type](inst, schema, i)
           : el("p", { className: "rt-empty", textContent: `${byType[inst.type]?.label ?? inst.type} runs once its substrate lands (phase ${byType[inst.type]?.phase}).` });
@@ -108,7 +130,36 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
       }));
   }
 
+  // LOAD BEFORE THE FIRST FRAME.
+  //
+  // A binding starts EMPTY on the engine-backed backend — its rows come over
+  // the network — and the in-memory one used to fill in its constructor. So
+  // rendering before any reload showed rows in a preview and an empty table
+  // the moment the project was published: the same component, the same code,
+  // two different screens, which is the one thing this file promises cannot
+  // happen (craftworks-sdk#87 makes both start empty, so this is now the only
+  // thing that fills them).
+  //
+  // Awaited, like every other reload here: the round trip is the part that is
+  // not synchronous.
+  await refresh();
+
   render();
   onData(db);
+
+  // THE ACCEPTANCE SEAM.
+  //
+  // Two tabs on one node cannot be checked from inside the page. The question
+  // the acceptance asks is which MECHANISM told the second tab — a head
+  // subscription, or its own tick — and that is a fact about the session, not
+  // about the DOM. Counting rows cannot tell the two apart, and a table built
+  // from a row count would report "live works" over a number the tick
+  // produced.
+  //
+  // So one handle, named and documented, rather than a hook invented per run:
+  // a harness that reaches in a different way each time ends up measuring
+  // itself. Read-only by intent — nothing in this file reads it back.
+  globalThis.__craftworks = { db, app, phase };
+
   return db;
 }

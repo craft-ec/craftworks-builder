@@ -206,6 +206,109 @@ try {
   assert.deepStrictEqual(await evaluate(`return ${rows}`), ["one", "two"], "while the tree really did change");
   console.log("ok e2e control: a panel that stops following the tree is detected");
 
+  // ---------------------------------------------------------------------
+  // THE BACKEND THAT ANSWERS LATER.
+  //
+  // Every other test in this file — and every other test in this repo — runs
+  // the app over the IN-MEMORY database, whose reads are synchronous. The
+  // engine-backed one's are not: a cold `schema`, `count` or `scan` is a read
+  // over the network, so it returns a Promise.
+  //
+  // That is a difference no existing test could see, because all of them
+  // share the sync backend. What it cost: `render` called `db.schema(domain)`
+  // synchronously, a Promise is truthy, so it went straight past the
+  // `!schema` guard into `schema.fields.map` — and PUBLISHING A PROJECT
+  // REPLACED THE WHOLE APP with "Cannot read properties of undefined (reading
+  // 'map')". The button said Published. It fired only after the backend
+  // switched, which is precisely the moment this repo claims nothing changes.
+  //
+  // So: mount over a backend that answers LATER, and require the app to be
+  // there. No node and no network — the async-ness is the whole subject.
+  {
+    const mounted = await evaluate(`
+      const { mountApp } = await import("./runtime.js");
+      // A hand-rolled backend. Every READ resolves on a later turn, which is
+      // the only thing that distinguishes it from the in-memory one.
+      const later = v => new Promise(r => setTimeout(() => r(v), 0));
+      const rows = [];
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text", required: true }] };
+      let snap = [];
+      const db = {
+        define: async () => {},
+        put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
+        update: async () => {}, delete: async () => {},
+        // A SCHEMA READ THAT REFUSES, the way a cold one really can.
+        // The runtime must not need it: openApp was handed the schema and
+        // passed it to define, so asking the network to say it back is a
+        // question that can only add failure modes. Measured against a real
+        // node: it answered NotLoaded moments after a publish and both
+        // components rendered "No schema" for a domain just defined.
+        schema: () => { const e = new Error("this range has not been loaded yet"); e.code = "NOT_LOADED"; return Promise.reject(e); },
+        domains: () => later(["notes"]),
+        count: d => later(rows.length),
+        scan: () => later(rows.slice()),
+        get: () => later(null),
+        bind: () => ({ getSnapshot: () => snap, reload: async () => { snap = rows.slice(); }, liveMode: () => ({ mode: "Polled" }) }),
+        liveMode: () => ({ mode: "Polled" }),
+      };
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const app = {
+        components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA },
+        // A SEED ROW, so the table has something to fail to show. A binding
+        // starts empty on the engine-backed backend, so a mount that renders
+        // before reloading draws an empty table — in a preview it would have
+        // been full, which is the two-screens-one-component failure.
+        seed: { notes: [{ title: "seeded" }] },
+      };
+      await mountApp(root, {}, app, () => {}, db, "published");
+      return {
+        inputs: root.querySelectorAll("input[name=title]").length,
+        comps: root.querySelectorAll(".rt-comp").length,
+        rows: root.querySelectorAll("tbody tr").length,
+        errors: [...root.querySelectorAll(".rt-err")].map(e => e.textContent).filter(Boolean),
+      };`);
+    assert.strictEqual(mounted.comps, 2, "the app did not mount over an async backend at all");
+    assert.strictEqual(mounted.inputs, 1,
+      "the form is not there over a backend whose reads answer later — which is what publishing switches to");
+    assert.deepStrictEqual(mounted.errors, [],
+      `the app mounted with errors on screen: ${JSON.stringify(mounted.errors)}`);
+    assert.strictEqual(mounted.rows, 1,
+      "the table is EMPTY on a backend whose bindings start empty. The first " +
+      "frame was drawn before anything reloaded, so a preview would have shown " +
+      "the row and a published project would not — the same component, two screens");
+    console.log("ok e2e: the app mounts over a backend whose reads answer LATER, fills its table, and its schema read REFUSES");
+  }
+
+  // THE CONTROL. The same mount with SYNCHRONOUS reads must also work —
+  // otherwise the test above would pass on a runtime that had simply stopped
+  // reading schemas at all, and both backends have to keep working.
+  {
+    const mounted = await evaluate(`
+      const { mountApp } = await import("./runtime.js");
+      const rows = [];
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text", required: true }] };
+      let snap = [];
+      const db = {
+        define: async () => {}, update: async () => {}, delete: async () => {},
+        put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
+        schema: () => SCHEMA, domains: () => ["notes"], count: () => rows.length,
+        scan: () => rows.slice(), get: () => null,
+        bind: () => ({ getSnapshot: () => snap, reload: async () => { snap = rows.slice(); }, liveMode: () => ({ mode: "Polled" }) }),
+        liveMode: () => ({ mode: "Polled" }),
+      };
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      await mountApp(root, {}, {
+        components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA },
+      }, () => {}, db, "published");
+      return { inputs: root.querySelectorAll("input[name=title]").length };`);
+    assert.strictEqual(mounted.inputs, 1, "the synchronous backend stopped working");
+    console.log("ok e2e CONTROL: and over one whose reads answer at once");
+  }
+
   done(0);
 } catch (e) {
   console.error("e2e FAILED:", e.message);
