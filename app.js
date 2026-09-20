@@ -4,6 +4,7 @@ import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
 import { defaultSchema, KINDS } from "./runtime-logic.js";
+import { LIVE_NOTE, isLive } from "./publish-state.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -209,9 +210,27 @@ function renderProps() {
   const mode = el("select");
   c.modes.forEach(m => mode.append(el("option", { value: m, textContent: m, selected: m === inst.mode })));
   mode.onchange = () => { inst.mode = mode.value; save(); render(); };
+  // LIVE, per binding, DEFAULT OFF. A subscription is a standing cost paid
+  // continuously, so it is the app author who says which of their data is
+  // worth it — nothing turns it on by inference, and an existing project
+  // opened in a newer builder stays off because `isLive` requires exactly
+  // `true` rather than anything truthy.
+  const live = el("input", { type: "checkbox", id: "live", checked: isLive(inst) });
+  live.onchange = () => {
+    // Written only when ON. An `inst.live = false` on every component would
+    // put a key in every project definition to say the default, which is how
+    // a definition stops being readable.
+    if (live.checked) inst.live = true; else delete inst.live;
+    liveDb = null; save(); render();
+  };
+  const liveRow = el("label", { className: "live" }, live,
+    el("span", { textContent: "Live — updates by itself" }));
+  const liveWhy = el("p", { className: "note", id: "live-note", textContent: LIVE_NOTE });
+
   const rm = el("button", { textContent: "Remove", style: "margin-top:12px" });
   rm.onclick = () => { app.components.splice(sel, 1); sel = -1; liveDb = null; save(); render(); };
   $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode,
+    liveRow, liveWhy,
     el("label", { textContent: `Schema of “${inst.domain}” — shared by every component on it` }), schemaEditor(inst.domain), rm);
   renderMap();
 }

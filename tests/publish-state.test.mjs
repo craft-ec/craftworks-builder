@@ -1,0 +1,56 @@
+// The write-state vocabulary: what a row says, and what it must never say.
+import assert from "node:assert/strict";
+import { STATES, ORDER, show, settled, durable, isLive, LIVE_NOTE } from "../publish-state.js";
+
+// Every state a write can reach has a description. A state the SDK reports
+// and this table has never heard of is the failure mode being guarded.
+for (const s of ORDER) {
+  assert.ok(STATES[s], `no description for ${s}`);
+  assert.ok(STATES[s].hint.length > 20, `${s} has no explanation, only a label`);
+}
+
+// The distinction the whole panel exists for: "saving" is NOT safe to close.
+assert.equal(durable("accepted"), false, "accepted was reported as durable — a user told that will close the tab");
+assert.equal(durable("published"), true);
+assert.equal(durable("parity-complete"), true);
+assert.equal(durable("failed"), false);
+
+// Three different facts, three different labels. A row that showed the same
+// word for "saving" and "saved" would be the spinner this replaces.
+const labels = ORDER.map(s => STATES[s].label);
+assert.equal(new Set(labels).size, labels.length, `two states share a label: ${labels}`);
+
+// And the two that are NOT terminal must not read as finished.
+assert.equal(settled("accepted"), false);
+assert.equal(settled("published"), false, "published is not the end — parity is still owed");
+assert.equal(settled("parity-complete"), true);
+assert.equal(settled("failed"), true);
+assert.equal(settled("conflict"), true);
+
+// An unknown state is shown AS ITSELF, never as a guess.
+const unknown = show("some-future-state");
+assert.equal(unknown.label, "some-future-state", "an unknown state was given a made-up label");
+assert.equal(unknown.tone, "unknown");
+assert.notEqual(unknown.label, STATES.accepted.label, "an unknown state was shown as 'saving', which claims a fact nobody checked");
+
+// LIVE is off unless it was turned on. Absence is not liveness — an
+// `undefined` read as truthy would make every existing project live on
+// upgrade, with a standing subscription per component nobody asked for.
+assert.equal(isLive(undefined), false);
+assert.equal(isLive({}), false, "a component with no `live` key was treated as live");
+assert.equal(isLive({ live: false }), false);
+assert.equal(isLive({ live: "yes" }), false, "a truthy non-true value was treated as live");
+assert.equal(isLive({ live: true }), true);
+
+// The note says what it costs and what it is for, in words with no jargon —
+// and is SHORT. "One line" is about what renders beside a checkbox, not about
+// how it is written: the first version was sixty words, every one of them
+// true, and it filled six lines of the properties panel. A screenshot showed
+// that and no assertion could have, so the length is pinned here too.
+assert.ok(/[Cc]osts/.test(LIVE_NOTE), "the live note does not say what it costs");
+assert.ok(LIVE_NOTE.length <= 160, `the live note is ${LIVE_NOTE.length} chars; it renders as a paragraph, not a line`);
+assert.ok(/chat|feed|counter/i.test(LIVE_NOTE), "the note does not say what kind of data this is for");
+assert.ok(!/subscri|delta|engine|binding/i.test(LIVE_NOTE.replace("standing connection", "")),
+  `the live note uses jargon: ${LIVE_NOTE}`);
+
+console.log("ok publish-state");
