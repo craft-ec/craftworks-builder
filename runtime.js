@@ -84,7 +84,14 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     save.onclick = () => guard(async () => {
       const raw = Object.fromEntries(schema.fields.map(f => [f.name, f.kind === "bool" ? inputs[f.name].checked : inputs[f.name].value]));
       const fields = toFields(schema, raw);
-      if (rec) db.update(inst.domain, rec.id, fields); else db.put(inst.domain, fields);
+      // AWAITED. Both are async on the engine-backed backend — a write is a
+      // round trip — so an unawaited one hands `guard` a promise it never
+      // looks at: a REFUSED write showed no message at all on a published
+      // project, and the rejection went unhandled. It only ever appeared to
+      // work because the in-memory backend threw synchronously
+      // (craftworks-sdk#87 makes both async, which is what caught this).
+      if (rec) await db.update(inst.domain, rec.id, fields);
+      else await db.put(inst.domain, fields);
       delete editing[inst.domain];
       await changed();
     }, err);
@@ -94,7 +101,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
 
   const actions = (inst, r) => el("span", { className: "rt-actions" },
     el("button", { textContent: "Edit", onclick: () => { editing[inst.domain] = r; render(); } }),
-    el("button", { textContent: "Delete", onclick: async () => { db.delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
+    el("button", { textContent: "Delete", onclick: async () => { await db.delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
 
   function table(inst, schema, i) {
     const recs = bindings[i].getSnapshot();
