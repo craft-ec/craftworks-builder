@@ -10,8 +10,8 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export function mountApp(root, sdk, app, onData = () => {}) {
-  const { db, problems } = openApp(sdk, app);
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null) {
+  const { db, problems } = await openApp(sdk, app, backend ?? new sdk.Db());
   const editing = {}; // domain → record being edited
 
   // ONE BINDING PER COMPONENT, and components read its snapshot rather than

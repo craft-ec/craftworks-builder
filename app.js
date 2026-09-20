@@ -3,8 +3,10 @@ import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
-import { defaultSchema, KINDS } from "./runtime-logic.js";
+import { defaultSchema, KINDS, preloadManifest } from "./runtime-logic.js";
 import { LIVE_NOTE, isLive } from "./publish-state.js";
+import { buttonFor, publish } from "./publish.js";
+import { render as renderTrace } from "./trace-view.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -21,6 +23,11 @@ const save = () => { try { localStorage.setItem("craftec.builder.app.v2", JSON.s
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
+// The engine-backed database, once Publish has switched the backend, and a
+// sentinel so an async mount cannot be started twice.
+let publishedDb = null, mounting = false;
+// Where publishing has got to, and what went wrong if it did.
+let publishPhase = "idle", publishError = "";
 
 // The panel's baked half renders at once; the SDK's self-report is filled in
 // when the wasm arrives. It does NOT force a load: a panel that pulled in the
@@ -108,10 +115,71 @@ loadSdk().then(
 
 function renderAddr() {
   const { realm, identity } = app.tree;
+  // The address bar stops saying "in-memory, not published" when the project
+  // IS published — and not a moment before. It is the one line a person reads
+  // to decide whether closing the tab loses their work, so it tracks what the
+  // node has actually confirmed rather than what was asked for.
+  const note = publishPhase === "published" ? "" : "  · in-memory, not published";
   $("tree-addr").replaceChildren(
     "craftec://", el("b", { textContent: realm }), "/", el("b", { textContent: identity ?? "‹you›" }), "/",
-    el("span", { textContent: identity ? "" : "  · in-memory, not published" }),
+    el("span", { textContent: note }),
   );
+}
+
+function renderPublish() {
+  const b = buttonFor(publishPhase, { error: publishError });
+  const btn = $("publish");
+  btn.textContent = b.label;
+  btn.disabled = !b.enabled;
+  btn.title = b.hint;
+  btn.className = `pri ${b.tone}`.trim();
+}
+
+/**
+ * Publish this project: move it off this tab and onto the node.
+ *
+ * Every decision below this call is in Rust — what to send, whether the node
+ * is already set up, whether an install would destroy a key. The delegate
+ * refuses a second install on its own, so pressing this twice cannot cost a
+ * signing key however many times it is pressed.
+ */
+async function doPublish() {
+  if (!sdkReady) return;
+  publishError = "";
+  try {
+    const { db } = await publish(app, {
+      open: sdkReady.open,
+      artefacts: sdkReady.SHIPPED_ARTEFACTS,
+    }, (phase, err = "") => {
+      publishPhase = phase;
+      publishError = err;
+      renderPublish(); renderAddr();
+    });
+    // PRELOAD before the first frame, so a read the canvas is about to make
+    // is answered from memory instead of from a round trip. Generated from
+    // the canvas: a domain nobody has placed a component for is not read on
+    // open, and fetching it would spend the first frame on data nothing
+    // shows. Naming DOMAINS and not key ranges is deliberate — what a range
+    // is, is the SDK's business (craftworks-sdk#66).
+    //
+    // A preload that fails is not a failed publish. The data is all still
+    // reachable; the first read simply pays for it. So it is recorded and
+    // the publish goes on.
+    try { await db.preload(preloadManifest(app)); }
+    catch (e) { publishError = `preload: ${e.message}`; }
+
+    // The backend is switched by REMOUNTING on the new database: the app
+    // definition, the components and the bindings are all rebuilt against it.
+    // Nothing in the app changes, which is the whole promise of Publish.
+    publishedDb = db;
+    liveDb = null; mounting = false;
+    publishPhase = "published";
+    render();
+  } catch (e) {
+    publishPhase = "failed";
+    publishError = e.message;
+    renderPublish(); renderAddr();
+  }
 }
 
 function renderPalette() {
@@ -129,7 +197,15 @@ function usesPath(i, path) { const m = mapping(app.components[i]); return m.keys
 function renderCanvas() {
   if (preview) {
     if (!sdkReady) { $("canvas").replaceChildren(el("p", { className: "empty", textContent: "Loading the SDK…" })); return; }
-    if (!liveDb) liveDb = mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); });
+    // Guarded by a SENTINEL rather than by `liveDb`: mounting is async now,
+    // and a second render arriving before the first finished would mount the
+    // app twice — two engines, two sets of writes, one canvas.
+    if (!mounting) {
+      mounting = true;
+      mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); }, publishedDb)
+        .then(db => { liveDb = db; })
+        .catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
+    }
     return;
   }
   $("canvas").replaceChildren(...(app.components.length ? app.components.map((inst, i) => {
@@ -277,12 +353,33 @@ function renderMap() {
 }
 
 const renderDef = () => { $("def").textContent = JSON.stringify(app, null, 2); };
+
+/**
+ * The call tree of the last operation.
+ *
+ * Only meaningful over the engine — an in-memory write has no call tree
+ * because there is nothing to call — so before Publish it says so rather
+ * than showing an empty box, which is indistinguishable from a broken one.
+ */
+function renderTracePanel() {
+  const box = $("trace");
+  if (!box) return;
+  if (!publishedDb) {
+    box.replaceChildren(el("p", { className: "note", textContent:
+      "Traces show what an operation actually did on the network. Publish this project first." }));
+    return;
+  }
+  let t = null;
+  try { t = publishedDb.trace(); } catch (_) {}
+  renderTrace(box, t, el);
+}
 function render() {
   $("preview").textContent = preview ? "Back to design" : "Preview";
   document.body.classList.toggle("previewing", preview);
-  renderAddr(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef();
+  renderAddr(); renderPublish(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef(); renderTracePanel();
 }
 
+$("publish").onclick = doPublish;
 $("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; liveDb = null; save(); render(); };
 $("preview").onclick = () => { preview = !preview; liveDb = null; render(); };
 render();

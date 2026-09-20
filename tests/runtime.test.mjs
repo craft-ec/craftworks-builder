@@ -28,7 +28,7 @@ const app = { components: [{ type: "table", domain: "tasks" }, { type: "form", d
   schemas: { notes: { type: "Note", fields: [{ name: "text", kind: "text", required: true }] } },
   seed: { tasks: [{ title: "one" }, { title: 7 }, { title: "two", done: true }], notes: [{ text: "hi" }] } };
 assert.deepStrictEqual(domainsOf(app), ["tasks", "notes"]);
-const { db, problems } = openApp(sdk, app);
+const { db, problems } = await openApp(sdk, app);
 assert.deepStrictEqual(db.domains(), ["notes", "tasks"]);
 assert.strictEqual(db.count("tasks"), 2);
 assert.strictEqual(db.count("notes"), 1);
