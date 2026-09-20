@@ -1,5 +1,6 @@
 import { loadSdk } from "./sdk-loader.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
+import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
 import { defaultSchema, KINDS } from "./runtime-logic.js";
@@ -23,10 +24,65 @@ let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("
 // The panel's baked half renders at once; the SDK's self-report is filled in
 // when the wasm arrives. It does NOT force a load: a panel that pulled in the
 // wasm on every page view to read one string would cost more than it tells.
-let versionsPanel = null, sdkSelfReport = null;
+let versionsPanel = null, sdkSelfReport = null, bakedInfo = null;
 readBuildInfo().then(baked => {
-  versionsPanel = mountVersions($("versions"), { baked, getSdk: () => sdkSelfReport });
+  bakedInfo = baked;
+  versionsPanel = mountVersions($("versions"), {
+    baked,
+    getSdk: () => sdkSelfReport,
+    getProject: () => app.versions ?? null,
+  });
+  stampIfNew();
+  offerUpgrade();
 });
+
+// A project records the versions it was MADE with (ARCHITECTURE §19), because
+// the builder opens and republishes it against THOSE and not against whatever
+// is newest. Stamped once, when there is something to stamp it from — and
+// never overwritten, or the record would silently become "whatever I opened it
+// with last" and the guarantee would be unobservable.
+function stampIfNew() {
+  // BOTH halves, or nothing. Stamping from build-info alone — which is what
+  // the first version did, because it ran before the wasm had loaded —
+  // recorded prollyRev and formatTag as null and called the project stamped.
+  // A record with holes in it is worse than an unstamped project, because the
+  // unstamped one says so.
+  if (app.versions || !bakedInfo || !sdkSelfReport) return;
+  app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
+  save();
+  versionsPanel?.refresh();
+}
+
+// An upgrade is OFFERED and never applied on its own. This is the offer: it
+// says what moved and waits. Accepting it re-stamps the project; declining
+// leaves it on the versions it was built against, which keep working.
+function offerUpgrade() {
+  // Both halves, or the offer is wrong rather than absent: with build-info
+  // missing, `drift` still compares the SDK and silently skips every contract,
+  // so the bar said "1 component moved on" when two had. An incomplete
+  // comparison presented as a complete one is the failure this panel exists to
+  // prevent, one level up.
+  if (!bakedInfo || !sdkSelfReport) return;
+  const rows = drift(app.versions, { baked: bakedInfo, sdk: sdkSelfReport });
+  const host = $("upgrade");
+  if (!host) return;
+  if (rows.length === 0) { host.replaceChildren(); return; }
+  // `short` and not slice(0,8): the raw values carry a `sha256:` prefix, so
+  // slicing printed "sha256:a → sha256:1" — two different hashes rendered
+  // identically but for their last character.
+  const list = rows.map(r => `${r.what} ${short(r.was)} → ${short(r.is)}`).join(" · ");
+  const btn = el("button", { id: "upgrade-accept", textContent: "Update this project" });
+  btn.onclick = () => {
+    app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
+    save();
+    offerUpgrade();
+    versionsPanel?.refresh();
+  };
+  host.replaceChildren(
+    el("span", { className: "up-what", textContent: `${rows.length} component${rows.length > 1 ? "s" : ""} moved on: ${list}` }),
+    btn,
+  );
+}
 
 loadSdk().then(
   sdk => {
@@ -41,6 +97,8 @@ loadSdk().then(
     } catch (_) {
       sdkSelfReport = { rev: "unknown", version: sdk.version() };
     }
+    stampIfNew();
+    offerUpgrade();
     versionsPanel?.refresh();
     render();
   },
