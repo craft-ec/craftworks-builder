@@ -13,6 +13,8 @@
 //      states — verified, mismatched, and not yet verified — and diagnostics
 //      copied before the SDK loads say so.
 
+import { appSection } from "./project-versions.js";
+
 /** Compare two revisions that may be short, long, or marked dirty. */
 export function sameRev(a, b) {
   if (!a || !b) return false;
@@ -87,7 +89,7 @@ export const shortHash = h => (h ? normHash(h).slice(0, 8) : "");
  * null. Nothing else is consulted, so this function is the entire behaviour and
  * a test of it is a test of the panel.
  */
-export function model({ baked, sdk = null }) {
+export function model({ baked, sdk = null, project = null, probes = {}, probeMs = 1500 }) {
   const profile = baked?.builder?.profile ?? "dev";
   const v = verification({ sdkRev: baked?.sdkRev, sdk, profile });
   const sections = [];
@@ -153,6 +155,11 @@ export function model({ baked, sdk = null }) {
         ],
   });
 
+  // What THIS PROJECT was made with, which is a different question from what
+  // the builder is running: §19 says an app keeps working on the versions it
+  // was published against, so those are the ones a developer needs to see.
+  sections.push(appSection(project, { baked, sdk, probes, tMs: probeMs }));
+
   sections.push({
     title: "node",
     rows: [{ label: "connection", value: "—", state: "unknown", note: "the builder connects to a node in phase 3" }],
@@ -191,8 +198,8 @@ function revRow(label, rev, profile) {
  * the verification state in words — including "unverified", because a report
  * that silently omitted it would read as a clean bill of health.
  */
-export function diagnostics({ baked, sdk = null, now = new Date() }) {
-  const m = model({ baked, sdk });
+export function diagnostics({ baked, sdk = null, project = null, now = new Date() }) {
+  const m = model({ baked, sdk, project });
   const lines = [
     `craftec builder diagnostics — ${now.toISOString()}`,
     `SDK verification: ${m.verification.state.toUpperCase()} — ${m.verification.text}`,

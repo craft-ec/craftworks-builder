@@ -25,7 +25,7 @@ export async function readBuildInfo(fetchFn = fetch) {
 
 const DOT = { ok: "●", info: "●", warn: "▲", mismatch: "▲", unverified: "○", unknown: "○" };
 
-export function mount(host, { baked, getSdk }) {
+export function mount(host, { baked, getSdk, getProject = () => null }) {
   let open = false;
   const chip = el("button", { className: "ver-chip", type: "button", id: "versions-chip" });
   const pop = el("div", { className: "ver-pop", id: "versions-pop", hidden: true });
@@ -33,7 +33,7 @@ export function mount(host, { baked, getSdk }) {
 
   const paint = () => {
     const sdk = getSdk();
-    const m = model({ baked, sdk });
+    const m = model({ baked, sdk, project: getProject() });
     const v = m.verification;
     chip.className = `ver-chip s-${v.state}`;
     chip.textContent = `${DOT[v.state] ?? "○"} versions`;
@@ -56,7 +56,7 @@ export function mount(host, { baked, getSdk }) {
       el("div", { className: "ver-actions" },
         Object.assign(el("button", { type: "button", id: "versions-copy", textContent: "Copy diagnostics" }), {
           onclick: async () => {
-            const text = diagnostics({ baked, sdk: getSdk() });
+            const text = diagnostics({ baked, sdk: getSdk(), project: getProject() });
             try {
               await navigator.clipboard.writeText(text);
               flash("copied");
