@@ -199,9 +199,20 @@ export async function setComponentProps(db, componentId, props) {
   return db.update(COMPONENT, componentId, { props: enc(props) });
 }
 
+/** Remove one component. ONE record, and its neighbours are untouched. */
+export async function removeComponent(db, componentId) {
+  return db.delete(COMPONENT, componentId);
+}
+
 /** Open a project: its record and its components, decoded. */
 export async function openProject(db, pid) {
-  const project = await db.get(PROJECT, pid);
+  // `db.get` THROWS on an id it cannot parse rather than answering "not
+  // found", and the ids reaching here come from outside this module: a stale
+  // `lastOpened` in device storage, a link, a project someone deleted on
+  // another device. A builder that cannot open its last project should show an
+  // empty canvas, not fail to start.
+  let project = null;
+  try { project = await db.get(PROJECT, pid); } catch { return null; }
   if (!project) return null;
   const components = (await componentsOf(db, pid)).map(r => ({
     id: r.id,
@@ -223,6 +234,28 @@ export async function openProject(db, pid) {
 }
 
 /** Record a publication of a project. History is these records (builder#26). */
+/**
+ * Open a project INTO something that holds a canvas, in the order that does not
+ * lose data.
+ *
+ * The order is the whole function. Handing a canvas to the builder makes it
+ * save, and saving writes into whichever project is currently open — so if the
+ * open project is switched AFTER the handover, the project being left is
+ * overwritten with the contents of the one being opened. Two projects, one
+ * click, and the first is gone.
+ *
+ * So: switch first, hand over second. Extracted here rather than left inline in
+ * the panel because it is the kind of ordering that reads as arbitrary and gets
+ * "tidied" by the next person — and because a DOM is not needed to test it.
+ */
+export async function openInto(db, pid, { setLastOpened, handOver }) {
+  const project = await openProject(db, pid);
+  if (!project) return null;
+  setLastOpened(pid);
+  handOver(project);
+  return project;
+}
+
 export async function recordPublication(db, pid, { seq, app_contract_id, sdk_version, schema_block_ids = [], bundle_hash, source_root, published_at = Date.now() }) {
   return db.put(PUBLICATION, {
     pid, seq, app_contract_id, sdk_version,

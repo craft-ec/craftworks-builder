@@ -9,6 +9,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
 import {
+  openInto,
   PROJECT, COMPONENT, PUBLICATION, PUBLIC_UNTIL_PHASE_7, SCHEMAS,
   defineProjectDomains, createProject, listProjects, addComponent,
   componentsOf, setComponentProps, openProject, recordPublication,
@@ -194,6 +195,38 @@ await t("a tweak touches ONE component and leaves its neighbours alone", async (
   const untouched = after.find(s => s.startsWith(b.id));
   assert.equal(untouched, before.find(s => s.startsWith(b.id)),
     "the neighbour's record is byte-identical: that is what per-component granularity BUYS");
+});
+
+await t("OPENING a project switches BEFORE handing over the canvas", async () => {
+  // The regression: handing the canvas over makes the builder save, and saving
+  // writes into whichever project is open. Switch after the handover and the
+  // project you are LEAVING is overwritten with the one you opened — two
+  // projects, one click, and the first is gone. Verified in the browser first;
+  // pinned here so the order cannot be tidied away.
+  const db = await fresh();
+  const a = await createProject(db, { title: "A" });
+  const b = await createProject(db, { title: "B" });
+  await addComponent(db, b.id, { kind: "list", props: { w: 1 } });
+
+  const order = [];
+  await openInto(db, b.id, {
+    setLastOpened: id => order.push(`switch:${id}`),
+    handOver: p => order.push(`handOver:${p.id}`),
+  });
+
+  assert.deepEqual(order, [`switch:${b.id}`, `handOver:${b.id}`],
+    "the open project must be switched BEFORE the canvas is handed over");
+  assert.equal(order.indexOf(`switch:${b.id}`), 0, "and switching must be first, not merely present");
+
+  // The control: opening something that does not exist hands nothing over.
+  const none = [];
+  const missing = await openInto(db, "nope", {
+    setLastOpened: id => none.push(`switch:${id}`),
+    handOver: () => none.push("handOver"),
+  });
+  assert.equal(missing, null);
+  assert.deepEqual(none, [], "a project that does not exist must not switch anything");
+  assert.ok(a.id, "two projects existed, so this is not passing on an empty store");
 });
 
 await t("a project is publicly readable until phase 7, and says so in a stored field", async () => {
