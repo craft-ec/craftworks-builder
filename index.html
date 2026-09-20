@@ -65,6 +65,36 @@
   .rt-list { list-style:none; margin:0; padding:0; } .rt-list li { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); }
   .rt-list small { color:var(--mute); }
   body.previewing #palette, body.previewing #palette-h { opacity:.4; pointer-events:none; }
+  /* Versions panel: a footer chip that opens what this build is running. */
+  .verwrap { position:fixed; left:12px; bottom:12px; z-index:40; }
+  .ver-chip { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; padding:4px 10px; border-radius:999px; }
+  .ver-chip.s-ok, .ver-chip.s-info { color:var(--mute); }
+  .ver-chip.s-warn { color:#9a6b00; border-color:#d9a300; }
+  .ver-chip.s-mismatch { color:#fff; background:#c0392b; border-color:#c0392b; }
+  .ver-chip.s-unverified { color:var(--mute); border-style:dashed; }
+  .ver-pop { position:absolute; left:0; bottom:34px; width:min(420px, calc(100vw - 24px)); max-height:min(70vh, 560px); overflow:auto;
+             background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; box-shadow:0 10px 30px rgba(0,0,0,.18); }
+  .ver-pop section { margin-top:12px; }
+  .ver-pop h4 { margin:0 0 6px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
+  .ver-verdict { font-size:12px; padding:7px 9px; border-radius:8px; border:1px solid var(--line); }
+  .ver-verdict b { letter-spacing:.04em; }
+  .ver-verdict.s-mismatch { background:color-mix(in srgb, #c0392b 12%, transparent); border-color:#c0392b; }
+  .ver-verdict.s-warn { background:color-mix(in srgb, #d9a300 14%, transparent); border-color:#d9a300; }
+  .ver-kv { display:grid; grid-template-columns:104px 1fr; gap:5px 10px; margin:0; align-items:baseline; }
+  .ver-kv dt { color:var(--mute); font-size:12px; }
+  .ver-kv dd { margin:0; overflow-wrap:anywhere; }
+  .ver-kv dd code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ver-kv dd small { display:block; color:var(--mute); font-size:11px; margin-top:1px; }
+  .ver-kv dd.s-warn code, .ver-kv dd.s-mismatch code { color:#c0392b; }
+  .ver-kv dd.s-unknown code { color:var(--mute); }
+  /* Sticky, because the popover is capped and scrolls: the screenshot showed
+     Copy diagnostics below the fold, which is the one thing in here people
+     come to press. */
+  .ver-actions { position:sticky; bottom:-12px; margin:14px -14px -12px; padding:10px 14px;
+                 display:flex; gap:8px; align-items:center; background:var(--panel); border-top:1px solid var(--line); }
+  .ver-actions button { font-size:12px; padding:4px 10px; }
+  .ver-flash { color:var(--mute); font-size:11px; }
+  .ver-diag { margin-top:10px; max-height:200px; }
   @media (max-width:760px) { main { grid-template-columns:1fr; } aside.l, aside.r { border:0; border-bottom:1px solid var(--line); } }
 </style>
 
@@ -75,6 +105,7 @@
   <button id="clear">Clear</button>
   <button class="pri" id="publish" disabled title="Publishing lands in phase 3">Publish</button>
 </header>
+<div class="verwrap" id="versions"></div>
 <main>
   <aside class="l"><h3>Tree</h3><div id="tree-root"></div><div id="tree"></div><h3 style="margin-top:16px">Components</h3><div id="palette"></div></aside>
   <section id="canvas"></section>
