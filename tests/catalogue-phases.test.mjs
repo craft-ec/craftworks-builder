@@ -8,8 +8,18 @@
 // review had not spotted.
 //
 // The table below is copied from ARCHITECTURE §21 "Build order", Builder
-// column, which is the source. When the roadmap moves, this fails — which is
-// the point: a number nothing checks is a number that drifts silently.
+// column, which is the source.
+//
+// What this test can and cannot see, because the comment here used to claim
+// more than it did. ARCHITECTURE.md lives in a PRIVATE repository, so nothing
+// here can read it: the table is a COPY, and a change to the document cannot
+// make this fail on its own. What it catches is the two in-repo copies drifting
+// apart — edit `catalogue.js` without the table, or the table without
+// `catalogue.js`, and it fails naming the component. So the roadmap change is
+// transcribed here BY HAND from §21, and this test makes sure the catalogue
+// follows. (Phase 13 Compute/craftvm was inserted on 2026-09-20 and moved chat
+// from 13 to 14; the test passed before and after that edit until the table was
+// updated too, which is exactly the limit being described.)
 import assert from "node:assert";
 import { COMPONENTS } from "../catalogue.js";
 
@@ -27,7 +37,7 @@ const ROADMAP = {
   votes: [8, "phase 8 many-writer structures — tallies"],
   search: [10, "phase 10 discovery — directory · search widgets"],
   pay: [11, "phase 11 ledger — pay button · usage dashboard"],
-  chat: [13, "phase 13 domain grammars — messaging"],
+  chat: [14, "phase 14 domain grammars — messaging"],
 };
 
 // Every component is in the table, and every table entry is a component: a
@@ -50,10 +60,11 @@ for (const c of COMPONENTS) {
   );
 }
 
-// And the numbers must be phases that exist. §21 runs 0–14.
+// And the numbers must be phases that exist. §21 runs 0–15: phase 13 is
+// Compute (craftvm), 14 the app domains, 15 the templates.
 for (const c of COMPONENTS) {
   assert.ok(
-    Number.isInteger(c.phase) && c.phase >= 0 && c.phase <= 14,
+    Number.isInteger(c.phase) && c.phase >= 0 && c.phase <= 15,
     `${c.label}: phase ${c.phase} is not one §21 defines`,
   );
 }
