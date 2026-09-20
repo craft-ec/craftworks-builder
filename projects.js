@@ -39,6 +39,24 @@
 // asymmetric: whole-canvas saves at most a few tens of KB on a small canvas and
 // costs 50 MB on a large one. A canvas only grows.
 //
+// # AND THE SLOPE ENDS IN A WALL — measured
+//
+// A record is capped at 262,144 bytes and there is no blob path behind it. A
+// whole-canvas project does not merely get expensive, it becomes a REFUSED
+// WRITE:
+//
+//     1,000 components   value 259,781 B   accepted
+//     1,200 components   value 312,181 B   REFUSED
+//
+//     "record is 312248 bytes and the limit is 262144; store content this
+//      large as a file or a blob and keep a reference to it"
+//
+// The advice in that message is not available: `freenet-prolly` has no blob
+// machinery, and the doc comment promising one ("anything larger is a blob —
+// manifest + chunks") describes something unbuilt (freenet-prolly#50). So the
+// shape rejected here had a ceiling in it, not just a slope, and a project that
+// reached it would be unable to save at all.
+//
 // # WHY whole-canvas goes quadratic — measured, not inferred
 //
 // The proposed explanation was that a map serialisation shifts bytes when one

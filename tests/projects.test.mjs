@@ -151,6 +151,35 @@ await t("WHY it is quadratic: a big value is ONE block, so an add shares nothing
     "and projects.js should be corrected");
 });
 
+await t("THE WALL: a whole-canvas project would eventually be UNABLE to save", async () => {
+  // The slope ends in a refusal, not just a big number. A record is capped and
+  // there is no blob path behind it, so this is the argument that does not
+  // depend on how much storage anyone thinks is acceptable.
+  const db = new sdk.Db();
+  await db.define("k", { type: "K", fields: [{ name: "t", kind: "text", required: true }, { name: "c", kind: "text" }] });
+  const canvasOf = n => {
+    const c = {};
+    for (let i = 0; i < n; i++) c[`c${i}`] = { kind: "table", props: { domain: `d${i}`, blob: "x".repeat(200) } };
+    return c;
+  };
+
+  const ok = JSON.stringify(canvasOf(1000));
+  await db.put("k", { t: "x", c: ok });   // accepted
+
+  const tooBig = JSON.stringify(canvasOf(1200));
+  let refused = null;
+  try { await db.put("k", { t: "x", c: tooBig }); } catch (e) { refused = String(e.message ?? e); }
+
+  process.stdout.write(
+    `   ${ok.length} B canvas accepted; ${tooBig.length} B canvas refused\n`,
+  );
+  assert.ok(refused, "a canvas past the record limit must be REFUSED, not silently truncated");
+  assert.match(refused, /limit is \d+/, `the refusal must name the limit: ${refused}`);
+  // The refusal advises a blob, and there is no blob path (freenet-prolly#50).
+  // Pinned so that if one ever lands, this test says the advice became real.
+  assert.match(refused, /blob/, "the refusal still advises a blob path that does not exist");
+}, );
+
 await t("a tweak touches ONE component and leaves its neighbours alone", async () => {
   const db = await fresh();
   const p = await createProject(db, { title: "Three" });
