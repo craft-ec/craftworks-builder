@@ -23,4 +23,16 @@ fi
 rm -rf sdk && mkdir sdk
 cp "$out/pkg/web"/index.js "$out/pkg/web"/wrap.js "$out/pkg/web"/craftworks_sdk.js "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
 echo "$rev" > sdk/REV
+
+# What this build IS, for the versions panel. Rewritten on EVERY run, including
+# the one where the SDK cache already had the revision: the builder's own commit
+# and the contract hashes move without the SDK moving, and a stale build-info is
+# the exact failure the panel exists to catch.
+#
+# `sdk/REV` is what the builder ASKED for. The wasm's own answer comes from
+# `buildInfo()` at runtime, which is the half that can disagree — writing the
+# pinned rev on both sides here would only restate it.
+python3 tools/build-info.py > build-info.json
+
 echo "sdk/ ready — craftworks-sdk $rev ($(wc -c < sdk/craftworks_sdk_bg.wasm | tr -d ' ') B wasm)"
+echo "build-info.json — builder $(python3 -c 'import json;print(json.load(open("build-info.json"))["builder"]["rev"])')"

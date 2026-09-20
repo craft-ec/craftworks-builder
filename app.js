@@ -1,4 +1,5 @@
 import { loadSdk } from "./sdk-loader.js";
+import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
 import { defaultSchema, KINDS } from "./runtime-logic.js";
@@ -19,8 +20,30 @@ app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
 
+// The panel's baked half renders at once; the SDK's self-report is filled in
+// when the wasm arrives. It does NOT force a load: a panel that pulled in the
+// wasm on every page view to read one string would cost more than it tells.
+let versionsPanel = null, sdkSelfReport = null;
+readBuildInfo().then(baked => {
+  versionsPanel = mountVersions($("versions"), { baked, getSdk: () => sdkSelfReport });
+});
+
 loadSdk().then(
-  sdk => { $("sdk").textContent = `SDK ${sdk.version()}`; window.craftec = sdk; sdkReady = sdk; render(); },
+  sdk => {
+    $("sdk").textContent = `SDK ${sdk.version()}`;
+    window.craftec = sdk;
+    sdkReady = sdk;
+    // `buildInfo` arrived with craftworks-sdk#16; an older vendored build has
+    // no such function, which is itself a version fact and is reported as one
+    // rather than crashing the panel.
+    try {
+      sdkSelfReport = typeof sdk.buildInfo === "function" ? sdk.buildInfo() : { rev: "unknown", version: sdk.version() };
+    } catch (_) {
+      sdkSelfReport = { rev: "unknown", version: sdk.version() };
+    }
+    versionsPanel?.refresh();
+    render();
+  },
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
 );
 
