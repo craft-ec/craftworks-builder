@@ -657,8 +657,33 @@ console.log("\n=== the six items ===");
 check("1. the live arm really held a head subscription", () => assert.strictEqual(
   liveArm?.mode?.mode, "HeadSubscribed",
   "not subscribed, so its number is the tick's number wearing a different name"));
-check("2. the control arm polled, so the arms are different mechanisms", () => assert.strictEqual(
-  tick?.mode?.mode, "Polled", "the control held a subscription too"));
+check("2. the control arm differs from the live one BY MECHANISM", () => {
+  // NOT `liveMode() === "Polled"`, which is what this asserted and which was
+  // wrong. `Session::watch_head` subscribes UNCONDITIONALLY once the head id
+  // is known and the delegate is provisioned — it never consults binding
+  // liveness — so `liveMode()` is a fact about the SESSION and both arms
+  // report `HeadSubscribed` by design. Asserting it against a binding-level
+  // difference was measuring the wrong thing, and the failure it produced
+  // was the assertion's, not the code's.
+  //
+  // What actually differs is the BINDING: a live one is re-run when the
+  // session says its domain is stale, a plain one takes out no watch and
+  // changes on its own tick. That difference is visible only in the timing —
+  // the `notified` leg exists for the live arm and cannot for the control —
+  // so it can be asserted only once writes publish and the legs have samples.
+  assert.ok(tick, "the control arm did not run at all");
+  assert.ok(liveArm, "the live arm did not run at all");
+  assert.ok(
+    tick.total.n > 0 && liveArm.total.n > 0,
+    `no samples to compare: control n=${tick.total.n}, live n=${liveArm.total.n}. ` +
+    "The arms differ in how B is TOLD, and with nothing published there is " +
+    "nothing to be told about — blocked on craftworks-sdk#106, not a finding here."
+  );
+  assert.ok(
+    liveArm.notified.n > 0,
+    "the live arm was never notified, so its number is the tick's number wearing a different name"
+  );
+});
 check("3a. a write reached the network: the chip said saving, then saved", () => {
   assert.ok(report.writePath?.sawPending,
     "the chip never said saving or queued, so the transition is not being observed at all");
