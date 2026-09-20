@@ -126,6 +126,19 @@ function renderAddr() {
   );
 }
 
+/**
+ * Which node this builder publishes to.
+ *
+ * From `#node=<port>` in the URL, and from nowhere else. There is no default:
+ * publishing installs code and hands over a signing key, and a default would
+ * eventually point at a node somebody else is running. A development build
+ * should say which node it means.
+ */
+function nodePort() {
+  const p = Number(new URLSearchParams(location.hash.slice(1)).get("node"));
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : 0;
+}
+
 function renderPublish() {
   const b = buttonFor(publishPhase, { error: publishError });
   const btn = $("publish");
@@ -133,6 +146,12 @@ function renderPublish() {
   btn.disabled = !b.enabled;
   btn.title = b.hint;
   btn.className = `pri ${b.tone}`.trim();
+
+  // The reason is SHOWN, not hidden in the tooltip. It was in `title` only,
+  // which renders as nothing in a screenshot and needs a hover to find — so
+  // the one thing that makes a failure fixable was the one thing invisible.
+  const note = $("publish-note");
+  if (note) note.textContent = publishPhase === "failed" ? publishError : "";
 }
 
 /**
@@ -150,6 +169,11 @@ async function doPublish() {
     const { db } = await publish(app, {
       open: sdkReady.open,
       artefacts: sdkReady.SHIPPED_ARTEFACTS,
+      // NAMED, never defaulted. The node to publish to is a decision: it
+      // gets a delegate installed and a signing key handed to it. A default
+      // points at whatever is listening, and what was listening here was the
+      // owner's own node.
+      port: nodePort(),
     }, (phase, err = "") => {
       publishPhase = phase;
       publishError = err;
@@ -177,7 +201,11 @@ async function doPublish() {
     render();
   } catch (e) {
     publishPhase = "failed";
-    publishError = e.message;
+    // `publish` already reported a reason through `onPhase`, and its reason
+    // says what to DO. Overwriting it with the raw exception replaced advice
+    // a person can act on with a message they cannot — which is what this
+    // line used to do.
+    if (!publishError) publishError = e.message;
     renderPublish(); renderAddr();
   }
 }
@@ -202,7 +230,7 @@ function renderCanvas() {
     // app twice — two engines, two sets of writes, one canvas.
     if (!mounting) {
       mounting = true;
-      mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); }, publishedDb)
+      mountApp($("canvas"), sdkReady, app, db => { liveDb = db; renderTree(); }, publishedDb, publishPhase)
         .then(db => { liveDb = db; })
         .catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
     }

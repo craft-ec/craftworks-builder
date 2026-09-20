@@ -108,6 +108,13 @@
   /* The upgrade OFFER. Never applied on its own (ARCHITECTURE §19), so it is a
      bar with a button and not a thing that happens to you. */
   .upbar:empty { display:none; }
+  /* Why a publish did not happen, WHERE A PERSON CAN SEE IT. It lived in the
+     button's tooltip, which renders as nothing in a screenshot and requires a
+     hover to find — so the one thing that makes a failure fixable was the one
+     thing invisible. */
+  .pubnote:empty { display:none; }
+  .pubnote { margin:0 12px 8px; padding:8px 12px; border-radius:8px; font-size:13px; line-height:1.45;
+             background:#fdf2f2; border:1px solid #f0c7c7; color:#7a2020; overflow-wrap:anywhere; }
   .upbar { position:fixed; right:12px; bottom:12px; z-index:40; display:flex; gap:10px; align-items:center;
            background:var(--panel); border:1px solid #d9a300; border-radius:10px; padding:8px 12px;
            box-shadow:0 8px 24px rgba(0,0,0,.14); max-width:min(560px, calc(100vw - 24px)); }
@@ -125,6 +132,7 @@
 </header>
 <div class="verwrap" id="versions"></div>
 <div id="upgrade" class="upbar"></div>
+<div id="publish-note" class="pubnote"></div>
 <main>
   <aside class="l"><h3>Tree</h3><div id="tree-root"></div><div id="tree"></div><h3 style="margin-top:16px">Components</h3><div id="palette"></div></aside>
   <section id="canvas"></section>

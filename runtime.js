@@ -2,7 +2,7 @@
 // the published app will use the same module.
 import { byType } from "./catalogue.js";
 import { openApp, toFields, display, headline, inputType } from "./runtime-logic.js";
-import { show, isLive, UNPUBLISHED } from "./publish-state.js";
+import { show, isLive, rowState } from "./publish-state.js";
 
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
@@ -10,7 +10,7 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null) {
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle") {
   const { db, problems } = await openApp(sdk, app, backend ?? new sdk.Db());
   const editing = {}; // domain → record being edited
 
@@ -28,7 +28,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const changed = async () => { await refresh(); render(); onData(db); };
   const guard = async (fn, box) => { try { await fn(); box.textContent = ""; } catch (e) { box.textContent = e.message; } };
 
-  // What a row says about itself.
+  // What a row says about ITSELF.
   //
   // An unpublished project's rows say so, because its data is in this tab and
   // nowhere else — "saved" would claim the exact thing Publish is for, and the
@@ -36,12 +36,12 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // address bar, because the decision to close is made while looking at the
   // rows.
   //
-  // `published` is false until Publish switches the backend; then each row
-  // carries its own write's state, which is why this is a function of the
-  // record rather than a constant.
-  const published = false;
-  const stateChip = () => {
-    const s = show(published ? "published" : UNPUBLISHED);
+  // Once published each row carries its OWN write's state, which is why this
+  // takes the record. "Saving", "saved here but not yet on the network" and
+  // "on the network" are three different facts, and a row must not show one
+  // spinner for all three.
+  const stateChip = record => {
+    const s = show(rowState(phase, record));
     return el("span", { className: `rt-state ${s.tone}`, textContent: s.label, title: s.hint });
   };
 
@@ -79,7 +79,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     if (!recs.length) return el("p", { className: "rt-empty", textContent: "No records yet." });
     return el("div", { className: "rt-scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, schema.fields.map(f => el("th", { textContent: f.name })), el("th", { textContent: "state" }), el("th"))),
-      el("tbody", {}, recs.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip()), el("td", {}, actions(inst, r)))))));
+      el("tbody", {}, recs.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip(r)), el("td", {}, actions(inst, r)))))));
   }
 
   function list(inst, schema, i) {
@@ -88,7 +88,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     if (!recs.length) return el("p", { className: "rt-empty", textContent: "Nothing here yet." });
     return el("ul", { className: "rt-list" }, recs.map(r => el("li", {},
       el("span", { textContent: display(schema.fields.find(f => f.name === h)?.kind, r.fields[h]) || "(untitled)" }),
-      el("small", { textContent: new Date(r.created).toLocaleString() }), stateChip())));
+      el("small", { textContent: new Date(r.created).toLocaleString() }), stateChip(r))));
   }
 
   const RENDER = { form, table, list };

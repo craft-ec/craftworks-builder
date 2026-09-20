@@ -132,3 +132,46 @@ export const LIVE_NOTE =
  * having asked for one.
  */
 export const isLive = inst => inst?.live === true;
+
+/**
+ * The SDK's row-state code, as one of the states above.
+ *
+ * The SDK says what a write is DOING; this file says what a person reads.
+ * Keeping them apart matters because they answer to different things: the
+ * codes are a wire contract that must not change silently, and the wording
+ * is a product decision that should be free to.
+ *
+ * A code this build does not know is passed through to `show`, which renders
+ * it as itself rather than guessing — a row that claimed "saved" because the
+ * SDK grew a state the builder has not learnt is the exact failure the chip
+ * exists to prevent.
+ */
+export const FROM_ROW_STATE = {
+  // On the network. Nothing in flight.
+  CLEAN: "published",
+  // The engine is finishing another write; this one has not gone yet.
+  QUEUED: "busy",
+  // Sent and accepted, not published. Closing the tab now loses it.
+  PENDING: "accepted",
+  // Rolled back: it never landed, and making the change again is safe.
+  ROLLED_BACK: "lost",
+};
+
+/**
+ * What a row shows, given the project's publish phase and the record's own
+ * state.
+ *
+ * Before the project is published every row says so, whatever the record
+ * claims: its data is in this tab and nowhere else, and "saved" would claim
+ * the exact thing Publish is for.
+ *
+ * `UNKNOWN` is NOT translated. It means this client has not loaded the key,
+ * so it cannot say — and a row that turned that into "saved" would be
+ * claiming something nobody checked.
+ */
+export function rowState(phase, record) {
+  if (phase !== "published") return UNPUBLISHED;
+  const code = record?.state;
+  if (code === undefined || code === null) return UNPUBLISHED;
+  return FROM_ROW_STATE[code] ?? code;
+}

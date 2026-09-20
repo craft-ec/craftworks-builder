@@ -21,8 +21,43 @@ if [ ! -f "$out/pkg/web/craftworks_sdk_bg.wasm" ]; then
 fi
 
 rm -rf sdk && mkdir sdk
-cp "$out/pkg/web"/index.js "$out/pkg/web"/wrap.js "$out/pkg/web"/craftworks_sdk.js "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
+
+# COPY EVERY MODULE, not a list of them.
+#
+# This used to name four files. It was right until the SDK's `wrap.js` gained
+# `session.js` and `engine-db.js`, after which this went on copying the old
+# four and the page died with ERR_MODULE_NOT_FOUND — not at build time, not in
+# the SDK's own gates, but here, at run time, in a different repository. A list
+# of files to copy is correct on the day it is written and silently wrong
+# afterwards.
+#
+# Copying the whole set cannot miss one, and needs nothing from the SDK
+# revision being pinned — which matters, because this has to work against
+# older revisions too, and a revision that predates any checking tool must
+# still produce a package that runs.
+cp "$out/pkg/web"/*.js sdk/
+cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
+
+# THE ARTEFACTS PUBLISHING NEEDS.
+#
+# The engine delegate and the two contracts. They are fetched by URL at
+# publish time, not imported, so no import walker finds them and nothing
+# above copies them — and without them Publish fails with a 404 on a path
+# nobody recognises, which is how this was found.
+for a in engine_delegate.wasm block.wasm register.wasm; do
+  [ -f "$out/pkg/web/$a" ] || { echo "the SDK build has no $a" >&2; exit 1; }
+  cp "$out/pkg/web/$a" sdk/
+done
+
 echo "$rev" > sdk/REV
+
+# And it IS importable. `tests/sdk-load.test.mjs` imports `sdk/index.js` and
+# would fail on a broken package, but it runs after this and only if someone
+# runs it; a build that produced an unimportable package and said nothing is
+# the thing that just happened.
+node -e 'import("./sdk/index.js").then(m => {
+  if (typeof m.load !== "function") { console.error("sdk/index.js has no load()"); process.exit(1); }
+})' || { echo "sdk/ cannot be imported — the copy above is incomplete" >&2; exit 1; }
 
 # What this build IS, for the versions panel. Rewritten on EVERY run, including
 # the one where the SDK cache already had the revision: the builder's own commit

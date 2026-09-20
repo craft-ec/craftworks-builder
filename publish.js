@@ -66,9 +66,43 @@ export const rowStateFor = phase => (phase === "published" ? null : UNPUBLISHED)
  * `deps` is injected so this is testable without a node: `openSession` and
  * `engineDb` come from the SDK in the page, and from fakes in the tests.
  */
+/**
+ * Ports this must never publish to.
+ *
+ * 7509 and 7609 are the OWNER'S nodes on this machine. Publishing installs a
+ * delegate and hands over a signing key, so pointing a development build at
+ * one of them writes to somebody's real node because of a default nobody
+ * chose. It happened: a screenshot run meant to capture "there is no node"
+ * connected to 7509 and began provisioning it.
+ *
+ * A refusal, not a warning. The right port for development is an isolated
+ * node of your own, and naming one is a decision rather than an accident.
+ */
+export const RESERVED_PORTS = [7509, 7609];
+
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 7509 } = deps;
+  const { open, artefacts, port = 0 } = deps;
   const phase = p => { onPhase(p); return p; };
+
+  if (!port || RESERVED_PORTS.includes(port)) {
+    const why = port
+      ? `port ${port} is a node this machine already runs for somebody else. ` +
+        "Publishing installs code and hands over a signing key, so it needs a node of this project's own."
+      : "no node port was given. Publishing needs one, and there is no safe default: " +
+        "a default would eventually point at somebody else's node.";
+    onPhase("failed", why);
+    throw new Error(why);
+  }
+
+  // Whether the socket has EVER opened.
+  //
+  // A socket that cannot connect retries with a backoff, for ever, which is
+  // right for a connection that dropped and wrong for one that was never
+  // there. Without this the provisioning wait runs its full budget while a
+  // person watches "Setting the node up…" for a minute, and then learns the
+  // node was never running. A short timeout on PROGRESS beats a long one on
+  // the run.
+  let connected = false, refusals = 0;
 
   let handle;
   try {
@@ -77,7 +111,14 @@ export async function publish(app, deps, onPhase = () => {}) {
     // itself, so a cold read resolves without this file knowing that any of
     // those exist. A page that wired them by hand would have a screen that
     // never fills the first time it forgot one.
-    handle = await open({ port, artefacts });
+    handle = await open({
+      port,
+      artefacts,
+      onEvent: e => {
+        if (e.kind === "open") { connected = true; refusals = 0; }
+        if (e.kind === "closed" || e.kind === "error") refusals += 1;
+      },
+    });
   } catch (e) {
     onPhase("failed", nodeAdvice(e));
     throw e;
@@ -85,7 +126,7 @@ export async function publish(app, deps, onPhase = () => {}) {
 
   try {
     phase("provisioning");
-    await waitFor(handle);
+    await waitFor(handle, { neverConnected: () => !connected && refusals >= 2 });
   } catch (e) {
     onPhase("failed", e.message);
     throw e;
@@ -103,10 +144,26 @@ export async function publish(app, deps, onPhase = () => {}) {
  * accepted while the delegate still cannot write a head. Collapsing them
  * into "it did not work" is what makes a page unfixable.
  */
-export async function waitFor(session, { everyMs = 250, budgetMs = 60_000, now = () => Date.now() } = {}) {
+export async function waitFor(session, {
+  everyMs = 250,
+  budgetMs = 60_000,
+  now = () => Date.now(),
+  // "The socket has never opened, and has been refused more than once."
+  // Default false so `waitFor` behaves as before for a caller that cannot
+  // observe the socket.
+  neverConnected = () => false,
+} = {}) {
   const started = now();
   for (;;) {
     if (session.provisioned()) return "provisioned";
+    // A node that is not there is a FACT available in a second, not one to
+    // wait a minute for. Checked after `provisioned` so a node that answered
+    // is never reported unreachable because of an earlier retry.
+    if (neverConnected()) {
+      throw new Error(
+        "there is no node answering on this machine. Publishing needs one " +
+        "running locally — it holds your key, and it is the only place this tab will send it.");
+    }
     const refused = session.refused?.();
     if (refused) throw new Error(`the node refused to set up: ${refused}`);
     if (session.exhausted?.()) {

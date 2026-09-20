@@ -12,12 +12,56 @@
 // taken from a different page than the tests exercise is a picture of
 // something nobody checked.
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 8099, DEBUG = 9335;
+
+/**
+ * A port this tool is about to take must be FREE.
+ *
+ * "I assumed nothing was listening" is how a screenshot run connected to a
+ * node somebody else was running and began provisioning it. A tool that
+ * expects a port to be free CHECKS, and refuses if it is not — binding on top
+ * of someone else's service, or silently driving it, are both worse than
+ * stopping.
+ */
+const portIsFree = port => new Promise(resolve => {
+  const s = connect({ port, host: "127.0.0.1" });
+  const done = free => { s.destroy(); resolve(free); };
+  s.setTimeout(500);
+  s.once("connect", () => done(false));   // something answered
+  s.once("error", () => done(true));      // nothing there
+  s.once("timeout", () => done(false));   // something is holding it
+});
+
+async function refuseIfTaken(ports) {
+  for (const [port, what] of ports) {
+    if (!(await portIsFree(port))) {
+      console.error(
+        `something is already listening on 127.0.0.1:${port} (${what}).\n` +
+        "Refusing to start: this tool would either fail to bind or drive somebody else's service.");
+      process.exit(1);
+    }
+  }
+}
+/**
+ * The node port the publish shots point at, and NOTHING may be on it.
+ *
+ * Not 7509 or 7609: those are nodes a developer machine already runs for
+ * somebody else, and publishing installs a delegate and hands over a signing
+ * key. `publish.js` refuses them by name; this never names them.
+ */
+const NODE_PORT = 17509;
+
+await refuseIfTaken([
+  [PORT, "the page server"],
+  [DEBUG, "Chrome's debugging port"],
+  [NODE_PORT, "the node port the publish shots expect to be empty"],
+]);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const only = process.argv[2];
 
@@ -49,6 +93,31 @@ const SHOTS = [
         await new Promise(r => setTimeout(r, 120));
       }`,
     wait: `document.querySelectorAll(".rt-comp tbody tr").length === 2`,
+  },
+  {
+    name: "publish-button",
+    what: "The Publish button before anything is published, beside an address bar that says the project is in this tab only. The two say the same thing in two places, because the decision to close the tab is made while looking at the rows.",
+    hash: () => `#app=${encodeURIComponent(JSON.stringify(APP))}`,
+    setup: "",
+    wait: `document.getElementById("publish")?.disabled === false`,
+  },
+  {
+    name: "publish-no-node",
+    what: "What a person sees when there is no node running. It names the cause and what to do about it, and the button invites another try — the delegate refuses a second install on its own, so pressing it again cannot cost a signing key. A bare 'failed' here would be unfixable.",
+    // A REAL failure, not a mocked one: nothing is listening on NODE_PORT,
+    // which this run checks before starting. The first version of this shot
+    // named no port at all, so it used a default — and the default was a
+    // node somebody else was running, which it connected to and began
+    // provisioning. There is no default now, in the page or here.
+    //
+    // The states that need a live node are captured by the two-tab
+    // acceptance run, against an isolated node of this project's own, where
+    // they are facts rather than arrangements.
+    hash: () => `#node=${NODE_PORT}&app=${encodeURIComponent(JSON.stringify(APP))}`,
+    setup: `
+      document.getElementById("publish").click();
+      await new Promise(r => setTimeout(r, 1500));`,
+    wait: `/again|running/i.test(document.getElementById("publish").textContent + document.getElementById("publish").title)`,
   },
   {
     name: "live-binding-marked",

@@ -62,3 +62,57 @@ assert.notEqual(STATES[UNPUBLISHED].label, STATES.published.label);
 assert.match(STATES[UNPUBLISHED].hint, /clos/i, "the unpublished hint does not say what closing the tab costs");
 
 console.log("ok publish-state");
+
+// ---- the SDK's row state, as a person reads it ----
+{
+  const { rowState, FROM_ROW_STATE, STATES, show, UNPUBLISHED } =
+    await import("../publish-state.js");
+  const t = (name, fn) => { try { fn(); console.log("ok", name); } catch (e) { console.log("FAIL", name, "\n  " + e.message); process.exitCode = 1; } };
+
+  t("before publishing, every row says so whatever the record claims", () => {
+    for (const phase of ["idle", "connecting", "provisioning", "opening", "failed"]) {
+      assert.strictEqual(rowState(phase, { state: "CLEAN" }), UNPUBLISHED,
+        `${phase}: a row claimed to be saved while the data is in this tab only`);
+    }
+  });
+
+  t("once published, a row shows ITS OWN write's state", () => {
+    assert.strictEqual(rowState("published", { state: "CLEAN" }), "published");
+    assert.strictEqual(rowState("published", { state: "PENDING" }), "accepted");
+    assert.strictEqual(rowState("published", { state: "QUEUED" }), "busy");
+    assert.strictEqual(rowState("published", { state: "ROLLED_BACK" }), "lost");
+  });
+
+  t("every mapped state is one this build can actually show", () => {
+    for (const [code, state] of Object.entries(FROM_ROW_STATE)) {
+      assert.ok(STATES[state], `${code} maps to ${state}, which has no wording`);
+    }
+  });
+
+  t("the three in-flight states are DISTINGUISHABLE to a person", () => {
+    // The whole point: "saving", "saved here but not on the network" and "on
+    // the network" must not collapse into one spinner.
+    const labels = ["CLEAN", "PENDING", "QUEUED"].map(c => show(rowState("published", { state: c })).label);
+    assert.strictEqual(new Set(labels).size, 3, `these read the same: ${labels.join(" / ")}`);
+  });
+
+  t("UNKNOWN is NOT turned into 'saved'", () => {
+    // It means this client has not loaded the key, so it cannot say. A row
+    // that claimed "saved" would be asserting something nobody checked.
+    const s = show(rowState("published", { state: "UNKNOWN" }));
+    assert.notStrictEqual(s.label, STATES.published.label,
+      "a row this client cannot see claimed to be on the network");
+    assert.strictEqual(s.tone, "unknown");
+  });
+
+  t("a state the SDK grows later is shown as itself, not guessed", () => {
+    const s = show(rowState("published", { state: "SOMETHING_NEWER" }));
+    assert.strictEqual(s.label, "SOMETHING_NEWER");
+    assert.strictEqual(s.tone, "unknown");
+  });
+
+  t("a record with no state at all is treated as unpublished, not as saved", () => {
+    assert.strictEqual(rowState("published", {}), UNPUBLISHED);
+    assert.strictEqual(rowState("published", null), UNPUBLISHED);
+  });
+}

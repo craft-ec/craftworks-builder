@@ -4,7 +4,7 @@
 // is that they can be checked like this, on any machine, every run.
 
 import assert from "node:assert/strict";
-import { buttonFor, rowStateFor, publish, waitFor, PHASES } from "../publish.js";
+import { buttonFor, rowStateFor, publish, waitFor, PHASES, RESERVED_PORTS } from "../publish.js";
 import { UNPUBLISHED } from "../publish-state.js";
 
 let failures = 0;
@@ -94,6 +94,7 @@ await t("publish reports each phase, in order, and hands back the engine db", as
   const seen = [];
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
   const { db } = await publish({}, {
+    port: 17509,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   }, p => seen.push(p));
   assert.deepEqual(seen, ["connecting", "provisioning", "opening"]);
@@ -103,12 +104,82 @@ await t("publish reports each phase, in order, and hands back the engine db", as
 await t("a node that is not there fails with advice, not a stack trace", async () => {
   const seen = [];
   await assert.rejects(() => publish({}, {
+    port: 17509,
     open: async () => { throw new Error("ECONNREFUSED"); },
   }, (p, e) => seen.push([p, e])));
   const failed = seen.find(([p]) => p === "failed");
   assert.ok(failed, "no failed phase was reported");
   assert.match(failed[1], /node running locally|running locally|needs one running/,
     "the failure does not say what to do about it");
+});
+
+await t("a node that was NEVER there fails in a second, not after the budget", async () => {
+  // A socket that cannot connect retries for ever, which is right for a
+  // connection that dropped and wrong for one that was never there. Without
+  // this a person watches "Setting the node up…" for a minute and then
+  // learns the node was not running.
+  let clock = 0;
+  const s = fakeSession({});
+  await assert.rejects(
+    () => waitFor(s, {
+      everyMs: 1,
+      budgetMs: 60_000,
+      now: () => (clock += 10),
+      neverConnected: () => true,
+    }),
+    e => {
+      assert.match(e.message, /no node answering/);
+      return true;
+    });
+  assert.ok(clock < 1_000, `it waited ${clock}ms for a fact available at once`);
+});
+
+await t("THE CONTROL: a node that DOES answer is never called unreachable", async () => {
+  // Checked after `provisioned`, so a node that answered is not reported
+  // unreachable because of an earlier retry on the way up.
+  const s = fakeSession({ provisioned: () => true });
+  assert.equal(
+    await waitFor(s, { everyMs: 1, neverConnected: () => true }),
+    "provisioned",
+    "a provisioned node was reported unreachable because the socket had retried");
+});
+
+
+await t("**the OWNER'S node ports are REFUSED**, not published to", async () => {
+  // Publishing installs a delegate and hands over a signing key. A default
+  // that eventually points at somebody else's node is how a development
+  // build writes to a real one. This is not hypothetical: a screenshot run
+  // meant to capture "there is no node" connected to 7509, which is the
+  // owner's, and began provisioning it.
+  for (const port of RESERVED_PORTS) {
+    let opened = false;
+    await assert.rejects(() => publish({}, {
+      port,
+      open: async () => { opened = true; return {}; },
+    }), e => {
+      assert.match(e.message, /somebody else|node of this project/);
+      return true;
+    });
+    assert.equal(opened, false, `port ${port}: it opened a connection before refusing`);
+  }
+});
+
+await t("no port at all is refused too — there is no safe default", async () => {
+  let opened = false;
+  await assert.rejects(() => publish({}, { open: async () => { opened = true; return {}; } }),
+    e => { assert.match(e.message, /no safe default|no node port/); return true; });
+  assert.equal(opened, false);
+});
+
+await t("THE CONTROL: an ordinary port is NOT refused", async () => {
+  // Without this, a `publish` that refused every port would pass the two
+  // tests above and nothing could ever be published.
+  const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
+  const { db } = await publish({}, {
+    port: 17509,
+    open: async () => ({ ...session, db: { marker: "engine" } }),
+  });
+  assert.equal(db.marker, "engine");
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nall passing\n");
