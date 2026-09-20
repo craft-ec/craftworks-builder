@@ -53,6 +53,14 @@ is an alarm in every profile.
 pins where each value came from, by reading the same artefacts independently. The
 second one is what a constant typed into `versions.js` would fail.
 
+## Screenshots of the palette
+
+| file | state |
+|---|---|
+| `palette-phases-no-drift.png` | every component's phase chip, as §21 defines them |
+| `palette-phases-drift.png` | the same palette with the drift banner |
+| `palette-phase-14-chat.png` | after Phase 13 (Compute — craftvm) was inserted: Chat reads **phase 14** |
+
 ## Screenshots of the versions panel
 
 In `docs/`, committed rather than described, because the screenshot is a gate

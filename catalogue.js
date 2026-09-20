@@ -67,7 +67,7 @@ export const COMPONENTS = [
   { type: "pay", label: "Pay button", phase: 11, primitives: ["Record"], schema: "state-transition",
     keys: ["l/<seq>"], sets: [], contracts: ["Block", "Register"], writes: own, modes: ["ledger"],
     note: "A send is the next block of your account-chain; final once under a signed checkpoint." },
-  { type: "chat", label: "Chat", phase: 13, primitives: ["Record"], schema: "stream",
+  { type: "chat", label: "Chat", phase: 14, primitives: ["Record"], schema: "stream",
     keys: ["d/{domain}/<rkey>"], sets: ["conversation(<room>, <day>)"], contracts: ["Block", "Register", "Set"], writes: ownPlusSet, modes: ["owned"],
     note: "Each message is in its sender's tree, sealed with the room key; the room is a Set of pointers." },
 ];
