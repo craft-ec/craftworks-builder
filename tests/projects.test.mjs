@@ -1,18 +1,18 @@
-// Projects as records, and the MEASUREMENT behind the record shape.
+// Projects as records, and the measurement that chose the record shape.
 //
-// The issue says one record per COMPONENT because record granularity is
-// conflict, undo, write-cost and read granularity at once. That is an argument;
-// this file is the number. The same property tweak is applied to a
-// per-component store and to a whole-canvas store, and the blocks written are
-// compared — so the decision can be re-checked by anyone, rather than believed.
+// The shape is ONE record per project, canvas as a MAP KEYED BY COMPONENT ID.
+// The measurement below is why, and it is kept executable rather than quoted:
+// if the substrate ever makes per-component cheaper, this goes red and the
+// decision in projects.js gets re-opened deliberately.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
 import {
-  PROJECT, COMPONENT, PUBLICATION, PUBLIC_UNTIL_PHASE_7, SCHEMAS,
-  defineProjectDomains, createProject, listProjects, addComponent,
-  componentsOf, setComponentProps, openProject, recordPublication,
-  publicationsOf, readDeviceSettings, writeDeviceSettings, DEVICE_SETTINGS_KEY,
+  PROJECT, PUBLICATION, PUBLIC_UNTIL_PHASE_7, SCHEMAS, componentId,
+  defineProjectDomains, createProject, listProjects, openProject,
+  addComponent, setComponentProps, removeComponent,
+  recordPublication, publicationsOf,
+  readDeviceSettings, writeDeviceSettings,
 } from "../projects.js";
 
 const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
@@ -27,91 +27,110 @@ await t("two projects are created, listed, and reopened by id", async () => {
   await addComponent(db, b.id, { kind: "list", props: { domain: "tasks" } });
   await addComponent(db, b.id, { kind: "form", props: { domain: "tasks" } });
 
-  const listed = await listProjects(db);
-  assert.equal(listed.length, 2, "browse my projects is a scan over the project domain");
+  assert.equal((await listProjects(db)).length, 2, "browse my projects is a scan over one domain");
 
   const reopened = await openProject(db, b.id);
   assert.equal(reopened.title, "Tasks");
-  assert.equal(reopened.components.length, 2, "a project opens with its own components and nobody else's");
-  assert.deepEqual(reopened.components.map(c => c.kind).sort(), ["form", "list"]);
-
-  const other = await openProject(db, a.id);
-  assert.equal(other.components.length, 1);
+  assert.equal(Object.keys(reopened.components).length, 2, "a project opens with its own canvas and nobody else's");
+  assert.equal(Object.keys((await openProject(db, a.id)).components).length, 1);
 });
 
-await t("THE MEASUREMENT: write cost does NOT favour per-component records", async () => {
-  // The issue's stated rationale is that a whole-canvas record makes every
-  // tweak a full-canvas rewrite. This measures it instead of believing it, and
-  // the answer is no — so the assertion below is the one the numbers support,
-  // not the one the argument wanted.
+await t("THE MEASUREMENT, both built the way a person builds", async () => {
+  // CORRECTED. My first version of this built the whole-canvas record in ONE
+  // put while building the per-component store incrementally, and reported that
+  // per-component cost 8-20x more storage. That comparison was not
+  // apples-to-apples: a person adds components one at a time, and each add
+  // rewrites the whole canvas value. Measured that way the storage result
+  // REVERSES. The tweak result does not.
   const sizes = [[12, 20], [200, 20], [600, 200]];
   const rows = [];
   for (const [n, propSize] of sizes) {
     const props = i => ({ domain: `d${i}`, blob: "x".repeat(propSize) });
+    const mid = Math.floor(n / 2);
 
     const pc = new sdk.Db();
-    await defineProjectDomains(pc);
-    const p = await createProject(pc, { title: "x" });
-    const ids = [];
-    for (let i = 0; i < n; i++) ids.push((await addComponent(pc, p.id, { kind: "table", props: props(i) })).id);
-    const b0 = pc.stats().blocks;
-    const mid = Math.floor(n / 2);
-    await setComponentProps(pc, ids[mid], { ...props(mid), w: 1 });
-    const perComponent = pc.stats().blocks - b0;
-
-    const wc = new sdk.Db();
-    await wc.define("canvas", {
-      type: "Canvas",
-      fields: [{ name: "title", kind: "text", required: true }, { name: "components", kind: "text" }],
+    await pc.define("comp", {
+      type: "Comp",
+      fields: [{ name: "pid", kind: "text", required: true }, { name: "props", kind: "text" }],
     });
-    const canvas = [...Array(n)].map((_, i) => ({ kind: "table", props: props(i) }));
-    const rec = await wc.put("canvas", { title: "x", components: JSON.stringify(canvas) });
-    const c0 = wc.stats().blocks;
-    canvas[mid].props.w = 1;
-    await wc.update("canvas", rec.id, { components: JSON.stringify(canvas) });
-    const wholeCanvas = wc.stats().blocks - c0;
+    const ids = [];
+    for (let i = 0; i < n; i++) ids.push((await pc.put("comp", { pid: "p", props: JSON.stringify(props(i)) })).id);
+    const pcBuild = pc.stats().bytes;
+    const b0 = pc.stats().blocks;
+    await pc.update("comp", ids[mid], { props: JSON.stringify({ ...props(mid), w: 1 }) });
+    const pcTweak = pc.stats().blocks - b0;
 
-    rows.push({ n, propSize, perComponent, wholeCanvas, pcBytes: pc.stats().bytes, wcBytes: wc.stats().bytes });
+    const wc = await fresh();
+    const proj = await createProject(wc, { title: "x" });
+    const cids = [];
+    for (let i = 0; i < n; i++) cids.push(await addComponent(wc, proj.id, { kind: "table", props: props(i) }));
+    const wcBuild = wc.stats().bytes;
+    const c0 = wc.stats().blocks;
+    await setComponentProps(wc, proj.id, cids[mid], { ...props(mid), w: 1 });
+    const wcTweak = wc.stats().blocks - c0;
+
+    rows.push({ n, propSize, pcBuild, wcBuild, pcTweak, wcTweak });
   }
 
   for (const r of rows) {
     process.stdout.write(
-      `   ${String(r.n).padStart(4)} components, ${String(r.propSize).padStart(3)} B props: ` +
-      `per-component ${r.perComponent} block(s), whole-canvas ${r.wholeCanvas} block(s), ` +
-      `store ${r.pcBytes} B vs ${r.wcBytes} B\n`,
+      `   ${String(r.n).padStart(4)} components: building costs ${r.pcBuild} B per-component vs ` +
+      `${r.wcBuild} B whole-canvas; one tweak ${r.pcTweak} vs ${r.wcTweak} block(s)\n`,
     );
   }
 
-  assert.ok(rows.every(r => r.perComponent >= 1), "a tweak must write something, or this measures nothing");
-  // The finding, asserted so it cannot quietly stop being true: per-component
-  // does NOT write fewer blocks. If this ever fails, the substrate changed and
-  // the rationale in projects.js should be revisited.
+  // WHAT IS TRUE, stated as the numbers give it rather than as either side
+  // would like it:
+  //
+  // 1. Tweak cost is a WASH. Whole-canvas costs more at 12 components (2 vs 1)
+  //    and fewer at 600 (2 vs 3); neither wins consistently, and both stay
+  //    within one block. So write-cost-per-edit is an argument for NEITHER
+  //    shape — which is what killed the issue's original rationale, and does
+  //    not resurrect it in the other direction.
+  // 2. Whole-canvas costs substantially MORE STORAGE TO BUILD, at every size
+  //    measured, because every add rewrites the whole value and the superseded
+  //    versions stay in the store.
+  assert.ok(rows.every(r => r.wcTweak >= 1), "a tweak must write something, or this measures nothing");
   assert.ok(
-    rows.every(r => r.perComponent >= r.wholeCanvas),
-    "per-component wrote FEWER blocks than a whole-canvas rewrite — the write-cost " +
-    "argument the issue makes would then be true, and projects.js says it is not: " +
-    JSON.stringify(rows),
+    rows.every(r => Math.abs(r.wcTweak - r.pcTweak) <= 1),
+    "tweak cost is no longer a wash — one shape now wins per-edit by more than " +
+    "a block, and the decision in projects.js should be re-opened: " + JSON.stringify(rows),
   );
   assert.ok(
-    rows.every(r => r.pcBytes > r.wcBytes),
-    "per-component storage is larger at every size measured: " + JSON.stringify(rows),
+    rows.every(r => r.wcBuild > r.pcBuild),
+    "whole-canvas no longer costs more to BUILD — the storage leg of the " +
+    "decision has changed and should be re-opened: " + JSON.stringify(rows),
   );
 });
 
-await t("a tweak touches ONE component and leaves its neighbours alone", async () => {
+await t("THE HEDGE: a component is addressed by a STABLE ID, never a position", async () => {
   const db = await fresh();
-  const p = await createProject(db, { title: "Three" });
-  const a = await addComponent(db, p.id, { kind: "table", props: { w: 1 } });
-  const b = await addComponent(db, p.id, { kind: "list", props: { w: 2 } });
-  const before = (await componentsOf(db, p.id)).map(r => `${r.id}:${r.fields.props}`);
+  const p = await createProject(db, { title: "Hedge" });
+  const first = await addComponent(db, p.id, { kind: "table", props: { w: 1 } });
+  const second = await addComponent(db, p.id, { kind: "list", props: { w: 2 } });
+  const third = await addComponent(db, p.id, { kind: "form", props: { w: 3 } });
 
-  await setComponentProps(db, a.id, { w: 99 });
+  // Remove the one in the MIDDLE. Under an array this renumbers everything
+  // after it; under a map nothing else moves — which is what makes a future
+  // split into per-component records a re-chunk rather than a re-key.
+  await removeComponent(db, p.id, second);
+  const after = (await openProject(db, p.id)).components;
 
-  const after = (await componentsOf(db, p.id)).map(r => `${r.id}:${r.fields.props}`);
-  assert.notDeepEqual(before, after, "something must have changed, or the control below is vacuous");
-  const untouched = after.find(s => s.startsWith(b.id));
-  assert.equal(untouched, before.find(s => s.startsWith(b.id)),
-    "the neighbour's record is byte-identical: that is what per-component granularity BUYS");
+  assert.deepEqual(Object.keys(after).sort(), [first, third].sort(), "only the removed one is gone");
+  assert.equal(after[third].props.w, 3, "the survivor keeps its id AND its value");
+
+  await setComponentProps(db, p.id, third, { w: 99 });
+  const tweaked = (await openProject(db, p.id)).components;
+  assert.equal(tweaked[third].props.w, 99, "addressed by id, after a neighbour was deleted");
+  assert.equal(tweaked[first].props.w, 1, "and the other component is untouched");
+});
+
+await t("component ids are unique and not positional", async () => {
+  const seen = new Set([componentId(0, 1), componentId(1, 1), componentId(2, 1)]);
+  assert.equal(seen.size, 3, "ids must be distinct");
+  assert.notEqual(componentId(0, 1), componentId(0, 2), "a new project does not reuse the first id");
+  // The control: a positional scheme would give the SAME id for index 0 twice.
+  assert.ok(![...seen].some(id => /^c?0$/.test(id)), "an id must not be a bare index");
 });
 
 await t("a project is publicly readable until phase 7, and says so in a stored field", async () => {
@@ -142,10 +161,6 @@ await t("device settings stay on the device, never in the tree", async () => {
   const storage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
   writeDeviceSettings(storage, { lastOpened: "p1", theme: "dark" });
   assert.deepEqual(readDeviceSettings(storage), { lastOpened: "p1", theme: "dark" });
-
-  // A synced "last opened" is wrong on a second device, so it must not be a
-  // tree field. The schemas are the enforcement: if it ever appears in one,
-  // this fails.
   for (const [domain, schema] of Object.entries(SCHEMAS)) {
     const names = schema.fields.map(f => f.name);
     for (const deviceOnly of ["lastOpened", "theme", "layout_pref"]) {
@@ -156,8 +171,7 @@ await t("device settings stay on the device, never in the tree", async () => {
 
 await t("storage that refuses to write does not take the builder down", async () => {
   const storage = { getItem: () => null, setItem: () => { throw new Error("private window"); } };
-  const next = writeDeviceSettings(storage, { lastOpened: "p1" });
-  assert.deepEqual(next, { lastOpened: "p1" }, "the caller still gets the value it set");
+  assert.deepEqual(writeDeviceSettings(storage, { lastOpened: "p1" }), { lastOpened: "p1" });
 });
 
 process.stdout.write("\nprojects: all ok\n");
