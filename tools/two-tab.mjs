@@ -81,9 +81,32 @@ const kill = () => {
   for (const { name, child } of procs.reverse()) {
     try { process.kill(child.pid, "SIGTERM"); console.log(`  killed ${name} (pid ${child.pid})`); } catch (_) {}
   }
+  // AND SAY WHAT IS STILL HELD.
+  //
+  // Verifying cleanup by grepping for a name pattern is how an orphan
+  // survives: the page server's command line is `python3 -m http.server`
+  // and carries no marker this run put there, so a `cw-twotab` grep reported
+  // "clean" while it held 8095 — and the next run then failed at the port
+  // guard, which reads as "port in use" rather than "the last run left
+  // something". The PORTS are the thing to check, because they are what the
+  // next run actually needs.
+  const held = [PAGE_PORT, DEBUG, NODE_PORT, NET_PORT].filter(p => {
+    try { return require("node:child_process").execSync(
+      `lsof -nP -iTCP:${p} -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1`).toString().trim().length > 0; }
+    catch (_) { return false; }
+  });
+  if (held.length) console.log(`  STILL HELD after cleanup: ${held.join(", ")} — kill these by PID before the next run`);
 };
 process.on("exit", kill);
 process.on("SIGINT", () => { kill(); process.exit(130); });
+// SIGTERM TOO. It was missing, and that is how a run stopped from outside
+// left its node and its Chrome behind: `exit` does not fire for a signal
+// nobody handles, so the PIDs this file carefully recorded were never used.
+// An orphaned node holding 17509 then refuses the next run at the port
+// guard, which reads like the port being in use rather than like the last
+// run not having cleaned up.
+process.on("SIGTERM", () => { kill(); process.exit(143); });
+process.on("SIGHUP", () => { kill(); process.exit(129); });
 
 const node = spawn("freenet", [
   "network", "--is-gateway", "--skip-load-from-network",
@@ -162,7 +185,7 @@ async function openTab(label) {
     const deadline = now() + ms;
     while (now() < deadline) {
       if (await evaluate(`return !!(${expr});`)) return now();
-      await sleep(50);
+      await sleep(POLL_MS);
     }
     let page = "(the page could not be read)";
     try {
@@ -260,38 +283,161 @@ async function shot(tab, name) {
   return file;
 }
 
-/** One arm of the acceptance. Returns what it measured. */
+/** How often a wait looks. Stated, because a latency is only as fine as this. */
+const POLL_MS = 25;
+
+/** The page's tick period, which bounds the control arm by construction. */
+const TICK_MS = 1_000;
+
+/** How many samples an arm takes. A single one is an anecdote. */
+const N = 20;
+
+/**
+ * THE NORMAL-ACK DEADLINE, and why it is not 60 seconds.
+ *
+ * 60 s is an ERROR bound — how long to wait before declaring failure. It is
+ * not a measurement window. The normal path is known and measured:
+ * `probe/src/bin/live-write` publishes a write on a local node in **177 ms**.
+ * So a leg that has not acked in a couple of seconds has already failed, and
+ * waiting 60 s to say so returns the same verdict twenty times slower.
+ *
+ * Worse, it pollutes the table: a sample that took 47 seconds is not a
+ * latency, it is a timeout wearing a latency's name, and it drags a p90 into
+ * fiction. A tight deadline makes a miss a MISS — recorded as such, excluded
+ * from the figures, and counted.
+ *
+ * Sized at roughly 17x the measured normal path, which is slack for a loaded
+ * machine and still 30x tighter than an error bound.
+ */
+const ACK_MS = 3_000;
+
+/**
+ * The FIRST write after a publish gets longer, once, and is not a sample.
+ *
+ * A cold page has ranges nobody has loaded, so its first write pays for a
+ * round trip the rest do not. Timing it alongside the others would put one
+ * cold number in every column; leaving it untimed and unbounded would hide a
+ * build that never warms up at all.
+ */
+const WARMUP_MS = 20_000;
+
+/** Consecutive misses after which an arm stops paying for more. */
+const GIVE_UP_AFTER = 3;
+
+/** The median and the spread, which is what a latency actually is. */
+function summarise(xs) {
+  const ok = xs.filter(x => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!ok.length) return { n: 0 };
+  const at = q => ok[Math.min(ok.length - 1, Math.floor(q * ok.length))];
+  return { n: ok.length, min: ok[0], p50: at(0.5), p90: at(0.9), max: ok[ok.length - 1] };
+}
+
+/**
+ * ONE ARM, N TIMES, with the journey broken into its three legs.
+ *
+ * A single end-to-end number cannot tell "the subscription is fast" from "the
+ * tick happened to fire early", so each write is timed at three points:
+ *
+ *   write -> published    A's own row reaches the network
+ *   published -> notified B's session hears about it (live arm only; the
+ *                         control has no subscription, so there is nothing
+ *                         to hear and the column is n/a by construction)
+ *   notified -> rendered  B's table actually shows the row
+ *
+ * The middle leg is what the two arms differ IN. The control's B changes on
+ * its tick, so its end-to-end number is bounded below by the tick period and
+ * says nothing about being told.
+ */
 async function arm(live) {
   const a = await openTab(`tab A (live=${live})`);
   const b = await openTab(`tab B (live=${live})`);
   await publish(a, live);
   await publish(b, live);
 
-  const before = await rows(b);
   const mode = await liveMode(b);
+  const settled = `[...document.querySelectorAll(".rt-comp .rt-state")].filter(x => x.textContent === "saved" || x.textContent === "saved + backed up").length`;
+  const seen = await b.evaluate(`return document.querySelectorAll(".rt-comp tbody tr").length;`);
+  let have = seen;
+  const legs = { published: [], notified: [], rendered: [], total: [] };
 
-  const title = `from A ${live ? "live" : "tick"} ${Date.now()}`;
-  const wrote = now();
-  await a.evaluate(`
-    const i = document.querySelector(".rt-comp input[name=title]");
-    i.value = ${JSON.stringify(title)};
-    document.querySelector(".rt-comp button.pri").click();
-    return 1;`);
-  await a.until(`document.querySelectorAll(".rt-comp tbody tr").length === ${before + 1}`,
-    "A's own row to appear");
-  const aSaw = now();
+  // WARM UP, untimed: one write to pay the cold-range cost once.
+  {
+    const before = await a.evaluate(`return ${settled};`);
+    await a.evaluate(`
+      const i = document.querySelector(".rt-comp input[name=title]");
+      i.value = ${JSON.stringify(`warmup ${live} ${Date.now()}`)};
+      document.querySelector(".rt-comp button.pri").click();
+      return 1;`);
+    try {
+      await a.until(`${settled} > ${before}`, "the first write to reach the network", WARMUP_MS);
+      have += 1;
+      await b.until(`document.querySelectorAll(".rt-comp tbody tr").length >= ${have}`, "B to render the warm-up row", WARMUP_MS);
+    } catch (e) {
+      have = await b.evaluate(`return document.querySelectorAll(".rt-comp tbody tr").length;`);
+      console.log(`  warm-up did not complete for live=${live}: ${e.message.split("\n")[0]}`);
+    }
+  }
 
-  // B MADE NO WRITE. Whatever reaches it reaches it by itself.
-  const bSaw = await b.until(
-    `document.querySelectorAll(".rt-comp tbody tr").length === ${before + 1}`,
-    "B to see A's row", 90_000);
+  let missed = 0;
+  for (let i = 0; i < N; i += 1) {
+    if (missed >= GIVE_UP_AFTER) {
+      console.log(`  ${live ? "live" : "tick"}: gave up after ${missed} consecutive misses at sample ${i}`);
+      break;
+    }
+    const before = await a.evaluate(`return ${settled};`);
+    const notes = (await liveMode(b))?.foreignNotifications ?? 0;
+    const title = `s${i} ${live ? "live" : "tick"} ${Date.now()}`;
+    const t0 = now();
+    await a.evaluate(`
+      const i = document.querySelector(".rt-comp input[name=title]");
+      i.value = ${JSON.stringify(title)};
+      document.querySelector(".rt-comp button.pri").click();
+      return 1;`);
+
+    // LEG 1: A's own row reaches the network.
+    let tPub = NaN;
+    try { tPub = await a.until(`${settled} > ${before}`, "A's row to reach the network", ACK_MS); }
+    catch (_) {
+      missed += 1;
+      legs.published.push(NaN); legs.notified.push(NaN); legs.rendered.push(NaN); legs.total.push(NaN);
+      continue;
+    }
+
+    // LEG 2: B hears about it. Only the live arm can.
+    let tNote = NaN;
+    if (live) {
+      try { tNote = await b.until(`(window.__craftworks?.db?.liveMode?.().foreignNotifications ?? 0) > ${notes}`, "B to be notified", ACK_MS); }
+      catch (_) { /* recorded as NaN, not retried */ }
+    }
+
+    // LEG 3: B renders it. B MADE NO WRITE.
+    have += 1;
+    let tRender = NaN;
+    // The CONTROL arm is told by its tick, so it is bounded by the tick
+    // period and not by an ack. Two ticks is generous; more would be waiting
+    // for a mechanism that has already had its chance.
+    const renderBy = live ? ACK_MS : 2 * TICK_MS + ACK_MS;
+    try { tRender = await b.until(`document.querySelectorAll(".rt-comp tbody tr").length >= ${have}`, "B to render A's row", renderBy); }
+    catch (_) { have -= 1; missed += 1; }
+
+    legs.published.push(tPub - t0);
+    legs.notified.push(Number.isFinite(tNote) ? tNote - tPub : NaN);
+    legs.rendered.push(Number.isFinite(tRender) ? tRender - (Number.isFinite(tNote) ? tNote : tPub) : NaN);
+    legs.total.push(Number.isFinite(tRender) ? tRender - t0 : NaN);
+    if (Number.isFinite(tRender)) missed = 0;
+  }
 
   const bMode = await liveMode(b);
   await shot(a, `${live ? "live" : "tick"}-a-wrote`);
   await shot(b, `${live ? "live" : "tick"}-b-saw`);
-
   a.close(); b.close();
-  return { live, mode, bMode, aMs: aSaw - wrote, bMs: bSaw - wrote };
+  return {
+    live, mode, bMode,
+    published: summarise(legs.published),
+    notified: summarise(legs.notified),
+    rendered: summarise(legs.rendered),
+    total: summarise(legs.total),
+  };
 }
 
 /**
@@ -378,16 +524,27 @@ async function reload() {
     `[...document.querySelectorAll(".rt-comp .rt-state")].some(e => e.textContent === "saved" || e.textContent === "saved + backed up")`,
     "the write to reach the network", 120_000);
 
+  // THE HEAD BEFORE, so "the same head" is a comparison and not a hope.
+  const headBefore = await a.evaluate(`return window.__craftworks?.db?.root?.() ?? null;`);
+
   await a.evaluate(`window.location.reload(); return 1;`);
   await sleep(1000);
   await a.until(`document.getElementById("publish")`, "the page to come back", 60_000);
+  // A SECOND PUBLISH after the reload must not install anything again: the
+  // delegate refuses a second install on its own (first-writer-wins), and a
+  // run that installed twice would have handed out a second signing key.
+  await a.evaluate(`document.getElementById("publish").click(); return 1;`);
+  await a.until(`/Published/.test(document.getElementById("publish").textContent)`, "the reloaded tab to publish", 90_000);
+  await a.until(`window.__craftworks?.phase === "published"`, "the reloaded tab to remount", 90_000);
+  const steps = await a.evaluate(`return JSON.parse(window.__craftworksSession?.take_progress?.() ?? "[]");`);
+  const headAfter = await a.evaluate(`return window.__craftworks?.db?.root?.() ?? null;`);
   const back = await a.until(
     `[...document.querySelectorAll(".rt-comp td")].some(e => e.textContent === ${JSON.stringify(title)})`,
     "the reloaded tab to show what was written before it", 120_000);
   const shown = await rows(a);
   await shot(a, "reload-after");
   a.close();
-  return { start, shown, ms: back - now() + (back - back) };
+  return { start, shown, headBefore, headAfter, steps, ms: back };
 }
 
 /**
@@ -464,7 +621,17 @@ const step = async (name, fn) => {
 const results = [];
 for (const live of [false, true]) {
   const r = await step(`arm live=${live}`, () => arm(live));
-  if (r) results.push(r);
+  if (r) {
+    results.push(r);
+    // PRINTED NOW, not at the end. A run stopped or killed part-way used to
+    // lose everything it had already measured: the table is written once,
+    // last, so forty minutes of completed samples went with it.
+    console.log(`  [arm ${r.live ? "live" : "tick"} done] mode=${r.bMode?.mode ?? "?"} ` +
+      `published p50=${r.published.p50 ?? "-"}ms n=${r.published.n} · ` +
+      `notified p50=${r.notified.p50 ?? "-"}ms n=${r.notified.n} · ` +
+      `rendered p50=${r.rendered.p50 ?? "-"}ms n=${r.rendered.n} · ` +
+      `TOTAL p50=${r.total.p50 ?? "-"}ms n=${r.total.n}`);
+  }
 }
 report.writePath = await step("write path", writePath);
 report.reload = await step("reload", reload);
@@ -504,8 +671,14 @@ check("3b. 300 writes, zero refusals", () => {
   assert.ok(report.writePath.wrote >= 300,
     `only ${report.writePath.wrote} rows appeared, so "no refusals" is over writes that were never made`);
 });
-check("4. a reloaded tab A gets its data back from the network", () => {
+check("4. a reloaded tab A gets its data back, same head, no second install", () => {
   assert.ok(report.reload?.shown > 0, "the reloaded tab showed nothing");
+  assert.ok(report.reload.headBefore, "no head was recorded before the reload, so there is nothing to compare");
+  assert.strictEqual(report.reload.headAfter, report.reload.headBefore,
+    `the head moved across a reload that wrote nothing: ${report.reload.headBefore} -> ${report.reload.headAfter}`);
+  const installs = (report.reload.steps ?? []).filter(x => /install/i.test(String(x)));
+  assert.deepStrictEqual(installs, [],
+    `the reloaded tab installed again (${installs.join(", ")}). A second install would hand out a second signing key.`);
 });
 check("5. the node ran on its own port, killed by recorded PID", () => {
   assert.ok(![7509, 7609].includes(NODE_PORT), "it used somebody else's node");
@@ -523,9 +696,19 @@ check("+ owed parity settles under two tabs, and stays settled", () => {
     `parity-complete went BACKWARDS: ${report.parity.reached} rows, then ${report.parity.held} fifteen seconds later`);
 });
 
-console.log("\n=== what was measured ===");
+console.log("\n=== the latency table ===");
+console.log(`  N = ${N} writes per arm, polled every ${POLL_MS} ms — a leg cannot be measured finer than that.`);
+console.log("  ms          | n  | min | p50 | p90 | max");
+console.log("  ------------|----|-----|-----|-----|-----");
+const row = (label, s) => console.log(
+  `  ${label.padEnd(11)} | ${String(s.n).padEnd(2)} | ${String(s.min ?? "-").padEnd(3)} | ` +
+  `${String(s.p50 ?? "-").padEnd(3)} | ${String(s.p90 ?? "-").padEnd(3)} | ${s.max ?? "-"}`);
 for (const r of results) {
-  console.log(`  ${r.live ? "live" : "tick"}: A ${r.aMs} ms, B ${r.bMs} ms, B's mode ${r.bMode?.mode ?? "?"}`);
+  console.log(`  --- ${r.live ? "LIVE" : "CONTROL (tick)"}: B's mode ${r.bMode?.mode ?? "?"}`);
+  row("published", r.published);
+  row(r.live ? "notified" : "notified n/a", r.notified);
+  row("rendered", r.rendered);
+  row("TOTAL", r.total);
 }
 console.log(`  screenshots: ${SHOTS} (SDK ${SDK_REV})`);
 console.log(`  node: 127.0.0.1:${NODE_PORT}, pid ${node.pid}`);

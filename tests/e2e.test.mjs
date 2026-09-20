@@ -248,11 +248,26 @@ try {
         count: d => later(rows.length),
         scan: () => later(rows.slice()),
         get: () => later(null),
-        bind: () => ({ getSnapshot: () => snap, reload: async () => { snap = rows.slice(); }, liveMode: () => ({ mode: "Polled" }) }),
+        // A REAL BINDING: listeners included, because the thing under test is
+        // whether anything listens.
+        bind: () => {
+          const ls = new Set();
+          const b = {
+            getSnapshot: () => snap,
+            subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
+            reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },
+            liveMode: () => ({ mode: "Polled" }),
+          };
+          window.__binds = window.__binds ?? [];
+          window.__binds.push(b);
+          return b;
+        },
         liveMode: () => ({ mode: "Polled" }),
       };
+      window.__rows = rows;
       const root = document.createElement("div");
       document.body.appendChild(root);
+      window.__root = root;
       const app = {
         components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
         schemas: { notes: SCHEMA },
@@ -281,6 +296,35 @@ try {
     console.log("ok e2e: the app mounts over a backend whose reads answer LATER, fills its table, and its schema read REFUSES");
   }
 
+  // ---------------------------------------------------------------------
+  // DATA THAT CHANGES UNDERNEATH MUST REACH THE SCREEN, WITH NO APP CALL.
+  //
+  // A write reaching the network, or another tab's row arriving, changes a
+  // binding's rows without anybody clicking anything. Components read
+  // `getSnapshot()`, so unless something SUBSCRIBES, the new rows sit in the
+  // binding and the screen keeps showing the old ones.
+  //
+  // Measured against a real node: `db.scan()` returned rows CLEAN three
+  // seconds after a write while the chips on screen still said "saving" ten
+  // seconds later, and a second tab never showed the first tab's row at all.
+  // Every acceptance item about data appearing failed on this.
+  // ---------------------------------------------------------------------
+  {
+    const before = await evaluate(`return window.__root.querySelectorAll("tbody tr").length;`);
+    const after = await evaluate(`
+      // Nothing here touches the app: a row appears in the backing store and
+      // the binding is reloaded, exactly as a notification or a tick does it.
+      window.__rows.push({ id: "b", fields: { title: "arrived" }, state: "CLEAN" });
+      for (const b of window.__binds) await b.reload();
+      await new Promise(r => setTimeout(r, 0));
+      return window.__root.querySelectorAll("tbody tr").length;`);
+    assert.strictEqual(after, before + 1,
+      "a row that arrived underneath never reached the screen: the binding has " +
+      "the rows and nothing re-rendered. Components read getSnapshot(), so " +
+      "something must subscribe — the app cannot be the only thing that redraws");
+    console.log("ok e2e: **a row arriving underneath re-renders, with no app call**");
+  }
+
   // THE CONTROL. The same mount with SYNCHRONOUS reads must also work —
   // otherwise the test above would pass on a runtime that had simply stopped
   // reading schemas at all, and both backends have to keep working.
@@ -295,7 +339,15 @@ try {
         put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
         schema: () => SCHEMA, domains: () => ["notes"], count: () => rows.length,
         scan: () => rows.slice(), get: () => null,
-        bind: () => ({ getSnapshot: () => snap, reload: async () => { snap = rows.slice(); }, liveMode: () => ({ mode: "Polled" }) }),
+        bind: () => {
+          const ls = new Set();
+          return {
+            getSnapshot: () => snap,
+            subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
+            reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },
+            liveMode: () => ({ mode: "Polled" }),
+          };
+        },
         liveMode: () => ({ mode: "Polled" }),
       };
       const root = document.createElement("div");

@@ -46,6 +46,25 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // distinction the whole cached-read layer exists for, and collapsing it is
   // how a transient becomes a wrong screen.
 
+  // LISTEN TO THE BINDINGS.
+  //
+  // A binding's whole purpose is to say "these rows changed", and nothing was
+  // listening: components read `getSnapshot()` and the app re-rendered only
+  // when the PERSON did something. So data that changed underneath — a write
+  // reaching the network, another tab's row arriving — updated the snapshot
+  // and never reached the screen.
+  //
+  // MEASURED against a real node: `db.scan()` returned rows CLEAN three
+  // seconds after a write while the chips on screen still said "saving" ten
+  // seconds later, and a second tab never showed the first tab's row at all.
+  // Every acceptance item about data appearing failed on this one line being
+  // absent — the SDK offered `subscribe` (craftworks-sdk#77) and this file
+  // never called it.
+  //
+  // Safe against a loop: `render` reads snapshots and never reloads, so a
+  // re-render cannot trigger another change.
+  const stops = bindings.map(b => b.subscribe(() => render()));
+
   const refresh = async () => { for (const b of bindings) await b.reload(); };
   const changed = async () => { await refresh(); render(); onData(db); };
   const guard = async (fn, box) => { try { await fn(); box.textContent = ""; } catch (e) { box.textContent = e.message; } };
@@ -166,6 +185,16 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // So one handle, named and documented, rather than a hook invented per run:
   // a harness that reaches in a different way each time ends up measuring
   // itself. Read-only by intent — nothing in this file reads it back.
+  // A STABLE ID PER DATABASE, so a dump can say whether two readings are of
+  // the SAME copy. The chip on a row and the figure in the tree panel read
+  // through different call paths, and "pending here, nothing pending there"
+  // is either one copy contradicting itself or two copies — which are
+  // different faults with different fixes.
+  db.__id ??= (globalThis.__dbSeq = (globalThis.__dbSeq ?? 0) + 1);
+  // The previous mount's listeners, stopped: two mounts both re-rendering
+  // into one canvas is the shape that made Preview mount the app twice.
+  globalThis.__craftworksStop?.();
+  globalThis.__craftworksStop = () => { for (const s of stops) s?.(); };
   globalThis.__craftworks = { db, app, phase };
 
   return db;
