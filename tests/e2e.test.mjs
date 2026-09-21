@@ -414,7 +414,7 @@ try {
       const seed = { notes: Array.from({ length: N }, (_, i) => ({ title: name(i + 1) })) };
       const root = document.createElement("div");
       document.body.appendChild(root);
-      const db = await mountApp(root, sdk, {
+      const { db } = await mountApp(root, sdk, {
         components: [{ type: "list", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
         schemas: { notes: SCHEMA }, seed,
       }, () => {}, null, "idle");
