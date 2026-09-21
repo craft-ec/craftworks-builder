@@ -62,9 +62,29 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
         "artefacts, so it must name the contract that holds them.",
     );
   }
+  // THE KEY SET MUST EQUAL `NAMED`, not merely contain it.
+  //
+  // A missing entry is a pin too old to name everything an app needs. An
+  // EXTRA one is the direction that goes stale quietly: the SDK grew an
+  // artefact, apps carry on naming the four they know about, and the new one
+  // is simply never fetched — with nothing anywhere saying so. Both are
+  // mismatches between what the SDK ships and what a bundle names, and only
+  // one of them announces itself.
+  const named = Object.keys(manifest ?? {}).filter(k => k !== "note");
   const missing = NAMED.filter(n => !manifest?.[n]?.sha256);
+  const extra = named.filter(k => !NAMED.includes(k));
   if (missing.length) {
-    throw new Error(`the SDK manifest has no hash for: ${missing.join(", ")}`);
+    throw new Error(
+      `the SDK manifest has no hash for: ${missing.join(", ")}. ` +
+        "A packaged app names all four artefacts, so this SDK build is too old for it.",
+    );
+  }
+  if (extra.length) {
+    throw new Error(
+      `the SDK manifest carries artefacts this build does not name: ${extra.join(", ")}. ` +
+        "An app would not fetch them, and nothing would say so — add them to NAMED " +
+        "or say why they are not an app's to carry.",
+    );
   }
 
   const files = {};

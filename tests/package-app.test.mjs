@@ -125,12 +125,40 @@ await t("no artefacts key is a refusal", async () => {
   );
 });
 
-await t("a manifest missing a hash is a refusal, naming which", async () => {
+await t("a manifest missing a hash is a refusal, naming which AND why", async () => {
   const broken = { ...manifest, delegate: { file: "engine_delegate.wasm" } };
   await assert.rejects(
     () => packageApp(APP, { sdkFiles: SDK_JS, manifest: broken, artefactsKey: KEY, subtle }),
-    /no hash for: delegate/,
+    e => {
+      assert.match(e.message, /no hash for: delegate/, "it does not name the missing entry");
+      assert.match(e.message, /too old/,
+        "it does not say the SDK build is too old, so the reader treats a stale PIN as a " +
+        "broken manifest — which is the wrong thing to go and fix");
+      return true;
+    },
   );
+});
+
+await t("**an EXTRA artefact is a mismatch too**", async () => {
+  // The direction that goes stale quietly: the SDK grows an artefact, apps
+  // carry on naming the four they know about, and the new one is never
+  // fetched with nothing anywhere saying so.
+  const grown = { ...manifest, keeper: { file: "keeper.wasm", sha256: "a".repeat(64), bytes: 1 } };
+  await assert.rejects(
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: grown, artefactsKey: KEY, subtle }),
+    /does not name: keeper|not name: keeper|artefacts this build does not name: keeper/,
+  );
+});
+
+await t("THE CONTROL: this build's real manifest is exactly the four", async () => {
+  // Without this the two refusals above could both be satisfied by a manifest
+  // nobody actually ships. This asserts the shipped one matches, so the pin
+  // being too old fails HERE rather than in a packaging call later.
+  const keys = Object.keys(manifest).filter(k => k !== "note").sort();
+  assert.deepStrictEqual(keys, [...NAMED].sort(),
+    `sdk/artefacts.json carries ${keys.join(", ")}. If entries are MISSING the pinned SDK ` +
+    "revision is too old to name what an app needs; if there are extra ones the SDK has " +
+    "grown an artefact this build would never fetch.");
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok package app\n");

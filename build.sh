@@ -155,6 +155,26 @@ cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
   echo "the SDK build has no artefacts.json — an app cannot name what it does not carry" >&2
   exit 1
 }
+# ITS CONTENT, NOT ITS PRESENCE.
+#
+# Older SDK revisions wrote a manifest carrying only `delegate`. Checking the
+# file EXISTS accepts one of those and leaves packaging to fail later with
+# "the SDK manifest has no hash for: sdk, block, register" — which reads as a
+# broken manifest when the truth is that THE PIN IS TOO OLD. So the failure
+# says which entries are missing AND which revision was asked for.
+#
+# This is the same shape as the cache marker two blocks up: a check that a
+# thing is THERE is not a check that it is what you need. It cost a green
+# test run here — the suite read a manifest left in the tree by a NEWER
+# build than the pin selects, so it measured an environment the commit does
+# not contain.
+for want in sdk delegate block register; do
+  grep -q "\"$want\"" "$out/pkg/web/artefacts.json" || {
+    echo "the SDK at $rev writes an artefacts.json with no \"$want\" entry." >&2
+    echo "A packaged app names all four artefacts by hash, so this pin is too old for it." >&2
+    exit 1
+  }
+done
 cp "$out/pkg/web/artefacts.json" sdk/
 
 # THE ARTEFACTS PUBLISHING NEEDS.
