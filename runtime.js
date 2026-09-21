@@ -19,14 +19,14 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive = () => true } = {}) {
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive = () => true, seed = !backend } = {}) {
   // `alive` says whether this mount is still WANTED. The owner of a project's
   // runtime (project-runtime.js) answers false once the project was switched,
   // the definition edited, or the preview left — and a mount that finishes
   // after that must not paint the canvas, must not report data, and must not
   // leave listeners behind. Checked after every await, because each await is
   // a point where the world can have moved on (builder#54, #57).
-  const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db());
+  const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db(), { seed });
   if (!alive()) return null;
   const editing = {}; // domain → record being edited
   const report = d => { if (alive()) onData(d); };

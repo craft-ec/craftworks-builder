@@ -3,7 +3,8 @@ import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
-import { defaultSchema, KINDS, preloadManifest } from "./runtime-logic.js";
+import { defaultSchema, KINDS, preloadManifest, schemasOf } from "./runtime-logic.js";
+import { handoff } from "./handoff.js";
 import { LIVE_NOTE, isLive } from "./publish-state.js";
 import { buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
@@ -300,6 +301,10 @@ async function doPublish() {
       port: nodePort(),
     }, {
       onPhase: () => { renderPublish(); renderAddr(); },
+      // What Publish owes the records made in Preview: copied, and confirmed
+      // by the node, before anything says Published (builder#52).
+      handoff: ({ source, target, ledger }) =>
+        handoff({ source, target, app, schemas: schemasOf(app), ledger }),
       // The publication is RECORDED before the preload, because the publish
       // has already succeeded by this point: a failed preload is not a failed
       // publish, and history that omitted it would be wrong about what

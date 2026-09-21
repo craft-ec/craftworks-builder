@@ -45,6 +45,16 @@ export const headline = schema => (schema.fields.find(f => f.kind === "text") ??
 export const domainsOf = app => [...new Set(app.components.map(c => c.domain).filter(Boolean))];
 
 /**
+ * The schema of every domain this app opens: its declared one, or the default.
+ *
+ * ONE definition, used by `openApp` to define a backend and by the publish
+ * handoff to define the one it copies into. Two copies of this rule would be
+ * two backends disagreeing about what a domain is.
+ */
+export const schemasOf = app =>
+  Object.fromEntries(domainsOf(app).map(d => [d, app.schemas?.[d] ?? defaultSchema(d)]));
+
+/**
  * Open the app's data: define every domain, load seed records. Returns the db
  * and anything that went wrong (a refused schema or seed row), so the UI can
  * say so.
@@ -59,7 +69,7 @@ export const domainsOf = app => [...new Set(app.components.map(c => c.domain).fi
  * row must not leave a person staring at a blank canvas with no idea which
  * row it was.
  */
-export async function openApp(sdk, app, db = new sdk.Db()) {
+export async function openApp(sdk, app, db = new sdk.Db(), { seed = true } = {}) {
   const problems = [];
   // THE SCHEMAS THIS APP IS OPENED WITH, returned rather than read back.
   //
@@ -72,14 +82,17 @@ export async function openApp(sdk, app, db = new sdk.Db()) {
   // Measured: it answered exactly that, against a real node, moments after a
   // publish. Both components rendered "No schema for “notes”." for a domain
   // whose schema was three lines above in the app definition.
-  const schemas = {};
-  for (const d of domainsOf(app)) {
-    const schema = app.schemas?.[d] ?? defaultSchema(d);
-    schemas[d] = schema;
+  const schemas = schemasOf(app);
+  for (const [d, schema] of Object.entries(schemas)) {
     try { await db.define(d, schema); }
     catch (e) { problems.push(`${d}: ${e.message}`); }
   }
-  for (const [d, rows] of Object.entries(app.seed ?? {})) {
+  // THE SEED IS WHAT A NEW, EMPTY APP STARTS WITH, so it goes into the preview
+  // database — a fresh one on every mount — and NOT into a published backend.
+  // That one persists: seeding it on every mount put the rows in again each
+  // time, and brought back seed rows the person had deleted in Preview. What
+  // reaches a published backend is the HANDOFF (handoff.js), once (builder#52).
+  if (seed) for (const [d, rows] of Object.entries(app.seed ?? {})) {
     for (const row of rows) {
       try { await db.put(d, row); } catch (e) { problems.push(`${d} seed: ${e.message}`); }
     }

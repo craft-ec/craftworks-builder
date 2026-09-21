@@ -35,8 +35,14 @@ export function buttonFor(phase, { error = "" } = {}) {
       return { label: "Setting the node up…", enabled: false, tone: "working", hint:
         "Installing the engine and the contracts. This happens once per node, not once per project." };
     case "opening":
-      return { label: "Moving the data…", enabled: false, tone: "working", hint:
-        "Writing this project's records through the engine." };
+      // This used to say "Moving the data…" while nothing moved any data: the
+      // preview's records were dropped and the button went on to Published
+      // (builder#52). The claim belongs to the phase that now keeps it.
+      return { label: "Opening…", enabled: false, tone: "working", hint:
+        "Connected; opening this project's database on the node." };
+    case "migrating":
+      return { label: "Moving your records…", enabled: false, tone: "working", hint:
+        "Copying what you made in Preview to the node, and waiting for it to confirm each one." };
     case "published":
       return { label: "Published", enabled: false, tone: "ok", hint:
         "On the network. Each row now says what its own write is doing." };
