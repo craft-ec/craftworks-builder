@@ -38,11 +38,16 @@ try {
   // answers. The condition keeps its deadline.
   const until = async (expr, what, ms = 15_000) => {
     const end = Date.now() + ms;
+    // The LAST error is kept: "not yet" must not swallow a genuine exception in
+    // the expression, which would otherwise time out looking like a condition
+    // that simply never became true.
+    let lastError = null;
     while (Date.now() < end) {
-      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; } catch (_) { /* not yet */ }
+      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; lastError = null; }
+      catch (e) { lastError = e; }
       await sleep(100);
     }
-    throw new Error(`timed out after ${ms} ms: ${what}`);
+    throw new Error(`timed out after ${ms} ms: ${what}${lastError ? ` — last error: ${lastError.message}` : ""}`);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });

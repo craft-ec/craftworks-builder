@@ -55,13 +55,18 @@ try {
   // on timeout the message says what was last SEEN, not only what was wanted.
   const until = async (expr, what, { ms = 10_000, show = null } = {}) => {
     const end = Date.now() + ms;
+    // The LAST error is kept: "not yet" must not swallow a genuine exception in
+    // the expression, which would otherwise time out looking like a condition
+    // that simply never became true.
+    let lastError = null;
     while (Date.now() < end) {
-      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; } catch (_) { /* not yet */ }
+      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; lastError = null; }
+      catch (e) { lastError = e; }
       await sleep(100);
     }
     let seen = "";
     if (show) { try { seen = ` — last seen: ${JSON.stringify(await evaluate(`return ${show}`))}`; } catch (_) {} }
-    throw new Error(`timed out after ${ms} ms: ${what}${seen}`);
+    throw new Error(`timed out after ${ms} ms: ${what}${seen}${lastError ? ` — last error: ${lastError.message}` : ""}`);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });
