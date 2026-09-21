@@ -44,9 +44,22 @@ try {
     if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "page error");
     return r.result.result.value;
   };
-  const until = async (expr, what) => {
-    for (let i = 0; i < 80; i++) { if (await evaluate(`return ${expr}`)) return; await sleep(100); }
+  // A failed or unanswered evaluate is "not yet", not a failure: one sent while
+  // the page is mid-navigation never answers, and treating that as fatal made
+  // a reload look like a hung page. The condition itself still has a deadline.
+  const until = async (expr, what, ms = 10_000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; } catch (_) { /* not yet */ }
+      await sleep(100);
+    }
     throw new Error(`timed out: ${what}`);
+  };
+  /** Reload, and wait until the app has opened a project whose name is `name`. */
+  const reloadInto = async (name, what) => {
+    await send("Page.reload", { ignoreCache: true });
+    await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")
+      && JSON.parse(document.getElementById("def").textContent).name === ${JSON.stringify(name)}`, what);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });
@@ -66,11 +79,24 @@ try {
       await evaluate(`document.getElementById("projects-chip").click();`);
     }
   };
-  const newProject = async () => { await openPop(); await evaluate(`document.getElementById("projects-new").click();`); await sleep(400); await closePop(); };
+  // EVERY STEP WAITS FOR THE STATE IT CAUSED, never for a duration. A fixed
+  // sleep is a guess about how long the page takes, and this file's guesses
+  // failed intermittently (a duplicate read before it was written).
+  const rows = () => evaluate(`return [...document.querySelectorAll(".proj-row b")].map(b => b.textContent);`);
+  const newProject = async () => {
+    await openPop();
+    const before = (await rows()).length;
+    await evaluate(`document.getElementById("projects-new").click();`);
+    await until(`document.querySelectorAll(".proj-row").length === ${before + 1}
+      && JSON.parse(document.getElementById("def").textContent).name === "Project ${before + 1}"`, "the new project to open");
+    await closePop();
+  };
   const openByTitle = async t => {
     await openPop();
+    await until(`[...document.querySelectorAll(".proj-row b")].some(b => b.textContent === ${JSON.stringify(t)})`, `a row for ${t}`);
     await evaluate(`[...document.querySelectorAll(".proj-row")].find(r => r.querySelector("b").textContent === ${JSON.stringify(t)}).click();`);
-    await sleep(400); await closePop();
+    await until(`JSON.parse(document.getElementById("def").textContent).name === ${JSON.stringify(t)}`, `${t} to open`);
+    await closePop();
   };
   /** Place a Table on `tables` and set its schema type, through the UI. */
   const tableWithType = async type => {
@@ -78,7 +104,14 @@ try {
     await until(`!!document.querySelector('#props input[title="Record type name"]')`, "the schema editor");
     await evaluate(`const i = document.querySelector('#props input[title="Record type name"]');
       i.value = ${JSON.stringify(type)}; i.dispatchEvent(new Event("input", { bubbles: true }));`);
-    await sleep(400);   // the save is asynchronous
+    // The save is asynchronous: wait until the edit is STORED with the project,
+    // not merely on screen — the next step switches away from it.
+    await until(`(async () => {
+      const { LocalDb } = await import("/local-db.js");
+      const P = await import("/projects.js");
+      const pid = JSON.parse(localStorage.getItem("craftec.builder.device.v1")).lastOpened;
+      return (await P.openProject(new LocalDb(), pid))?.schemas?.tables?.type === ${JSON.stringify(type)};
+    })()`, `${type} to be stored with its project`);
   };
 
   // 0. AN EXISTING PROJECT FROM BEFORE THIS CHANGE keeps its schema. Its
@@ -103,21 +136,13 @@ try {
       components: [{ type: "table", domain: "tables", mode: "owned" }],
       schemas: { tables: { type: "SchemaOld", fields: [{ name: "title", kind: "text", required: true }] } },
       seed: {} }));`);
-  await send("Page.reload", { ignoreCache: true });
-  await sleep(300);
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after seeding an old project");
-  await sleep(600);
+  await reloadInto("Old project", "the old project to reopen after seeding it");
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaOld",
     "the last-opened OLD project must keep the schema its working copy held, not open empty");
-  await send("Page.reload", { ignoreCache: true });
-  await sleep(300);
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after a second reload");
-  await sleep(600);
+  await reloadInto("Old project", "the old project after a second reload");
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaOld", "and it is now STORED with the project");
   console.log("ok page: an existing project keeps its schema across the upgrade, and it is now stored with it");
   await evaluate(`localStorage.clear();`);
-  await send("Page.reload", { ignoreCache: true });
-  await sleep(300);
   }
 
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
@@ -140,10 +165,7 @@ try {
   console.log("ok page: reopening Project 1 shows SchemaA, not Project 2's SchemaB (builder#53)");
 
   // A reload does not lose it: it is STORED with Project 1 now.
-  await send("Page.reload", { ignoreCache: true });
-  await sleep(300);
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after reload");
-  await sleep(500);
+  await reloadInto("Project 1", "Project 1 to reopen after a reload");
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaA", "after a reload Project 1 still reads SchemaA");
   await openByTitle("Project 2");
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaB", "and Project 2 still reads SchemaB");
@@ -153,7 +175,6 @@ try {
   await openByTitle("Project 1");
   await openPop();
   await evaluate(`document.getElementById("projects-dup").click();`);
-  await sleep(400);
   await openByTitle("Project 1 copy");
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaA", "a duplicate of Project 1 carries SchemaA");
   console.log("ok page: a duplicate carries its source's definition");
