@@ -227,7 +227,11 @@ export async function adoptLegacy({ db, storage, copy, last }) {
 
   for (const id of todo) {
     const p = listed.find(x => x.id === id);
-    if (p) {
+    // STILL legacy, checked NOW. The definition is written before the marker,
+    // so a marker write that fails — or a page that dies between the two —
+    // leaves a project adopted but unmarked, and the person may have defined
+    // it since. Adopting again from the older snapshot would overwrite that.
+    if (p?.legacy) {
       const isLast = id === snap.last;
       const own = domainsOf(p);
       // The last-opened project also keeps copy domains NO listed project binds:

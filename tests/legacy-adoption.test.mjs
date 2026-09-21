@@ -135,4 +135,29 @@ await t("a refused snapshot write adopts NOTHING — never from the live copy by
   assert.deepStrictEqual((await def(db, p1)).schemas, {}, "no snapshot, no adoption");
 });
 
+await t("**a lost adoption marker does not re-adopt over what the person defined since**", async () => {
+  // Adoption writes the definition, THEN the marker. If the marker write fails
+  // (quota) or the page dies between the two, the next mount must not adopt
+  // again from the older snapshot over edits made since (review of builder#67).
+  const { st, db } = await fresh();
+  const p1 = await legacyOn(db, "P1", "a");
+  lastOpened(st, p1.id);
+  let writes = 0;
+  const set = st.setItem;
+  st.setItem = (k, v) => {
+    if (k === LEGACY_SNAPSHOT_KEY && ++writes === 2) throw new Error("QuotaExceededError");   // the MARKER write
+    return set(k, v);
+  };
+  await mount(db, st, { schemas: { a: invoices }, seed: {} });
+  st.setItem = set;
+  assert.deepStrictEqual((await def(db, p1)).schemas, { a: invoices }, "P1 adopted");
+  assert.deepStrictEqual(JSON.parse(st.getItem(LEGACY_SNAPSHOT_KEY)).adopted, [], "and the marker was lost");
+  // The person edits P1's schema.
+  const { saveDefinition } = await import("../projects.js");
+  const edited = { fields: [{ name: "edited", kind: "text" }] };
+  await saveDefinition(db, p1.id, { schemas: { a: edited }, seed: {}, tree: { realm: "public", identity: null } });
+  await mount(db, st, { schemas: { a: invoices }, seed: {} });
+  assert.deepStrictEqual((await def(db, p1)).schemas, { a: edited }, "the edit survives the next mount");
+});
+
 console.log("\nlegacy adoption: all ok");
