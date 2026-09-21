@@ -172,6 +172,45 @@ try {
   assert.ok(!("b" in one), `and only its own — never P2's SB: ${JSON.stringify(one)}`);
   console.log("ok page: every legacy project adopts exactly its own domains' schemas from the working copy");
   await evaluate(`localStorage.clear();`);
+
+  // ONCE, ENFORCED (review of builder#67). P1 binds `c`, which the copy holds
+  // nothing for: it must still leave the first mount NON-legacy, or a later
+  // mount would hand it whatever the copy holds by then. And the last-opened
+  // project keeps a copy domain nobody's components bind to (`z`).
+  await evaluate(`
+    const { LocalDb } = await import("/local-db.js");
+    const P = await import("/projects.js");
+    const db = new LocalDb();
+    await P.defineProjectDomains(db);
+    const p1 = await P.createProject(db, { title: "Legacy c" });
+    await P.addComponent(db, p1.id, { kind: "table", props: { domain: "c", mode: "owned" } });
+    const p2 = await P.createProject(db, { title: "Legacy b" });
+    await P.addComponent(db, p2.id, { kind: "table", props: { domain: "b", mode: "owned" } });
+    localStorage.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p2.id }));
+    localStorage.setItem("craftec.builder.app.v2", JSON.stringify({
+      name: "Legacy b", tree: { realm: "public", identity: null },
+      components: [{ type: "table", domain: "b", mode: "owned" }],
+      schemas: { b: { type: "SB", fields: [] }, z: { type: "SZ", fields: [] } }, seed: {} }));`);
+  await reloadInto("Legacy b", "mount 1");
+  const lastKeeps = Object.keys((await def()).schemas ?? {}).sort();
+  assert.deepStrictEqual(lastKeeps, ["b", "z"], `the last-opened project keeps an unclaimed copy domain: ${JSON.stringify(lastKeeps)}`);
+  const afterMount1 = await evaluate(`
+    const { LocalDb } = await import("/local-db.js"); const P = await import("/projects.js");
+    const db = new LocalDb(); const row = (await P.listProjects(db)).find(r => r.fields.title === "Legacy c");
+    const p = await P.openProject(db, row.id); return { legacy: p.legacy, schemas: p.schemas };`);
+  assert.strictEqual(afterMount1.legacy, false, "the pass must leave every project it touched non-legacy");
+  // The copy changes, and the builder mounts again.
+  await evaluate(`const a = JSON.parse(localStorage.getItem("craftec.builder.app.v2"));
+    a.schemas.c = { type: "SX from later", fields: [] }; localStorage.setItem("craftec.builder.app.v2", JSON.stringify(a));`);
+  await reloadInto("Legacy b", "mount 2");
+  const afterMount2 = await evaluate(`
+    const { LocalDb } = await import("/local-db.js"); const P = await import("/projects.js");
+    const db = new LocalDb(); const row = (await P.listProjects(db)).find(r => r.fields.title === "Legacy c");
+    return (await P.openProject(db, row.id)).schemas;`);
+  assert.deepStrictEqual(afterMount2, afterMount1.schemas,
+    `a project adopted once must be unchanged by a later mount with a different copy: ${JSON.stringify(afterMount2)}`);
+  console.log("ok page: the adoption happens once — a later mount with a changed copy leaves a project as it was");
+  await evaluate(`localStorage.clear();`);
   }
 
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });

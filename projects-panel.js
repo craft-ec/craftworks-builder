@@ -408,19 +408,36 @@ export async function mountProjects(host, {
   //
   // The binding and version stamp in the copy are the open project's, so only
   // the last-opened one adopts those.
+  //
+  // ONCE, and enforced: every project this pass touches LEAVES it non-legacy,
+  // even one whose domains the copy holds nothing for. Left legacy, such a
+  // project would adopt whatever the working copy held at some LATER mount —
+  // another project's schema by then (found in review of builder#67). A
+  // non-last project is given the default binding, which is what it had.
+  //
+  // The last-opened project also keeps every copy domain that NO legacy
+  // project's components bind to: those schemas were set in the open project
+  // and nothing else can claim them, so dropping them would lose them.
   const last = current();
   if (getDefinition) {
     const copy = getDefinition();
+    const legacy = [];
     for (const row of await listProjects(db)) {
       const p = await openProject(db, row.id);
-      if (!p?.legacy) continue;
-      const own = new Set(p.components.map(c => c.props?.domain).filter(Boolean));
-      const pick = m => Object.fromEntries(Object.entries(m ?? {}).filter(([d]) => own.has(d)));
+      if (p?.legacy) legacy.push(p);
+    }
+    const domainsOf = p => new Set(p.components.map(c => c.props?.domain).filter(Boolean));
+    const claimed = new Set(legacy.flatMap(p => [...domainsOf(p)]));
+    for (const p of legacy) {
+      const isLast = p.id === last;
+      const own = domainsOf(p);
+      const keep = d => own.has(d) || (isLast && !claimed.has(d));
+      const pick = m => Object.fromEntries(Object.entries(m ?? {}).filter(([d]) => keep(d)));
       await saveDefinition(db, p.id, {
         schemas: pick(copy.schemas),
         seed: pick(copy.seed),
-        tree: p.id === last ? copy.tree ?? null : null,
-        versions: p.id === last ? copy.versions ?? null : null,
+        tree: isLast ? (copy.tree ?? { realm: "public", identity: null }) : { realm: "public", identity: null },
+        versions: isLast ? copy.versions ?? null : null,
       });
     }
   }
