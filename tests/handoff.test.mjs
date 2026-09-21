@@ -6,7 +6,10 @@
 // rows report the states the engine reports: PENDING, then CLEAN, or
 // ROLLED_BACK, or never confirmed.
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadSdk } from "../sdk-loader.js";
 import { handoff, newLedger } from "../handoff.js";
 import { openApp, schemasOf } from "../runtime-logic.js";
@@ -99,6 +102,28 @@ await t("**a partial failure, then a retry: nothing lost, nothing doubled, later
   assert.deepStrictEqual(again, { copied: 0, updated: 0, removed: 0, seeded: 0 });
 });
 
+await t("**an edit in the SAME MILLISECOND as the write before it is still carried**", async () => {
+  // Deterministic, rather than left to timing: every row the source scans is
+  // made to report the SAME `updated` it had at the first handoff, which is
+  // what an edit landing in the same millisecond looks like. Detecting change
+  // by `updated` missed exactly this, in 10 of 20 runs of the retry test.
+  const src = await preview();
+  const dst = new sdk.Db();
+  const ledger = newLedger();
+  await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger });
+  const [first] = await src.scan("tasks");
+  const frozen = first.updated;
+  await src.update("tasks", first.id, { title: "edited within the same ms" });
+  const sameMs = new Proxy(src, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "scan") return async (...a) => (await v.apply(o, a)).map(r => (r.id === first.id ? { ...r, updated: frozen } : r));
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  const did = await handoff({ source: sameMs, target: dst, app, schemas: schemasOf(app), ledger });
+  assert.strictEqual(did.updated, 1, "the edit must be seen even though `updated` did not move");
+  assert.deepStrictEqual(await titles(dst), await titles(src));
+});
+
 await t("a row deleted in the preview after a partial attempt is removed from the target", async () => {
   const src = await preview();
   const dst = new sdk.Db();
@@ -145,6 +170,93 @@ await t("**never confirmed fails at the deadline instead of waiting for ever**",
   const dst = acking(() => "PENDING");
   await assert.rejects(handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: fast }),
     /not confirmed by the node yet/);
+});
+
+// ---- rollback, then retry (found in review of builder#61) -------------------
+
+/**
+ * A node over a real Db that ACCEPTS a put and later LOSES it: the `n`-th put
+ * of the first attempt resolves, then the node drops the row — which is how a
+ * real rollback looks, since a put resolves when the copy is queued and the
+ * refusal arrives afterwards. Counts every put.
+ */
+function losesOne(lose = 2) {
+  const db = new sdk.Db();
+  let puts = 0, healthy = false;
+  const target = new Proxy(db, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "put") return async (...a) => {
+      const r = await v.apply(o, a);
+      puts += 1;
+      if (!healthy && puts === lose) await o.delete(a[0], r.id);   // the node rolled it back
+      return r;
+    };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  return { target, puts: () => puts, heal: () => { healthy = true; } };
+}
+
+async function rollbackThenRetry(run) {
+  const src = await preview();
+  await src.put("tasks", { title: "row 3" });
+  const node = losesOne(2);
+  const ledger = newLedger();
+  const go = () => run({ source: src, target: node.target, app, schemas: schemasOf(app), ledger, confirm: fast });
+  await assert.rejects(go(), /did not reach the node/);
+  const after1 = node.puts();
+  node.heal();
+  await go();                                         // the retry, on a healthy node
+  return { after1, extra: node.puts() - after1, onNode: await titles(node.target), inPreview: await titles(src) };
+}
+
+await t("**a copy the node ROLLED BACK is re-copied by the retry, and the retry succeeds**", async () => {
+  const r = await rollbackThenRetry(handoff);
+  assert.strictEqual(r.extra, 1, "exactly ONE extra put: the lost row, and nothing else");
+  assert.deepStrictEqual(r.onNode, r.inPreview, "all three rows are on the node after the retry");
+});
+
+await t("THE CONTROL: with lost copies REMEMBERED — the code before this fix — the retry can never succeed", async () => {
+  // Self-contained rather than pinned to a commit: the handoff before this fix
+  // differed from this one in exactly one respect on this path — it never
+  // removed a lost copy from the ledger. A ledger whose `delete` does nothing
+  // reproduces that precisely, and cannot become unreachable the way a
+  // rewritten branch's commit does.
+  // The SAME ledger across both attempts, as in the product; only its rows'
+  // `delete` is disabled, once, in place.
+  const remembering = async args => {
+    args.ledger.rows.delete = () => false;
+    return handoff(args);
+  };
+  await assert.rejects(rollbackThenRetry(remembering), /did not reach the node/,
+    "a remembered lost copy is skipped as already copied, and the retry fails the same way, forever");
+});
+
+await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", async () => {
+  // Or a slow node would get every row twice on the retry.
+  const src = await preview();
+  const db = new sdk.Db();
+  let puts = 0, slow = true;
+  const target = new Proxy(db, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "put") return async (...a) => { puts += 1; return v.apply(o, a); };
+    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: slow ? "PENDING" : "CLEAN" }; };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  const ledger = newLedger();
+  const go = () => handoff({ source: src, target, app, schemas: schemasOf(app), ledger, confirm: fast });
+  await assert.rejects(go(), /not confirmed by the node yet/);
+  assert.strictEqual(ledger.rows.size, 2, "both copies are still remembered");
+  const before = puts;
+  slow = false;
+  await go();
+  assert.strictEqual(puts - before, 0, "the retry copies nothing again");
+});
+
+await t("**a record reporting NO state is not counted as confirmed**", async () => {
+  const src = await preview();
+  const dst = acking(() => undefined);
+  await assert.rejects(handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: fast }),
+    /not confirmed by the node yet/, "absent is UNKNOWN, and unknown waits — it does not say Published");
 });
 
 // ---- through the runtime: the UI does not claim what did not happen -------
