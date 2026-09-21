@@ -56,6 +56,17 @@ const changed = (c, rec) =>
  * Returns what it did, so a caller can assert on it rather than infer it.
  */
 export async function saveCanvas(db, pid, components) {
+  // A STABLE KEY PER CANVAS COMPONENT, assigned before the first `await`.
+  //
+  // `rid` names the RECORD, and it is only known once an add has come back.
+  // An add that landed but whose answer was lost, or two saves overlapping
+  // before either knew the rid, both write a SECOND record for the same
+  // component — and reload showed it twice (builder#49). The key is what says
+  // two records are one component: it is stored in the props, assigned here
+  // synchronously so a save that overlaps this one sees it, and `openProject`
+  // keeps one record per key. Two components that merely look alike have
+  // different keys and both stay.
+  for (const c of components) if (!c.key) c.key = newKey();
   const existing = await componentsOf(db, pid);
   const byId = new Map(existing.map(r => [r.id, r]));
   const kept = new Set();
@@ -87,6 +98,32 @@ export async function saveCanvas(db, pid, components) {
   return did;
 }
 
+/** A component key: random, so two devices never mint the same one. */
+const newKey = () => globalThis.crypto.randomUUID();
+
+/**
+ * Saves run ONE AT A TIME, each on what was asked for when it was asked.
+ *
+ * `persist` is called on every canvas change and did not wait for the previous
+ * save: two saves could both read the project before either added a new
+ * component, and both added it (builder#49, reproduced with two successful
+ * saves and no failure at all). So each call is chained behind the last, and
+ * captures its project and canvas at CALL time — a save that ran on "whatever
+ * is open when it starts" would write one project's canvas into another if the
+ * person switched in between.
+ *
+ * A save that fails does not stop the ones after it; its error still reaches
+ * its own caller.
+ */
+export function serialSaves(save) {
+  let tail = Promise.resolve();
+  return (pid, canvas) => {
+    const run = tail.then(() => save(pid, canvas));
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+
 export async function mountProjects(host, {
   db,
   getCanvas,          // () => the builder's current components
@@ -95,6 +132,8 @@ export async function mountProjects(host, {
   onChange = () => {},
 }) {
   await defineProjectDomains(db);
+  // Every save of this panel goes through here, one at a time (builder#49).
+  const save = serialSaves((pid, canvas) => saveCanvas(db, pid, canvas));
   let open = false;
   // True while a project is being loaded INTO the builder; see `choose`.
   let loading = false;
@@ -189,7 +228,8 @@ export async function mountProjects(host, {
       title: `${src.title} copy`,
       forked_from: { project: from },
     });
-    await saveCanvas(db, p.id, getCanvas());
+    // Through the same one-at-a-time chain as `persist`, or the two overlap.
+    await save(p.id, getCanvas());
     writeDeviceSettings(storage, { lastOpened: p.id });
     await paint();
     onChange();
@@ -228,7 +268,8 @@ export async function mountProjects(host, {
     if (loading) return;   // see `choose`
     const pid = current();
     if (!pid) return;
-    await saveCanvas(db, pid, getCanvas());
+    // Project and canvas taken NOW, before waiting on any earlier save.
+    await save(pid, getCanvas());
     await paint();
   }
 

@@ -215,6 +215,35 @@ export async function removeComponent(db, componentId) {
   return db.delete(COMPONENT, componentId);
 }
 
+/**
+ * One record per canvas component: where two records carry the same component
+ * `key`, keep the NEWER (builder#49).
+ *
+ * Two records for one component are what a save leaves when an add landed but
+ * its answer did not, or when two saves overlapped. The next successful save
+ * removes the extra; until then reload showed the component twice. "Newer" is
+ * the record id, which is time-ordered and strictly increasing within a
+ * project's band, so it needs no clock and resolves the same way on every
+ * open and every device. Records with no key (saved before keys existed) are
+ * each their own component and are never collapsed.
+ */
+export function oneRecordPerComponent(records) {
+  const newest = new Map();
+  for (const r of records) {
+    const key = componentKey(r);
+    if (!key) continue;
+    const had = newest.get(key);
+    if (!had || r.id > had.id) newest.set(key, r);
+  }
+  return records.filter(r => {
+    const key = componentKey(r);
+    return !key || newest.get(key) === r;
+  });
+}
+
+/** Which canvas component a record is: the key `saveCanvas` stored, if any. */
+const componentKey = r => dec(r.fields.props)?.key;
+
 /** Open a project: its record and its components, decoded. */
 export async function openProject(db, pid) {
   // `db.get` THROWS on an id it cannot parse rather than answering "not
@@ -225,7 +254,7 @@ export async function openProject(db, pid) {
   let project = null;
   try { project = await db.get(PROJECT, pid); } catch { return null; }
   if (!project) return null;
-  const components = (await componentsOf(db, pid)).map(r => ({
+  const components = oneRecordPerComponent(await componentsOf(db, pid)).map(r => ({
     id: r.id,
     kind: r.fields.kind,
     layout: dec(r.fields.layout),
