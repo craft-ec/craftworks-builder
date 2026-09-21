@@ -586,6 +586,9 @@ function render() {
 }
 
 $("publish").onclick = doPublish;
-$("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; rt.invalidate(); save(); render(); };
+// Emptied IN PLACE: the canvas array carries the base set of what this tab
+// held (builder#78), and a fresh `[]` would throw it away — after which the
+// save could not tell a record this tab cleared from one another tab added.
+$("clear").onclick = () => { app.components.length = 0; app.seed = {}; sel = -1; rt.invalidate(); save(); render(); };
 $("preview").onclick = () => { preview = !preview; rt.invalidate(); render(); };
 render();

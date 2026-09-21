@@ -52,7 +52,7 @@ await t("a tweak through saveCanvas keeps every id and touches ONE record", asyn
 
   assert.deepEqual(
     { ...did, untouched: did.untouched },
-    { added: 0, updated: 1, removed: 0, untouched: 2 , adopted: 0, conflicts: 0 },
+    { added: 0, updated: 1, removed: 0, untouched: 2 , adopted: 0, conflicts: 0, dropped: 0, restored: 0 },
     "one component changed, so one record is written and two are left alone",
   );
   assert.deepEqual(
@@ -77,7 +77,7 @@ await t("THE CONTROL: a save that changes nothing writes nothing", async () => {
   const blocksBefore = db.stats().blocks;
   const did = await saveCanvas(db, p.id, canvas);
 
-  assert.deepEqual(did, { added: 0, updated: 0, removed: 0, untouched: 2 , adopted: 0, conflicts: 0 },
+  assert.deepEqual(did, { added: 0, updated: 0, removed: 0, untouched: 2 , adopted: 0, conflicts: 0, dropped: 0, restored: 0 },
     "a no-op save must write nothing; without this a diff that rewrote everything would pass the test above");
   assert.deepEqual(await snapshot(db, p.id), before, "and the records are untouched");
   assert.equal(db.stats().blocks, blocksBefore, "and no block was written");
@@ -95,7 +95,7 @@ await t("adding and removing components does not disturb the others", async () =
   canvas.push({ type: "form", domain: "c" }); // and add a new one
   const did = await saveCanvas(db, p.id, canvas);
 
-  assert.deepEqual(did, { added: 1, updated: 0, removed: 1, untouched: 1 , adopted: 0, conflicts: 0 });
+  assert.deepEqual(did, { added: 1, updated: 0, removed: 1, untouched: 1 , adopted: 0, conflicts: 0, dropped: 0, restored: 0 });
   const ids = (await snapshot(db, p.id)).map(r => r.id);
   assert.ok(ids.includes(keptId), "the untouched component keeps its id");
   assert.ok(!ids.includes(goneId), "the removed one is gone");
@@ -121,7 +121,7 @@ await t("a project reopened round-trips its ids, so the NEXT save is a diff too"
 
   reopened[0].domain = "a2";
   const did = await saveCanvas(db, p.id, reopened);
-  assert.deepEqual(did, { added: 0, updated: 1, removed: 0, untouched: 0 , adopted: 0, conflicts: 0 },
+  assert.deepEqual(did, { added: 0, updated: 1, removed: 0, untouched: 0 , adopted: 0, conflicts: 0, dropped: 0, restored: 0 },
     "a save after a reopen is a diff, not a re-key — without the id round-tripping it would add and remove");
 });
 
