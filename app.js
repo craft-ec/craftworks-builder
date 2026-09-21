@@ -339,16 +339,15 @@ async function doPublish() {
       // What Publish owes the records made in Preview: copied, and confirmed
       // by the node, before anything says Published (builder#52).
       //
-      // Keyed by the PROJECT, and decided by whether it has completed a
-      // publish before (builder#83). Each is required: with no project open
-      // the handoff refuses by name rather than publishing rows it could not
-      // key.
+      // Keyed by the PROJECT (builder#83); whether each domain is already
+      // live is read from the TARGET by the handoff itself (builder#86).
+      // Each input is required: with no project open the handoff refuses by
+      // name rather than publishing rows it could not key.
       handoff: async ({ source, target }) => {
         const p = openedProject;
         return handoff({
           source, target, app, schemas: schemasOf(app), slotFrom: sdkReady.slotFrom,
           namespace: p?.id, seedMs: p?.created,
-          published: p && projects ? await projects.hasPublished(p.id) : undefined,
           onNotice: message => showStorageNotice({ kind: "kept", message }),
         });
       },

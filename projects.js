@@ -472,11 +472,6 @@ export async function nextSeq(db, pid) {
   return hist.length ? Math.max(...hist.map(h => h.seq ?? 0)) + 1 : 1;
 }
 
-/** Whether this project has COMPLETED a publish — what a handoff decides from (builder#83). */
-export async function hasPublished(db, pid) {
-  return (await publicationsOf(db, pid)).length > 0;
-}
-
 /** A project's publications, newest first. */
 export async function publicationsOf(db, pid) {
   const rows = await db.children(PUBLICATION, pid, { reverse: true });

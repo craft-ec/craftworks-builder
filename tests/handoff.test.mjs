@@ -30,8 +30,21 @@ const PID = "r0projectid0000";
 const SEED_MS = Date.now() - 86_400_000;
 /** The preview database exactly as a mount makes it: defined, seeded, recording deletes. */
 const preview = async () => (await openApp(sdk, app, previewDb(new sdk.Db()))).db;
+/**
+ * A first attempt that copied everything and was NOT confirmed: the publish
+ * did not complete, so the domain is not live (builder#86) and the next
+ * attempt still carries Preview's edits and deletes.
+ */
+async function unconfirmedAttempt(src, dst) {
+  const pending = new Proxy(dst, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: "PENDING" }; };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  await assert.rejects(handoff({ source: src, target: pending, ...ctx, confirm: { everyMs: 0, budgetMs: 10 } }), /not confirmed/);
+}
 /** What the page supplies besides the two databases (builder#83). */
-const ctx = { app, schemas: schemasOf(app), slotFrom: sdk.slotFrom, namespace: PID, seedMs: SEED_MS, published: false, onNotice: () => {} };
+const ctx = { app, schemas: schemasOf(app), slotFrom: sdk.slotFrom, namespace: PID, seedMs: SEED_MS, onNotice: () => {} };
 
 await t("**the audit's reproduction: a row entered in Preview reaches the published backend**", async () => {
   const src = await preview();
@@ -112,7 +125,7 @@ await t("**an edit in the SAME MILLISECOND as the write before it is still carri
   // by `updated` missed exactly this, in 10 of 20 runs of the retry test.
   const src = await preview();
   const dst = new sdk.Db();
-  await handoff({ source: src, target: dst, ...ctx });
+  await unconfirmedAttempt(src, dst);
   const [first] = await src.scan("tasks");
   const frozen = first.updated;
   await src.update("tasks", first.id, { title: "edited within the same ms" });
@@ -129,7 +142,7 @@ await t("**an edit in the SAME MILLISECOND as the write before it is still carri
 await t("a row deleted in the preview after an earlier attempt is removed from the target", async () => {
   const src = await preview();
   const dst = new sdk.Db();
-  await handoff({ source: src, target: dst, ...ctx });
+  await unconfirmedAttempt(src, dst);
   const [gone] = await src.scan("tasks");
   await src.delete("tasks", gone.id);
   const did = await handoff({ source: src, target: dst, ...ctx });
@@ -188,6 +201,7 @@ function losesOne(lose = 2) {
     const v = Reflect.get(o, k);
     if (k === "createAt") return async (...a) => {
       const r = await v.apply(o, a);
+      if (a[0] !== "tasks") return r;   // the liveness marker (builder#86) is not a copy
       puts += 1;
       if (!healthy && puts === lose) await o.delete(a[0], r.record.id);   // the node rolled it back
       return r;
@@ -225,7 +239,7 @@ await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", a
   let puts = 0, slow = true;
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "createAt") return async (...a) => { const r = await v.apply(o, a); if (r.outcome === "created") puts += 1; return r; };
+    if (k === "createAt") return async (...a) => { const r = await v.apply(o, a); if (a[0] === "tasks" && r.outcome === "created") puts += 1; return r; };
     if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: slow ? "PENDING" : "CLEAN" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });

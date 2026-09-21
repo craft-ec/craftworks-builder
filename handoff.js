@@ -20,13 +20,21 @@
 // ledger kept in the runtime, which a reload or a second tab started empty —
 // and the published backend then held every row twice.
 //
-// What decides an EXISTING copy that differs from Preview is a fact already
-// recorded: whether this project has COMPLETED a publish.
-//   - Never: Preview is the truth, so the copy is updated. A failed publish,
-//     an edit, and the retry carries the edit.
-//   - Once it has: the published backend is live and the builder runs on it,
-//     so a handoff still holding a Preview (a stale second tab) is CREATE-ONLY.
-//     The published row is kept, counted, and the person is told once.
+// What decides an EXISTING copy that differs from Preview is whether the
+// TARGET DOMAIN IS LIVE — a publish into it has completed (builder#86).
+//   - Not live: Preview is the truth, so the copy is updated. A failed
+//     publish, an edit, and the retry carries the edit.
+//   - Live: people are using it, so a handoff still holding a Preview (a
+//     stale tab, another browser, another project on the same domain name)
+//     is CREATE-ONLY. A differing row is kept, counted, and the person told
+//     once; nothing is deleted; and NO SEED is written into it.
+//
+// The fact lives where it is true: in the target, per domain — the target's
+// real scope is (node, bare domain name) — as a marker row written with
+// `createAt` after a publish is acknowledged, so a second completion lands on
+// the first. It was read from this browser's own history, per project: a
+// second browser, a cleared site, or a second project using the same domain
+// name read "never published" about a live domain, and re-seeded it.
 //
 // A DELETION IS PROVED BY A TOMBSTONE, never by an absence. Preview is a
 // fresh in-memory db per mount, so a row missing from it may simply be a row
@@ -43,6 +51,8 @@
 // and the same whether the project existed when this Preview was mounted or
 // was created by the publish itself.
 //
+import { sameRows } from "./sdk/engine-db.js";
+
 // Pure: both databases are passed in, so every path is testable without a
 // page or a node (tests/handoff.test.mjs, tests/handoff-across-runtimes.test.mjs).
 
@@ -57,11 +67,28 @@ function patchFor(from, to) {
   return p;
 }
 
-/** Field-by-field, independent of key order. */
-const sameFields = (a, b) => {
-  const ka = Object.keys(a ?? {}), kb = Object.keys(b ?? {});
-  return ka.length === kb.length && ka.every(k => JSON.stringify(a[k]) === JSON.stringify(b?.[k]));
-};
+/**
+ * The same fields, STRUCTURALLY: key order anywhere, nested included, is not
+ * a difference. `JSON.stringify` per field read a nested value's key order as
+ * one, which meant a needless update — or, on a live domain, a false "kept as
+ * published" and a notice (builder#86). The SDK's `sameRows` is the one
+ * definition of "the same" (craftworks-sdk#129).
+ */
+export const sameFields = (a, b) => sameRows([a ?? {}], [b ?? {}]);
+
+/**
+ * The reserved domain the "is this domain live?" markers live in, in the
+ * target. Never a domain an app may have: an app that names it is refused.
+ */
+export const PUBLISHED_DOMAIN = "craftworks.published";
+const PUBLISHED_SCHEMA = { type: "Published", fields: [] };
+const markerSlot = (slotFrom, d) => slotFrom(0, "domain", d);
+
+/** Is domain `d` live in `target`: has a publish into it completed? Reads only. */
+async function isLive(target, slotFrom, d) {
+  if (!(await target.schema(PUBLISHED_DOMAIN))) return false;
+  return Boolean(await target.get(PUBLISHED_DOMAIN, markerSlot(slotFrom, d)));
+}
 
 /**
  * The slot seed row `i` of domain `d` is published at. `seedMs` is the project
@@ -127,20 +154,23 @@ function need(ok, what) {
  * - `slotFrom`: the SDK's, the one derivation of a slot.
  * - `namespace`: the PROJECT id, not a publication. A second publication
  *   derives the same slots and copies nothing again.
- * - `published`: whether this project has completed a publish.
+ * - Whether each domain is LIVE is read from the target itself, never passed
+ *   in: see `isLive`.
  * - `seedMs`: the project record's `created`, for seed slots.
  * - `onNotice(text)`: told once when published rows were kept.
  */
-export async function handoff({ source, target, app, schemas, slotFrom, namespace, published, seedMs, onNotice, confirm = {} }) {
+export async function handoff({ source, target, app, schemas, slotFrom, namespace, seedMs, onNotice, confirm = {} }) {
   need(typeof slotFrom === "function", "slotFrom");
   need(typeof namespace === "string" && namespace.length > 0, "namespace");
-  need(typeof published === "boolean", "published");
   need(Number.isSafeInteger(seedMs) && seedMs >= 0, "seedMs");
   need(typeof onNotice === "function", "onNotice");
   need(!source || typeof source.deleted === "function", "source.deleted — a Preview that cannot say what was deleted in it");
   need(!source || typeof source.seedOf === "function", "source.seedOf — a Preview that cannot say which rows are the seed");
   const did = { copied: 0, updated: 0, kept: 0, removed: 0, seeded: 0 };
   const domains = domainsIn(app, schemas);
+  if (domains.includes(PUBLISHED_DOMAIN)) {
+    throw new Error(`\`${PUBLISHED_DOMAIN}\` is reserved for the builder's own records; rename that domain to publish`);
+  }
 
   // EVERY SLOT FIRST. Only two SOURCE rows can collide with each other — the
   // same namespace, the same millisecond, the same eight hash bytes — so a
@@ -160,18 +190,28 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
       copies.push({ slot, row: r });
     }
     const deletes = source ? (await source.deleted(d)).map(t => slotOf(d, t)).filter(slot => !bySlot.has(slot)) : [];
-    plan.push({ d, copies, deletes });
+    plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
   }
 
   const confirmRows = [];
-  for (const { d, copies, deletes } of plan) {
+  for (const { d, copies, deletes, live } of plan) {
     await target.define(d, schemas[d]);
     for (const { slot, row } of copies) {
+      // A SEED is what a NEW app starts with. A live domain is not new: the
+      // person may have edited those rows away, and writing them again brings
+      // them back. So it is never written there — but a live copy that
+      // differs from it is still counted as kept, and the person told.
+      if (live && row.seed !== undefined) {
+        const pf = schemas[d]?.parent;
+        const held = await target.get(d, pf ? `${row.fields[pf]}${slot}` : slot);
+        if (held && !sameFields(held.fields, row.fields)) did.kept += 1;
+        continue;
+      }
       const r = await target.createAt(d, slot, row.fields);
       if (r.outcome === "created") {
         did[row.seed !== undefined ? "seeded" : "copied"] += 1;
       } else if (!sameFields(r.record.fields, row.fields)) {
-        if (published) {
+        if (live) {
           did.kept += 1;
         } else {
           await target.update(d, r.record.id, patchFor(r.record.fields, row.fields));
@@ -180,8 +220,8 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
       }
       confirmRows.push({ domain: d, id: r.record.id });
     }
-    // Create-only once published: a stale Preview deletes nothing live.
-    if (!published) {
+    // Create-only once live: a stale Preview deletes nothing live.
+    if (!live) {
       for (const slot of deletes) {
         if (await target.delete(d, slot)) did.removed += 1;
       }
@@ -192,6 +232,12 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
     onNotice(`${did.kept} ${did.kept === 1 ? "record differs" : "records differ"} from the published app and ${did.kept === 1 ? "was" : "were"} kept as published.`);
   }
   await acknowledged(target, confirmRows, confirm);
+  // THE PUBLISH COMPLETED: every domain it touched is live from now on. By
+  // `createAt`, so a second completion lands on the first marker. A crash
+  // before these are written is benign: the retry runs in not-live mode from
+  // the same Preview, finds every copy equal, and writes them then.
+  await target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA);
+  for (const { d } of plan) await target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {});
   return did;
 }
 

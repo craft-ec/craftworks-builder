@@ -213,6 +213,10 @@ await t("**after a restore, a RELOAD opens THE SAME project — listed, its comp
   const after = await openProject(reloaded, pid);
   assert.ok(after, "openProject opens it: on the code before this change it returned null");
   assert.strictEqual(after.title, before.title);
+  // The seed slots a handoff derives are dated by the project's `created`
+  // (builder#83): a restore that re-dated the project would publish its seed
+  // a second time.
+  assert.strictEqual(after.created, before.created, "created survives the restore");
   assert.deepStrictEqual(after.record, before.record, "the record the tab held, put back exactly");
   assert.deepStrictEqual(after.components.map(c => c.id).sort(), before.components.map(c => c.id).sort(),
     "the components under THEIR OWN ids, not new ones");

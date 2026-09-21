@@ -9,7 +9,7 @@ import { PROJECT,
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
-  recordPublication, publicationsOf, hasPublished, nextSeq, recordPerComponentKey,
+  recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
   restoreProject, restoreComponent,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
 } from "./projects.js";
@@ -770,5 +770,5 @@ export async function mountProjects(host, {
     const project = await openProject(db, last);
     if (project) setCanvas(canvasOf(project), project);
   }
-  return { persist, refresh: paint, openProjectId: current, published, adopt, hasPublished: pid => hasPublished(db, pid) };
+  return { persist, refresh: paint, openProjectId: current, published, adopt };
 }
