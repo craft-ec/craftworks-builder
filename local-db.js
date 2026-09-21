@@ -97,6 +97,37 @@ export class LocalDb {
     return structuredClone(limit ? rows.slice(0, limit) : rows);
   }
 
+  /**
+   * The children of one parent, for a domain whose schema declares one.
+   *
+   * The same call the SDK's `Db` answers, because `projects.js` uses it for
+   * `componentsOf` and `publicationsOf` and runs against either backend. When
+   * builder#59 made that switch, LocalDb had no such method — so every project
+   * save and every paint of the projects panel threw `db.children is not a
+   * function`, swallowed by `app.js`. This is the backend the page actually
+   * keeps projects on; the switch was measured over the SDK's.
+   *
+   * Honest about its cost: `localStorage` has no range read, so this is a
+   * filter over THIS domain's records, not a band read. It does not grow with
+   * other domains; within a domain it costs what a scan costs.
+   *
+   * A domain that declares no parent is refused, as the SDK refuses it:
+   * "none" and "the question does not apply here" are different answers.
+   */
+  async children(domain, parent, { reverse = false, limit = 0, after = "" } = {}) {
+    const field = this.#state.schemas[domain]?.parent;
+    if (!field) {
+      throw new Error(`domain \`${domain}\` does not declare a parent, so it has no children to read`);
+    }
+    let rows = (await this.scan(domain)).filter(r => r.fields?.[field] === parent);
+    if (reverse) rows.reverse();
+    if (after) {
+      const i = rows.findIndex(r => r.id === after);
+      rows = i < 0 ? rows : rows.slice(i + 1);
+    }
+    return limit ? rows.slice(0, limit) : rows;
+  }
+
   async count(domain) { return Object.keys(this.#state.records[domain] ?? {}).length; }
 
   /** There is no tree here, and saying so is better than inventing a root. */
