@@ -115,6 +115,11 @@ export const SCHEMAS = {
   },
   [COMPONENT]: {
     type: "ProjectComponent",
+    // KEYED UNDER THE PROJECT. A component's key is `<pid>‖<rkey>`, so one
+    // project's components are a contiguous band and reading them is a bounded
+    // prefix scan rather than a scan of every component of every project
+    // (craftworks-sdk#122).
+    parent: "pid",
     fields: [
       { name: "pid", kind: "text", required: true },
       { name: "kind", kind: "text", required: true },
@@ -125,6 +130,9 @@ export const SCHEMAS = {
   },
   [PUBLICATION]: {
     type: "ProjectPublication",
+    // Same shape: `nextSeq` reads a project's publications on every publish,
+    // and did it by scanning all publications of all projects.
+    parent: "pid",
     fields: [
       { name: "pid", kind: "text", required: true },
       { name: "seq", kind: "int", required: true },
@@ -181,10 +189,15 @@ export async function addComponent(db, pid, { kind, layout = null, binding = nul
   return db.put(COMPONENT, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
 }
 
-/** A project's components, in stored order. */
+/**
+ * A project's components, in stored order.
+ *
+ * A BOUNDED read of this project's band. It used to scan every component of
+ * every project and filter by `pid`, which made `paint()` — which calls this
+ * once per project row just to show a count — quadratic in the library.
+ */
 export async function componentsOf(db, pid) {
-  const all = await db.scan(COMPONENT);
-  return all.filter(r => r.fields.pid === pid);
+  return db.children(COMPONENT, pid);
 }
 
 /**
@@ -285,9 +298,8 @@ export async function nextSeq(db, pid) {
 
 /** A project's publications, newest first. */
 export async function publicationsOf(db, pid) {
-  const all = await db.scan(PUBLICATION, { reverse: true });
-  return all
-    .filter(r => r.fields.pid === pid)
+  const rows = await db.children(PUBLICATION, pid, { reverse: true });
+  return rows
     .map(r => ({
       id: r.id,
       seq: r.fields.seq,
