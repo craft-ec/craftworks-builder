@@ -48,6 +48,13 @@ export const toRecord = c => {
  * storage made a tab that never touched K write its stale K over another tab's
  * edit. NOT STORED: a non-enumerable symbol, so no spread, `toRecord`, or JSON
  * of the working copy ever carries it.
+ *
+ * SAFE ONLY WHILE COMPONENTS ARE MUTATED IN PLACE. The same non-enumerability
+ * means a COPY (`{ ...c }`, `structuredClone`, a JSON round trip) drops the
+ * base without a word, and a component with no base falls back to the old
+ * storage diff — the two-tab revert, back. Anything that replaces a canvas
+ * component with a copy must carry the base across (`setBase` from a record,
+ * or copy the symbol) or it reintroduces builder#74.
  */
 const BASE = Symbol("base");
 /** This tab. A write's token is `{ gen, by }`, so "stored == my base" cannot be true of a write that was not mine. */
