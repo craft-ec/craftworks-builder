@@ -236,8 +236,21 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   // `createAt`, so a second completion lands on the first marker. A crash
   // before these are written is benign: the retry runs in not-live mode from
   // the same Preview, finds every copy equal, and writes them then.
+  //
+  // And a marker is a write like any other: ACKNOWLEDGED before this returns
+  // (builder#88). Unconfirmed, the node may still roll it back, and a publish
+  // reported done would leave its domains reading "not live" — the re-seed
+  // and overwrite #86 closed, reopened by one lost write. Written only AFTER
+  // the rows confirm, so a domain is never marked live over rows that may
+  // yet be lost; a marker that does not confirm fails the publish exactly as
+  // an unconfirmed row does, and the retry writes it once (`createAt`).
   await target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA);
-  for (const { d } of plan) await target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {});
+  const markers = [];
+  for (const { d } of plan) {
+    const m = await target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {});
+    markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
+  }
+  await acknowledged(target, markers, confirm);
   return did;
 }
 
