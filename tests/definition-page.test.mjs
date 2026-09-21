@@ -10,21 +10,19 @@
 // must inherit nothing. The "app definition" panel is read because it is what
 // the page shows a person as the definition.
 import assert from "node:assert";
-import { spawn } from "node:child_process";
+import { openPageHost } from "./page-host.mjs";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8100, DEBUG = 9336;
 const SHOTS = process.env.SHOTS ?? mkdtempSync(join(tmpdir(), "cw-def-shots-"));
 mkdirSync(SHOTS, { recursive: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const server = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "127.0.0.1"], { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
-const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", "--window-size=1280,900", `--remote-debugging-port=${DEBUG}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-def-"))}`, "about:blank"], { stdio: "ignore" });
-const done = code => { server.kill(); chrome.kill(); process.exit(code); };
-setTimeout(() => { console.error("definition page FAILED: the run exceeded its 120 s budget"); done(1); }, 120_000).unref();
+// This run's own server and Chrome, on ports the OS chose, proven to be THIS
+// tree by a nonce (builder#70).
+const { port: PORT, debug: DEBUG, nonce, pageProof, done } =
+  await openPageHost("definition page", { windowSize: "1280,900", budgetMs: 150_000 });
 
 try {
   let target;
@@ -122,6 +120,7 @@ try {
   if (process.env.ONLY !== "main") {
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  assert.strictEqual(await evaluate(pageProof), nonce, "definition page: the page is not served from this tree");
   await evaluate(`
     localStorage.clear();
     const { LocalDb } = await import("/local-db.js");
