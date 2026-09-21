@@ -4,6 +4,15 @@ import { byType } from "./catalogue.js";
 import { openApp, toFields, display, headline, inputType } from "./runtime-logic.js";
 import { show, isLive, rowState } from "./publish-state.js";
 
+/**
+ * How many rows a component reads.
+ *
+ * A SCREENFUL, not a domain. The number is a screen's worth with room to
+ * scroll, not a guess at how much data exists — the point is that the read
+ * is bounded by what is shown rather than by what is stored.
+ */
+export const PAGE = 50;
+
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
 /**
@@ -14,12 +23,39 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db());
   const editing = {}; // domain → record being edited
 
-  // ONE BINDING PER COMPONENT, and components read its snapshot rather than
-  // calling the db. That is the whole point of the shape: a snapshot read is
-  // synchronous on every backend, and the round trip — the reload — is the
-  // only part that is not. Flipping `live` changes which mechanism refreshes
-  // the binding and nothing about how the component reads it.
-  const bindings = app.components.map(inst => db.bind(inst.domain, { live: isLive(inst) }));
+  // ONE BINDING PER DOMAIN, not per component — and it reads a PAGE.
+  //
+  // Components read a snapshot rather than calling the db, which is the whole
+  // point of the shape: a snapshot read is synchronous on every backend, and
+  // the round trip is the only part that is not.
+  //
+  // TWO THINGS THAT WERE COSTING A WHOLE DOMAIN EACH.
+  //
+  // One binding per COMPONENT meant two components over `notes` read `notes`
+  // twice — the same rows, fetched twice, re-fetched on every change. They
+  // share one binding now, keyed by what actually distinguishes a read:
+  // the domain, whether it is live, and how much of it is wanted.
+  //
+  // And each binding scanned the WHOLE DOMAIN to fill a screen. Priced by
+  // F43, a cold far read is seconds, so a list over a cold domain fetched
+  // every record in it to show twenty rows. `PAGE` is what a screen holds;
+  // `Scan { limit, after }` has existed unused the whole time
+  // (craftworks-sdk#126 carries it to the binding).
+  //
+  // WHAT THIS DOES NOT FIX, deliberately: a component filtered by a parent
+  // still reads the whole domain, because a record's key cannot carry a
+  // parent and the filter cannot be expressed as a range
+  // (craftworks-sdk#122). A page over a filtered scan would be actively
+  // misleading — twenty scanned rows can yield zero matches — so it is left
+  // alone and pinned by a test rather than papered over.
+  const bindings = [];
+  const shared = new Map();
+  for (const inst of app.components) {
+    const live = isLive(inst);
+    const key = `${inst.domain}\u0000${live}\u0000${PAGE}`;
+    if (!shared.has(key)) shared.set(key, db.bind(inst.domain, { live, limit: PAGE }));
+    bindings.push(shared.get(key));
+  }
 
   // Reloading is a ROUND TRIP once this is over the engine, so it is awaited
   // even though the in-memory backend answers at once. Writing it synchronous
@@ -63,9 +99,15 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   //
   // Safe against a loop: `render` reads snapshots and never reloads, so a
   // re-render cannot trigger another change.
-  const stops = bindings.map(b => b.subscribe(() => render()));
+  // THE UNIQUE BINDINGS, not one entry per component. `bindings` is indexed
+  // by component so a component can find its own, and two components over one
+  // domain point at the SAME object — so subscribing per component would
+  // subscribe twice and re-render twice for one change, and reloading per
+  // component would read the same rows twice.
+  const each = [...new Set(bindings)];
+  const stops = each.map(b => b.subscribe(() => render()));
 
-  const refresh = async () => { for (const b of bindings) await b.reload(); };
+  const refresh = async () => { for (const b of each) await b.reload(); };
   const changed = async () => { await refresh(); render(); onData(db); };
   const guard = async (fn, box) => { try { await fn(); box.textContent = ""; } catch (e) { box.textContent = e.message; } };
 

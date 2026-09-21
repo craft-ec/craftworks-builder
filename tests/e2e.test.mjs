@@ -325,6 +325,99 @@ try {
     console.log("ok e2e: **a row arriving underneath re-renders, with no app call**");
   }
 
+  // ---------------------------------------------------------------------
+  // A READ COSTS WHAT THE SCREEN COSTS, NOT WHAT THE DOMAIN HOLDS.
+  //
+  // AFTER the tests above, deliberately: mounting an app stops the previous
+  // mount's listeners (one mount at a time, or two would redraw one canvas),
+  // so a block that mounts its own app has to come after any block that
+  // still expects an earlier mount to be live.
+  // ---------------------------------------------------------------------
+  {
+    const out = await evaluate(`
+      const { mountApp, PAGE } = await import("./runtime.js");
+      const binds = [];
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text" }] };
+      const db = {
+        define: async () => {}, put: async () => ({}), update: async () => {}, delete: async () => {},
+        schema: () => SCHEMA, domains: () => ["notes"], count: () => 0, get: () => null,
+        scan: () => [],
+        // EVERY bind recorded, with what it asked for.
+        bind: (domain, opts = {}) => {
+          const b = {
+            domain, opts,
+            getSnapshot: () => [],
+            subscribe: () => () => {},
+            reload: async () => false,
+            liveMode: () => ({ mode: "Polled" }),
+          };
+          binds.push(b);
+          return b;
+        },
+        liveMode: () => ({ mode: "Polled" }),
+      };
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      // TWO components over ONE domain, which is the ordinary case: a form
+      // and a table showing what the form writes.
+      await mountApp(root, {}, {
+        components: [
+          { type: "form", domain: "notes", mode: "owned" },
+          { type: "table", domain: "notes", mode: "owned" },
+        ],
+        schemas: { notes: SCHEMA },
+      }, () => {}, db, "published");
+      return { binds: binds.length, limits: binds.map(b => b.opts.limit), PAGE };
+    `);
+
+    assert.strictEqual(out.binds, 1,
+      `two components over one domain took ${out.binds} bindings — the same rows are ` +
+      "read once per component, and re-read once per component on every change");
+    assert.strictEqual(out.limits[0], out.PAGE,
+      `the binding asked for limit ${out.limits[0]} instead of a screenful (${out.PAGE}). ` +
+      "A list over a cold domain then fetches every record in it to show twenty rows.");
+    console.log(`ok e2e: **two components over one domain share ONE read, of ${out.PAGE} rows**`);
+  }
+
+  // ---------------------------------------------------------------------
+  // THE LIMITATION, PINNED — and this test is MEANT to fail one day.
+  //
+  // A component filtered by a parent still reads the whole domain, because a
+  // record's key cannot carry a parent and the filter cannot be expressed as
+  // a range (craftworks-sdk#122). Paginating that path would be worse than
+  // leaving it: twenty scanned rows can yield zero matches, so the page size
+  // stops bounding anything a person cares about while appearing to.
+  //
+  // So the gap is recorded as a FACT rather than a comment. When #122 lands
+  // and a binding can express a parent, THIS ASSERTION FAILS — and tells
+  // whoever did it that the other half of builder#48 just became available.
+  // A test that fails when a blocker clears is worth more than a note nobody
+  // re-reads.
+  // ---------------------------------------------------------------------
+  {
+    const asked = await evaluate(`
+      const { engineDb } = await import("./sdk/engine-db.js");
+      const seen = [];
+      const db = engineDb({ session: {
+        scan: (domain, reverse, limit, after) => { seen.push({ limit, after }); return "[]"; },
+        root: () => "node:r", refresh_domain: () => {}, take_stale: () => "[]",
+        live_mode: () => JSON.stringify({ mode: "Polled", why: "", foreignNotifications: 0 }),
+        take_loads: () => "[]",
+      } });
+      // Ask for the children of a parent. There is no way to say it.
+      const b = db.bind("notes", { limit: 50, parent: "some-parent-id" });
+      await b.reload();
+      return { seen, keys: Object.keys(b) };
+    `);
+    assert.ok(asked.seen.length > 0, "the binding never scanned — this test measures nothing");
+    assert.ok(!("parent" in asked),
+      "a binding now accepts a parent. craftworks-sdk#122 has landed, so a filtered read " +
+      "no longer has to scan the whole domain — the other half of builder#48 is available, " +
+      "and THIS TEST is the thing telling you so. Update it and paginate the filtered path.");
+    console.log("ok e2e CONTROL: a filtered read is still O(domain) — pinned to craftworks-sdk#122");
+  }
+
+
   // THE CONTROL. The same mount with SYNCHRONOUS reads must also work —
   // otherwise the test above would pass on a runtime that had simply stopped
   // reading schemas at all, and both backends have to keep working.
