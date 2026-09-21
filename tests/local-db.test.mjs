@@ -228,4 +228,37 @@ await t("a migration storage refuses halfway keeps the blob, and the next load c
   assert.strictEqual(s.getItem("craftec.builder.db.v1"), null);
 });
 
+await t("**a blob record with NO `updated` migrates on first load** (builder#68)", async () => {
+  const s = storage();
+  const blob = legacy();
+  blob.records.projects.r1 = { id: "r1", created: 1, fields: { title: "no updated" } };
+  s.setItem("craftec.builder.db.v1", JSON.stringify(blob));
+  const db = new LocalDb(s);
+  assert.deepStrictEqual(await titles(db), ["no updated"], "the record was dropped and its blob removed");
+  assert.strictEqual(s.getItem("craftec.builder.db.v1"), null);
+});
+
+await t("THE CONTROL: a blob record with no `updated` does NOT overwrite an existing entry", async () => {
+  const s = storage();
+  const first = new LocalDb(s);
+  await first.define("projects", { type: "Project", fields: [] });
+  const kept = await first.put("projects", { title: "edited here" });
+  const blob = legacy();
+  blob.records.projects = { [kept.id]: { id: kept.id, created: 1, fields: { title: "stale, no updated" } } };
+  s.setItem("craftec.builder.db.v1", JSON.stringify(blob));
+  assert.deepStrictEqual(await titles(new LocalDb(s)), ["edited here"], "the branch became 'always write'");
+});
+
+await t("and one with no `updated` does not resurrect a record deleted here", async () => {
+  const s = storage();
+  const first = new LocalDb(s);
+  await first.define("projects", { type: "Project", fields: [] });
+  const gone = await first.put("projects", { title: "deleted" });
+  await first.delete("projects", gone.id);
+  const blob = legacy();
+  blob.records.projects = { [gone.id]: { id: gone.id, created: 1, fields: { title: "deleted" } } };
+  s.setItem("craftec.builder.db.v1", JSON.stringify(blob));
+  assert.deepStrictEqual(await titles(new LocalDb(s)), []);
+});
+
 console.log("\nlocal db: all ok");
