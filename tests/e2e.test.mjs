@@ -488,41 +488,43 @@ try {
   }
 
   // ---------------------------------------------------------------------
-  // THE LIMITATION, PINNED — and this test is MEANT to fail one day.
+  // THE LIMITATION, RETIRED BY INVERSION (craftworks-sdk#137).
   //
-  // A component filtered by a parent still reads the whole domain, because a
-  // record's key cannot carry a parent and the filter cannot be expressed as
-  // a range (craftworks-sdk#122). Paginating that path would be worse than
-  // leaving it: twenty scanned rows can yield zero matches, so the page size
-  // stops bounding anything a person cares about while appearing to.
+  // This pinned that a component filtered by a parent had to read the whole
+  // domain: a binding could not name a parent, so the filter could not be a
+  // range. It was built to FAIL when that changed — and, as sdk#137 found,
+  // it could not: it asked `"parent" in asked` of an object that never held
+  // that key. On SDK 2be539a it failed anyway, the honest way: `bind` now
+  // TAKES a parent and asks the session what to watch for it.
   //
-  // So the gap is recorded as a FACT rather than a comment. When #122 lands
-  // and a binding can express a parent, THIS ASSERTION FAILS — and tells
-  // whoever did it that the other half of builder#48 just became available.
-  // A test that fails when a blocker clears is worth more than a note nobody
-  // re-reads.
+  // So the fact is inverted rather than deleted. What was the limitation is
+  // now the guarantee: a binding over one parent reads THAT PARENT'S BAND
+  // (`children`), never the domain (`scan`), and watches its band. The other
+  // half of builder#48 — paginating the filtered path — is now expressible.
   // ---------------------------------------------------------------------
   {
+    const P = "0000000000000000000000000000000a";
     const asked = await evaluate(`
       const { engineDb } = await import("./sdk/engine-db.js");
       const seen = [];
       const db = engineDb({ session: {
-        scan: (domain, reverse, limit, after) => { seen.push({ limit, after }); return "[]"; },
+        scan: (domain, reverse, limit, after) => { seen.push({ call: "scan", limit }); return "[]"; },
+        children: (domain, parent, reverse, limit, after) => { seen.push({ call: "children", parent, limit }); return "[]"; },
+        watch_key: (d, p) => d + "#" + p, bind: () => {}, unbind: () => {},
         root: () => "node:r", refresh_domain: () => {}, take_stale: () => "[]",
         live_mode: () => JSON.stringify({ mode: "Polled", why: "", foreignNotifications: 0 }),
         take_loads: () => "[]",
       } });
-      // Ask for the children of a parent. There is no way to say it.
-      const b = db.bind("notes", { limit: 50, parent: "some-parent-id" });
+      const b = db.bind("notes", { limit: 50, parent: "${P}" });
       await b.reload();
-      return { seen, keys: Object.keys(b) };
+      return { seen, parent: b.parent };
     `);
-    assert.ok(asked.seen.length > 0, "the binding never scanned — this test measures nothing");
-    assert.ok(!("parent" in asked),
-      "a binding now accepts a parent. craftworks-sdk#122 has landed, so a filtered read " +
-      "no longer has to scan the whole domain — the other half of builder#48 is available, " +
-      "and THIS TEST is the thing telling you so. Update it and paginate the filtered path.");
-    console.log("ok e2e CONTROL: a filtered read is still O(domain) — pinned to craftworks-sdk#122");
+    assert.ok(asked.seen.length > 0, "the binding read nothing — this test measures nothing");
+    // Every read — `bind` reloads once itself — is the band, and none a scan.
+    assert.ok(asked.seen.every(x => x.call === "children" && x.parent === P && x.limit === 50),
+      `a binding over one parent read something other than that parent's band: ${JSON.stringify(asked.seen)}`);
+    assert.strictEqual(asked.parent, P, "the binding does not report the parent it was given");
+    console.log("ok e2e: **a binding over one parent reads its band, not the domain** (craftworks-sdk#137; the #51 tripwire, inverted)");
   }
 
 
