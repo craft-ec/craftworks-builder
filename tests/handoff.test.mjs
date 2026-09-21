@@ -41,7 +41,7 @@ async function unconfirmedAttempt(src, dst) {
     if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: "PENDING" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  await assert.rejects(handoff({ source: src, target: pending, ...ctx, confirm: { everyMs: 0, budgetMs: 10 } }), /not confirmed/);
+  await assert.rejects(handoff({ source: src, target: pending, ...ctx, confirm: { everyMs: 0, stallMs: 10 } }), /not confirmed/);
 }
 /** What the page supplies besides the two databases (builder#83). */
 const ctx = { app, schemas: schemasOf(app), slotFrom: sdk.slotFrom, namespace: PID, seedMs: SEED_MS, onNotice: () => {} };
@@ -162,13 +162,13 @@ function acking(states) {
     return typeof v === "function" ? v.bind(o) : v;
   } });
 }
-const fast = { everyMs: 0, budgetMs: 50 };
+const fast = { everyMs: 0, stallMs: 50 };
 
 await t("**PENDING is not done: the handoff waits until the node says CLEAN**", async () => {
   const src = await preview();
   let clean = false;
   const dst = acking(n => (n > 4 ? (clean = true, "CLEAN") : "PENDING"));
-  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, budgetMs: 5_000 } });
+  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, stallMs: 5_000 } });
   assert.ok(clean, "it returned before any row read CLEAN");
 });
 

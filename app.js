@@ -283,8 +283,11 @@ function nodePort() {
   return Number.isInteger(p) && p > 0 && p < 65536 ? p : 0;
 }
 
+/** The handoff's "confirmed k of n", for the button while records move. */
+let handoffProgress = null;
+
 function renderPublish() {
-  const b = buttonFor(rt.phase, { error: rt.error });
+  const b = buttonFor(rt.phase, { error: rt.error, progress: handoffProgress });
   const btn = $("publish");
   btn.textContent = b.label;
   btn.disabled = !b.enabled;
@@ -345,10 +348,12 @@ async function doPublish() {
       // name rather than publishing rows it could not key.
       handoff: async ({ source, target }) => {
         const p = openedProject;
+        handoffProgress = null;
         return handoff({
           source, target, app, schemas: schemasOf(app), slotFrom: sdkReady.slotFrom,
           namespace: p?.id, seedMs: p?.created,
           onNotice: message => showStorageNotice({ kind: "kept", message }),
+          onProgress: progress => { handoffProgress = progress; renderPublish(); },
         });
       },
       // The publication is RECORDED before the preload, because the publish

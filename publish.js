@@ -23,7 +23,7 @@ export const PHASES = ["idle", "connecting", "provisioning", "opening", "publish
  * three "working" phases cannot collapse into one spinner, which is the same
  * rule the row states follow.
  */
-export function buttonFor(phase, { error = "" } = {}) {
+export function buttonFor(phase, { error = "", progress = null } = {}) {
   switch (phase) {
     case "idle":
       return { label: "Publish", enabled: true, tone: "", hint:
@@ -41,7 +41,10 @@ export function buttonFor(phase, { error = "" } = {}) {
       return { label: "Opening…", enabled: false, tone: "working", hint:
         "Connected; opening this project's database on the node." };
     case "migrating":
-      return { label: "Moving your records…", enabled: false, tone: "working", hint:
+      // HOW FAR, because a large publish takes as long as the node's pace
+      // makes it — about 3.4 records a second — and a label that never moves
+      // reads as stuck (builder#94).
+      return { label: progress ? `Moving your records… ${progress.confirmed} of ${progress.total} confirmed` : "Moving your records…", enabled: false, tone: "working", hint:
         "Copying what you made in Preview to the node, and waiting for it to confirm each one." };
     case "published":
       return { label: "Published", enabled: false, tone: "ok", hint:

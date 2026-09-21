@@ -158,8 +158,10 @@ function need(ok, what) {
  *   in: see `isLive`.
  * - `seedMs`: the project record's `created`, for seed slots.
  * - `onNotice(text)`: told once when published rows were kept.
+ * - `onProgress({ confirmed, total })`: the rows' confirmations as they come,
+ *   for the publish panel (builder#94).
  */
-export async function handoff({ source, target, app, schemas, slotFrom, namespace, seedMs, onNotice, confirm = {} }) {
+export async function handoff({ source, target, app, schemas, slotFrom, namespace, seedMs, onNotice, onProgress = () => {}, confirm = {} }) {
   need(typeof slotFrom === "function", "slotFrom");
   need(typeof namespace === "string" && namespace.length > 0, "namespace");
   need(Number.isSafeInteger(seedMs) && seedMs >= 0, "seedMs");
@@ -231,7 +233,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   if (did.kept) {
     onNotice(`${did.kept} ${did.kept === 1 ? "record differs" : "records differ"} from the published app and ${did.kept === 1 ? "was" : "were"} kept as published.`);
   }
-  await acknowledged(target, confirmRows, confirm);
+  await acknowledged(target, confirmRows, { ...confirm, onProgress });
   // THE PUBLISH COMPLETED: every domain it touched is live from now on. By
   // `createAt`, so a second completion lands on the first marker. A crash
   // before these are written is benign: the retry runs in not-live mode from
@@ -257,16 +259,28 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
 /**
  * Wait until every copy reads CLEAN, and fail on anything lost.
  *
- * A deadline, because "not confirmed yet" can last for ever on a node that has
- * gone away — and waiting on it would leave the button saying Publishing…
- * with nothing to act on.
+ * A deadline on PROGRESS, not on the total (builder#94). "Not confirmed yet"
+ * can last for ever on a node that has gone away, and waiting on it would
+ * leave the button saying Publishing… with nothing to act on. But the node
+ * confirms one write per commit, about 3.4 a second: 100 rows took 27–29 s of
+ * a 30 s total, and 300 rows could not fit at any speed. A publish that is
+ * still ADVANCING is never failed for being large; one that has stalled —
+ * `stallMs` with no record newly confirmed — fails as promptly as before, and
+ * says how far it got.
+ *
+ * `onProgress({ confirmed, total })` is told each time the count moves, for
+ * the publish panel's "confirmed k of n".
  *
  * A LOST copy needs no forgetting: the next attempt's `createAt` finds its
  * slot empty and copies it again, and a copy merely PENDING at the deadline is
  * found there and not copied twice.
  */
-export async function acknowledged(target, rows, { everyMs = 250, budgetMs = 30_000, now = () => Date.now() } = {}) {
-  const started = now();
+export async function acknowledged(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), onProgress = () => {}, ...rest } = {}) {
+  // The old TOTAL budget, passed by a caller that was not updated, would be
+  // silently ignored and wait 30 s of no progress instead. Refused by name.
+  if ("budgetMs" in rest) throw new Error("handoff: `budgetMs` is gone — the deadline is on progress now; pass `stallMs` (builder#94)");
+  let best = -1;
+  let movedAt = now();
   for (;;) {
     let waiting = 0;
     let lost = 0;
@@ -281,9 +295,17 @@ export async function acknowledged(target, rows, { everyMs = 250, budgetMs = 30_
       else if (state !== "CLEAN") waiting += 1;
     }
     if (lost) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
+    const confirmed = rows.length - waiting;
+    // PROGRESS is a record newly confirmed — the HIGHEST count so far moving
+    // up, so a count that dips and recovers is not mistaken for progress.
+    if (confirmed > best) {
+      best = confirmed;
+      movedAt = now();
+      onProgress({ confirmed, total: rows.length });
+    }
     if (!waiting) return;
-    if (now() - started > budgetMs) {
-      throw new Error(`${waiting} of ${rows.length} records are not confirmed by the node yet; your data is still here`);
+    if (now() - movedAt > stallMs) {
+      throw new Error(`${waiting} of ${rows.length} records are not confirmed by the node yet — ${confirmed} confirmed, and none newly in ${Math.round(stallMs / 1000)} s; your data is still here`);
     }
     await new Promise(r => setTimeout(r, everyMs));
   }
