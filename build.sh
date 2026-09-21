@@ -143,6 +143,20 @@ rm -rf sdk && mkdir sdk
 cp "$out/pkg/web"/*.js sdk/
 cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
 
+# THE MANIFEST, which is how an app NAMES what it does not carry.
+#
+# `artefacts.json` records every artefact's hash and size (craftworks-sdk#107),
+# so a packaged app can name the four wasm files instead of shipping them
+# (§19, craftworks-sdk#108) — 1,709,429 B of this build, against 109,300 B of
+# JavaScript beside it. GENERATED from the SDK build, never written here: a
+# hash typed into this repository is a hash that goes stale the next time the
+# SDK is rebuilt, and nothing would say so.
+[ -f "$out/pkg/web/artefacts.json" ] || {
+  echo "the SDK build has no artefacts.json — an app cannot name what it does not carry" >&2
+  exit 1
+}
+cp "$out/pkg/web/artefacts.json" sdk/
+
 # THE ARTEFACTS PUBLISHING NEEDS.
 #
 # The engine delegate and the two contracts. They are fetched by URL at
