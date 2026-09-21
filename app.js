@@ -23,12 +23,55 @@ let app = { name: "Untitled app", tree: { realm: "public", identity: null }, com
 try { const s = localStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
 // An app definition can arrive in the URL (`#app=<json>`): shareable, and testable.
 try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) app = { ...app, ...JSON.parse(h) }; } catch (_) {}
+// WHETHER THE LAST EDIT IS ON THIS DEVICE (builder#56).
+//
+// Both writes below used to swallow their failure — `.catch(() => {})` at the
+// one place a refused save could surface — so a full quota or denied storage
+// turned every edit into a silent loss on reload. The edit itself must still
+// not be taken away from the person who made it: the canvas keeps it. What
+// changes is that the page SAYS it is unsaved, why, and offers a retry and an
+// export, until a save succeeds.
+//
+// Only the LATEST save's outcome counts. Each save writes the whole canvas, so
+// a later success covers everything, and an earlier failure that happens to
+// finish after it must not flag a state that is in fact saved.
+let saveGen = 0, unsaved = null;
+const markSaved = gen => { if (gen === saveGen && unsaved) { unsaved = null; renderSaveState(); } };
+// The reason as a person reads it: without LocalDb's own "not saved:" prefix,
+// which the line already says, and without a trailing full stop to double.
+const reasonOf = e => String(e?.message ?? e).replace(/^not saved:\s*/i, "").replace(/[.\s]+$/, "");
+const markUnsaved = (gen, e) => { if (gen === saveGen) { unsaved = { reason: reasonOf(e) }; renderSaveState(); } };
 const save = () => {
-  try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (_) {}
-  // And into the open project's RECORDS, if one is open. Fire-and-forget: a
-  // storage failure must not take an edit away from the person who made it.
-  projects?.persist?.().catch(() => {});
+  const gen = ++saveGen;
+  let refused = null;
+  try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (e) { refused = e; }
+  // And into the open project's RECORDS, if one is open.
+  Promise.resolve(projects?.persist?.()).then(
+    () => (refused ? markUnsaved(gen, refused) : markSaved(gen)),
+    e => markUnsaved(gen, e),
+  );
 };
+
+/** The unsaved line: shown only while the last edit is not on this device. */
+function renderSaveState() {
+  const host = document.getElementById("save-state");
+  if (!host) return;
+  host.hidden = !unsaved;
+  if (!unsaved) { host.replaceChildren(); return; }
+  const retry = el("button", { type: "button", id: "save-retry", textContent: "Retry", onclick: () => save() });
+  const exp = el("button", { type: "button", id: "save-export", textContent: "Export", onclick: () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(app, null, 2)], { type: "application/json" }));
+    const a = el("a", { href: url, download: `${(app.name || "app").replace(/[^\w.-]+/g, "_")}.json` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } });
+  host.replaceChildren(
+    el("b", { textContent: "Not saved on this device. " }),
+    el("span", { id: "save-reason", textContent: `${unsaved.reason}. Your work is still here in this tab — ` }),
+    "retry, or export it to a file before closing. ",
+    retry, " ", exp,
+  );
+}
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1";
@@ -93,7 +136,11 @@ mountProjects($("projects"), {
     render();
   },
   onChange: () => render(),
-}).then(p => { projects = p; }).catch(() => { /* storage refused: the builder still works */ });
+}).then(p => { projects = p; }).catch(e => {
+  // Storage refused at load. The builder still works — but nothing is being
+  // kept, and that is exactly what the person needs to know before editing.
+  markUnsaved(saveGen, e);
+});
 
 readBuildInfo().then(baked => {
   bakedInfo = baked;
