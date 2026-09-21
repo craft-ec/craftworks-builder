@@ -231,6 +231,11 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
         }
       }
       confirmRows.push({ domain: d, id: r.record.id });
+      // PROGRESS WHILE MAKING (builder#94, live): the make loop IS the
+      // publish — at ~2.6 rows a second, 300 rows take ~2 minutes — and
+      // nothing polled during it, so the panel said "Moving your records…"
+      // with no number for 111–125 s and then jumped to 298 of 300.
+      await progress.pollIfDue();
     }
     // Create-only once live: a stale Preview deletes nothing live.
     if (!live) {
@@ -283,25 +288,37 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
  * `rows` may grow while this is in use: the handoff adds each row it makes.
  * `onProgress({ confirmed, total })` is told each time the count moves.
  */
-function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), onProgress = () => {}, ...rest } = {}, total = null) {
+function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), sleep = pause, onProgress = () => {}, ...rest } = {}, total = null) {
   // The old TOTAL budget, passed by a caller that was not updated, would be
   // silently ignored and wait 30 s of no progress instead. Refused by name.
   if ("budgetMs" in rest) throw new Error("handoff: `budgetMs` is gone — the deadline is on progress now; pass `stallMs` (builder#94)");
   let best = -1;
   let movedAt = now();
+  let polledAt = null;
   // The fewest writes the target has held unconfirmed — ANY of this page's,
   // not only these rows. The node confirming someone else's write is the node
   // making progress: behind 255 of them, these rows wait 77 s on a healthy
   // node, and counting only our own confirmations called that a stall.
   let fewest = null;
   const t = {
-    everyMs, stallMs, now, rows,
+    everyMs, stallMs, now, sleep, rows,
     get best() { return best; },
     /** Something moved that is not a confirmation: a row was made. */
     moved: () => { movedAt = now(); },
+    /**
+     * REPORT progress if `everyMs` has passed since the last poll. Only
+     * reports: a row lost is judged where it always was — in the room wait
+     * and once every row is made — so a failed attempt leaves exactly what
+     * it left before this existed.
+     */
+    async pollIfDue() {
+      if (polledAt !== null && now() - polledAt < everyMs) return;
+      await t.poll({ judge: false });
+    },
     stalled: () => now() - movedAt > stallMs,
     /** Read every row's state; throw on anything lost. */
-    async poll() {
+    async poll({ judge = true } = {}) {
+      polledAt = now();
       let waiting = 0;
       let lost = 0;
       for (const row of rows) {
@@ -314,7 +331,7 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
         if (!r || state === "ROLLED_BACK") lost += 1;
         else if (state !== "CLEAN") waiting += 1;
       }
-      if (lost) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
+      if (lost && judge) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
       // The engine surface says how many writes it holds unconfirmed
       // (`stats().pendingWrites`); a store with nothing to wait on does not.
       const unconfirmed = typeof target.stats === "function" ? (await target.stats())?.pendingWrites : undefined;
@@ -322,7 +339,8 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
         if (fewest !== null && unconfirmed < fewest) movedAt = now();
         if (fewest === null || unconfirmed < fewest) fewest = unconfirmed;
       }
-      const confirmed = rows.length - waiting;
+      // A LOST row is not confirmed, whether or not this poll judges it.
+      const confirmed = rows.length - waiting - lost;
       // PROGRESS is a record newly confirmed — the HIGHEST count so far
       // moving up, so a count that dips and recovers is not mistaken for it.
       if (confirmed > best) {
@@ -360,7 +378,7 @@ async function roomFor(fn, t, rows) {
       return r;
     } catch (e) {
       if (!(e && e.retryable === true)) throw e;
-      await pause(t.everyMs);
+      await t.sleep(t.everyMs);
       const { confirmed } = await t.poll();
       if (t.stalled()) {
         throw new Error(`the node has room for no more records and has confirmed none in ${Math.round(t.stallMs / 1000)} s — ${confirmed} of ${rows.length} made so far are confirmed; your data is still here`);
@@ -377,7 +395,7 @@ async function settled(t) {
     if (t.stalled()) {
       throw new Error(`${waiting} of ${t.rows.length} records are not confirmed by the node yet — ${confirmed} confirmed, and none newly in ${Math.round(t.stallMs / 1000)} s; your data is still here`);
     }
-    await pause(t.everyMs);
+    await t.sleep(t.everyMs);
   }
 }
 
