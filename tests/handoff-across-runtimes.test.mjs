@@ -246,6 +246,64 @@ await t("**S2: the SAME project id from a device with no history: the live edit 
   assert.deepStrictEqual(p.heard, ["1 record differs from the published app and was kept as published."]);
 });
 
+// ---- the marker is ACKNOWLEDGED, like any row (builder#88) -------------------
+
+/** A node over a real Db that accepts the MARKER write and then loses it — once. Counts writes. */
+function losesTheMarker() {
+  const db = new sdk.Db();
+  let lose = true;
+  const writes = { rows: 0, markers: 0 };
+  const target = new Proxy(db, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "createAt") return async (d, ...a) => {
+      const r = await v.call(o, d, ...a);
+      if (d === PUBLISHED_DOMAIN) {
+        writes.markers += 1;
+        if (lose) await o.delete(d, r.record.id);   // the node rolled it back
+      } else writes.rows += 1;
+      return r;
+    };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  return { db, target, writes, heal: () => { lose = false; } };
+}
+
+await t("**a marker the node LOSES fails the publish — it is not reported done over a domain that reads not-live**", async () => {
+  const src = await preview();
+  await src.put("tasks", { title: "first" });
+  const node = losesTheMarker();
+  await assert.rejects(run(src, node.target), /did not reach the node/);
+  assert.strictEqual(await node.db.get(PUBLISHED_DOMAIN, sdk.slotFrom(0, "domain", "tasks")), null, "and indeed nothing marks it live");
+  // Through the runtime: the phase says so.
+  const { createProjectRuntime } = await import("../project-runtime.js");
+  const lost = losesTheMarker();
+  const rt = createProjectRuntime({ mount: async () => ({ db: src, stop() {} }), publish: async () => ({ session: { close() {} }, db: lost.target }) });
+  await rt.ensureMounted();
+  await assert.rejects(rt.publish(app, {}, { after: async () => {}, handoff: ({ source, target }) => run(source, target) }));
+  assert.strictEqual(rt.phase, "failed");
+  assert.strictEqual(rt.publishedDb, null, "the backend is not adopted");
+});
+
+await t("**the retry writes the marker ONCE, and the domain is live**", async () => {
+  const src = await preview();
+  await src.put("tasks", { title: "first" });
+  const node = losesTheMarker();
+  await assert.rejects(run(src, node.target), /did not reach the node/);
+  node.heal();
+  await run(src, node.target);
+  assert.strictEqual((await node.db.scan(PUBLISHED_DOMAIN)).length, 1);
+  assert.deepStrictEqual(await titles(node.db), ["first", "seed"], "and the rows are each there once");
+});
+
+await t("THE CONTROL: a normal publish writes each row once and ONE marker, and returns", async () => {
+  const src = await preview();
+  await src.put("tasks", { title: "first" });
+  const node = losesTheMarker();
+  node.heal();
+  await run(src, node.target);
+  assert.deepStrictEqual(node.writes, { rows: 2, markers: 1 });
+});
+
 await t("a SECOND completion leaves ONE marker per domain", async () => {
   const { src, dst } = await once();
   await run(src, dst);
