@@ -13,8 +13,8 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
-import { handoff, previewDb, SlotCollision } from "../handoff.js";
-import { openApp, schemasOf } from "../runtime-logic.js";
+import { handoff, previewDb, SlotCollision, PUBLISHED_DOMAIN, sameFields } from "../handoff.js";
+import { openApp, schemasOf, preloadManifest } from "../runtime-logic.js";
 
 const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
@@ -34,18 +34,36 @@ const run = (source, target, over = {}) => {
   const heard = [];
   const p = handoff({
     source, target, app, schemas: schemasOf(app), slotFrom: sdk.slotFrom,
-    namespace: PID, seedMs: SEED_MS, published: false, onNotice: m => heard.push(m), confirm, ...over,
+    namespace: PID, seedMs: SEED_MS, onNotice: m => heard.push(m), confirm, ...over,
   });
   return Object.assign(p, { heard });
 };
 
-/** A Preview with two rows besides the seed, and a target that has had ONE handoff from it. */
+/** A Preview with two rows besides the seed, and a target that has had ONE COMPLETED publish from it: live. */
 const once = async () => {
   const src = await preview();
   await src.put("tasks", { title: "first" });
   await src.put("tasks", { title: "second" });
   const dst = new sdk.Db();
   await run(src, dst);
+  return { src, dst };
+};
+
+/**
+ * The same, but the publish did NOT complete: every copy landed and none was
+ * confirmed by the node, so the domain is not live — the failed-publish case.
+ */
+const attempted = async () => {
+  const src = await preview();
+  await src.put("tasks", { title: "first" });
+  await src.put("tasks", { title: "second" });
+  const dst = new sdk.Db();
+  const unconfirmed = new Proxy(dst, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: "PENDING" }; };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  await assert.rejects(run(src, unconfirmed, { confirm: { everyMs: 0, budgetMs: 10 } }), /not confirmed/);
   return { src, dst };
 };
 
@@ -78,8 +96,8 @@ await t("**the Preview store WIPED between two handoffs: nothing is removed**", 
   assert.deepStrictEqual(await titles(dst), ["first", "second", "seed"]);
 });
 
-await t("THE CONTROL: a row DELETED in this Preview is removed from the target", async () => {
-  const { src, dst } = await once();
+await t("THE CONTROL: a row DELETED in this Preview is removed from the target (not yet live)", async () => {
+  const { src, dst } = await attempted();
   const [row] = (await src.scan("tasks")).filter(r => r.fields.title === "second");
   await src.delete("tasks", row.id);
   const did = await run(src, dst);
@@ -87,8 +105,8 @@ await t("THE CONTROL: a row DELETED in this Preview is removed from the target",
   assert.strictEqual(did.removed, 1);
 });
 
-await t("**never published: a row EDITED between two handoffs is carried — updated, not skipped**", async () => {
-  const { src, dst } = await once();
+await t("**not yet live: a row EDITED between two handoffs is carried — updated, not skipped**", async () => {
+  const { src, dst } = await attempted();
   const [row] = (await src.scan("tasks")).filter(r => r.fields.title === "first");
   await src.update("tasks", row.id, { title: "first, edited" });
   const did = await run(src, dst);
@@ -97,13 +115,11 @@ await t("**never published: a row EDITED between two handoffs is carried — upd
 });
 
 await t("**a SEED row edited in Preview before the first completed publish is carried**", async () => {
-  const src = await preview();
-  const dst = new sdk.Db();
-  await run(src, dst);
-  const [seed] = await src.scan("tasks");
+  const { src, dst } = await attempted();
+  const [seed] = (await src.scan("tasks")).filter(r => r.fields.title === "seed");
   await src.update("tasks", seed.id, { title: "seed, edited" });
   await run(src, dst);
-  assert.deepStrictEqual(await titles(dst), ["seed, edited"]);
+  assert.deepStrictEqual(await titles(dst), ["first", "second", "seed, edited"]);
 });
 
 await t("**a failed publish, an edit, the retry: the edit is on the target**", async () => {
@@ -123,38 +139,38 @@ await t("**a failed publish, an edit, the retry: the edit is on the target**", a
   assert.deepStrictEqual(await titles(dst), ["draft, edited", "seed"]);
 });
 
-await t("**once PUBLISHED, a stale Preview's differing row is KEPT as published — and the person is told once**", async () => {
+await t("**once LIVE, a stale Preview's differing row is KEPT as published — and the person is told once**", async () => {
   const { src, dst } = await once();
   const [row] = (await dst.scan("tasks")).filter(r => r.fields.title === "first");
   await dst.update("tasks", row.id, { title: "first, edited in the published app" });
-  const p = run(src, dst, { published: true });
+  const p = run(src, dst);
   const did = await p;
   assert.strictEqual(did.kept, 1);
   assert.deepStrictEqual(await titles(dst), ["first, edited in the published app", "second", "seed"]);
   assert.deepStrictEqual(p.heard, ["1 record differs from the published app and was kept as published."]);
 });
 
-await t("THE CONTROL: the same handoff NOT yet published updates it — `published` is what decides", async () => {
-  const { src, dst } = await once();
+await t("THE CONTROL: the same handoff into a domain NOT yet live updates it — liveness is what decides", async () => {
+  const { src, dst } = await attempted();
   const [row] = (await dst.scan("tasks")).filter(r => r.fields.title === "first");
   await dst.update("tasks", row.id, { title: "changed on the target" });
-  const p = run(src, dst, { published: false });
+  const p = run(src, dst);
   assert.strictEqual((await p).kept, 0);
   assert.deepStrictEqual(await titles(dst), ["first", "second", "seed"]);
   assert.deepStrictEqual(p.heard, [], "nothing kept, nothing to tell");
 });
 
-await t("once PUBLISHED, a stale Preview deletes nothing live", async () => {
+await t("once LIVE, a stale Preview deletes nothing live", async () => {
   const { src, dst } = await once();
   const [row] = (await src.scan("tasks")).filter(r => r.fields.title === "second");
   await src.delete("tasks", row.id);
-  assert.strictEqual((await run(src, dst, { published: true })).removed, 0);
+  assert.strictEqual((await run(src, dst)).removed, 0);
   assert.deepStrictEqual(await titles(dst), ["first", "second", "seed"]);
 });
 
 await t("**a SECOND publication makes zero new rows** — the slots are the project's, not the publication's", async () => {
   const { src, dst } = await once();
-  const did = await run(src, dst, { published: true });
+  const did = await run(src, dst);
   assert.deepStrictEqual({ copied: did.copied, seeded: did.seeded }, { copied: 0, seeded: 0 });
   assert.deepStrictEqual(await titles(dst), ["first", "second", "seed"]);
 });
@@ -182,7 +198,6 @@ await t("every input a handoff decides from is REQUIRED, and a missing one is re
   for (const [what, over] of [
     ["slotFrom", { slotFrom: undefined }],
     ["namespace", { namespace: undefined }],
-    ["published", { published: undefined }],
     ["seedMs", { seedMs: undefined }],
     ["onNotice", { onNotice: undefined }],
   ]) {
@@ -190,6 +205,91 @@ await t("every input a handoff decides from is REQUIRED, and a missing one is re
   }
   await assert.rejects(run(new sdk.Db(), new sdk.Db()), /no `source.deleted/, "a Preview that cannot say what was deleted");
   await run(src, new sdk.Db());   // THE CONTROL: with all of them, it runs
+});
+
+// ---- LIVENESS IS THE TARGET'S FACT, per domain (builder#86) -----------------
+
+/**
+ * A domain published and then USED: seed edited live, a row added live. What
+ * a person would lose if anything re-seeded or overwrote it.
+ */
+const used = async () => {
+  const { dst } = await once();
+  const [seed] = (await dst.scan("tasks")).filter(r => r.fields.title === "seed");
+  await dst.update("tasks", seed.id, { title: "seed, edited live" });
+  await dst.put("tasks", { title: "added live" });
+  return dst;
+};
+const LIVE_ROWS = ["added live", "first", "second", "seed, edited live"];
+
+await t("**S1: another browser — no history, a new project id — publishing into a LIVE domain writes no seed**", async () => {
+  const dst = await used();
+  const did = await run(await preview(), dst, { namespace: "r0otherbrowser0" });
+  assert.strictEqual(did.seeded, 0, "the seed the person edited away must not come back");
+  assert.deepStrictEqual(await titles(dst), LIVE_ROWS);
+});
+
+await t("**S1': a second PROJECT on the same domain name, same device: no seed into the live domain**", async () => {
+  const dst = await used();
+  const did = await run(await preview(), dst, { namespace: "r0secondproject" });
+  assert.strictEqual(did.seeded, 0);
+  assert.deepStrictEqual(await titles(dst), LIVE_ROWS);
+});
+
+await t("**S2: the SAME project id from a device with no history: the live edit is KEPT, and the person told**", async () => {
+  const dst = await used();
+  const p = run(await preview(), dst);   // device B: A's pid, a pristine Preview
+  const did = await p;
+  assert.strictEqual(did.kept, 1, "B's pristine seed differs from the live row, and the live row wins");
+  assert.strictEqual(did.updated, 0, "overwritten silently was the defect");
+  assert.deepStrictEqual(await titles(dst), LIVE_ROWS);
+  assert.deepStrictEqual(p.heard, ["1 record differs from the published app and was kept as published."]);
+});
+
+await t("a SECOND completion leaves ONE marker per domain", async () => {
+  const { src, dst } = await once();
+  await run(src, dst);
+  assert.strictEqual((await dst.scan(PUBLISHED_DOMAIN)).length, 1);
+});
+
+await t("THE CONTROL: a publish that did not complete marks nothing live", async () => {
+  const { dst } = await attempted();
+  assert.strictEqual(await dst.schema(PUBLISHED_DOMAIN), null, "no marker domain before a completion");
+});
+
+await t("**the reserved domain is never an APP's**: not preloaded, not bound by the published app — though it IS in the tree", async () => {
+  const { dst } = await once();
+  assert.ok((await dst.domains()).includes(PUBLISHED_DOMAIN), "THE CONTROL: the marker exists, so what follows is not vacuous");
+  assert.ok(!preloadManifest(app).includes(PUBLISHED_DOMAIN), "not in the preload");
+  // The published app, mounted over the target, binds only its own domains.
+  const node = () => new Proxy({ hidden: false, style: {}, contains: () => false, replaceChildren() {} },
+    { get: (t, p) => (p in t ? t[p] : () => {}), set: (t, p, v) => { t[p] = v; return true; } });
+  globalThis.document ??= { createElement: () => node(), addEventListener() {} };
+  const { mountApp } = await import("../runtime.js");
+  const bound = new Set();
+  const watched = new Proxy(dst, { get(o, k) {
+    const v = Reflect.get(o, k);
+    if (k === "bind" || k === "scan" || k === "count") return (d, ...a) => { bound.add(d); return v.call(o, d, ...a); };
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  const h = await mountApp(node(), sdk, app, () => {}, watched, "published", { alive: () => true });
+  h?.stop?.();
+  assert.ok(bound.size > 0, "the mount read something, or the check below proves nothing");
+  assert.ok(!bound.has(PUBLISHED_DOMAIN), `the published app read the reserved domain: ${[...bound]}`);
+});
+
+await t("an app that NAMES the reserved domain is refused by name, before anything is written", async () => {
+  const bad = { ...app, components: [...app.components, { type: "table", domain: PUBLISHED_DOMAIN, mode: "owned" }],
+    schemas: { ...app.schemas, [PUBLISHED_DOMAIN]: SCHEMA } };
+  const dst = new sdk.Db();
+  await assert.rejects(run(await preview(), dst, { app: bad, schemas: schemasOf(bad) }), /is reserved/);
+  assert.deepStrictEqual(await dst.domains(), []);
+});
+
+await t("fields are compared STRUCTURALLY: key order, nested included, is not a difference", async () => {
+  assert.ok(sameFields({ a: 1, b: { x: 1, y: [1, 2] } }, { b: { y: [1, 2], x: 1 }, a: 1 }), "nested key order read as a change");
+  assert.ok(!sameFields({ a: { x: 1 } }, { a: { x: 2 } }), "THE CONTROL: a real difference is one");
+  assert.ok(!sameFields({ a: [1, 2] }, { a: [2, 1] }), "and array order IS content");
 });
 
 console.log("\nhandoff across runtimes: all ok");
