@@ -1,18 +1,13 @@
 // Drives the real page in headless Chrome over the DevTools protocol (no deps):
 // build an app, preview it, add / edit / delete through the UI, watch the tree count.
 import assert from "node:assert";
-import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { openPageHost } from "./page-host.mjs";
 import { join } from "node:path";
 
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8097, DEBUG = 9333;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const server = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "127.0.0.1"], { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
-const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--remote-debugging-port=${DEBUG}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-e2e-"))}`, "about:blank"], { stdio: "ignore" });
-const done = code => { server.kill(); chrome.kill(); process.exit(code); };
+// This run's own server and Chrome, on ports the OS chose (builder#70).
+const { port: PORT, debug: DEBUG, nonce, pageProof, done } = await openPageHost("e2e");
 
 try {
   let target;
@@ -36,6 +31,9 @@ try {
   const app = { components: [{ type: "form", domain: "tasks", mode: "owned" }, { type: "table", domain: "tasks", mode: "owned" }] };
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#preview=1&app=${encodeURIComponent(JSON.stringify(app))}` });
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  // THE PAGE PROVES IT IS THIS TREE: it fetches this run's nonce through
+  // its own origin. A foreign server on a stale port cannot answer it.
+  assert.strictEqual(await evaluate(pageProof), nonce, "e2e: the page is not served from this tree");
   await until(`!!document.querySelector(".rt-comp input[name=title]")`, "form inputs rendered as inputs");
   assert.ok(!(await evaluate(`return document.getElementById("canvas").textContent.includes("[object")`)), "DOM nodes were stringified");
 

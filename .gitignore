@@ -9,3 +9,6 @@ build-info.json
 # on every SDK_REV bump, and the ones worth keeping are copied into docs/
 # deliberately, with the revision in the commit that puts them there.
 shots/
+# Nonce files written by page tests to prove a page is served from THIS tree
+# (tests/page-host.mjs, builder#70). Removed at the end of each run.
+.page-nonce/
