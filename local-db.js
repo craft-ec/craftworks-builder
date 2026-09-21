@@ -62,17 +62,38 @@ export class LocalDb {
   #legacy;
   #tag;
   #seq = 0;
+  #onNotice;
+  /**
+   * Things a person can act on that are not errors of any one call: another
+   * tab running an older builder, a legacy store that cannot be read. Each is
+   * `{ kind, message }`; `onNotice` hears each as it is added.
+   */
+  notices = [];
 
-  constructor(storage = globalThis.localStorage, key = "craftec.builder.db.v1") {
+  constructor(storage = globalThis.localStorage, key = "craftec.builder.db.v1", { onNotice = () => {} } = {}) {
     this.#storage = storage;
     // The old single-blob key doubles as the namespace, so two LocalDbs over
     // different keys stay apart exactly as they did.
     this.#legacy = key;
     this.#ns = `${key}/`;
+    this.#onNotice = onNotice;
     // Per INSTANCE, so two tabs minting an id in the same millisecond cannot
     // mint the same one. Opaque, like the rest of the id.
     this.#tag = Math.floor(Math.random() * 36 ** 4).toString(36).padStart(4, "0");
     this.#migrate();
+    // An older tab rewrites the blob on ANY edit it makes. The `storage` event
+    // fires in the other tabs of this origin, so its writes are merged here as
+    // they happen rather than only at the next load.
+    globalThis.addEventListener?.("storage", e => {
+      if (e.storageArea === this.#storage && e.key === this.#legacy && e.newValue != null) this.#migrate();
+    });
+  }
+
+  #notice(kind, message) {
+    if (this.notices.some(n => n.kind === kind)) return;
+    const n = { kind, message };
+    this.notices.push(n);
+    try { this.#onNotice(n); } catch { /* a listener's failure is not the store's */ }
   }
 
   // ---- keys ----------------------------------------------------------------
@@ -82,6 +103,13 @@ export class LocalDb {
   #schemaKey(d) { return `${this.#ns}s/${encodeURIComponent(d)}`; }
   #recordKey(d, id) { return `${this.#ns}r/${encodeURIComponent(d)}/${id}`; }
   #recordPrefix(d) { return `${this.#ns}r/${encodeURIComponent(d)}/`; }
+  // When a record was deleted. Without it, a record deleted here is simply
+  // ABSENT per-key and present in a resurrected blob, and "fill if absent"
+  // would bring it back.
+  #tombKey(d, id) { return `${this.#ns}t/${encodeURIComponent(d)}/${id}`; }
+  // Set once the single-blob store has been split. A blob seen AFTER it was
+  // not a first load: an older tab wrote it back.
+  get #markerKey() { return `${this.#ns}migrated`; }
 
   #get(key) {
     try {
@@ -110,21 +138,59 @@ export class LocalDb {
   }
 
   /**
-   * The single-blob format, split into per-key entries — ONCE, and the blob is
-   * removed only after every entry was written. A write refused halfway leaves
-   * the blob in place, and the next load tries again; entries already written
-   * are rewritten with the same content, so a retry cannot double anything.
+   * The single-blob store, merged into per-key entries.
+   *
+   * FILL, NEVER OVERWRITE. A tab opened before the deploy still runs the old
+   * LocalDb and rewrites its whole stale snapshot into the blob on any edit,
+   * so the blob can come BACK after it was migrated. The first version of this
+   * wrote every blob record over its per-key entry on every load, and so
+   * reverted an edit made here the moment the old tab touched anything —
+   * builder#55 reintroduced by the migration away from its cause (found in
+   * review of builder#66). Now a blob record is written only when:
+   *   - there is no per-key entry and no tombstone for it (a first load, or a
+   *     record the old tab created), or
+   *   - its `updated` is STRICTLY newer than the entry's, or than the
+   *     tombstone's — an edit genuinely made in the old tab, which is a
+   *     person's work and is kept.
+   * Anything older loses, so a stale snapshot cannot undo a newer edit or
+   * resurrect a deleted record.
+   *
+   * The blob is removed only after every entry was written: a refusal halfway
+   * keeps the only complete copy, and the next load finishes it. A blob that
+   * appears after the `migrated` marker is reported, and one that cannot be
+   * parsed is KEPT and reported rather than read as "no blob".
    */
   #migrate() {
-    const old = this.#get(this.#legacy);
-    if (!old || typeof old !== "object") return;
+    let raw;
+    try { raw = this.#storage?.getItem(this.#legacy); } catch { return; }
+    if (raw == null) return;
+    let old;
+    try { old = JSON.parse(raw); } catch { old = null; }
+    if (!old || typeof old !== "object") {
+      this.#notice("unreadable-legacy",
+        "Projects saved by an older version of the builder could not be read; they have been left in place, not deleted.");
+      return;
+    }
+    const resurrected = this.#get(this.#markerKey) != null;
     try {
-      for (const [d, schema] of Object.entries(old.schemas ?? {})) this.#set(this.#schemaKey(d), schema, `schema ${d}`);
-      for (const [d, recs] of Object.entries(old.records ?? {})) {
-        for (const [id, rec] of Object.entries(recs)) this.#set(this.#recordKey(d, id), rec, `record ${d}/${id}`);
+      for (const [d, schema] of Object.entries(old.schemas ?? {})) {
+        if (this.#get(this.#schemaKey(d)) == null) this.#set(this.#schemaKey(d), schema, `schema ${d}`);
       }
+      for (const [d, recs] of Object.entries(old.records ?? {})) {
+        for (const [id, rec] of Object.entries(recs)) {
+          const have = this.#get(this.#recordKey(d, id));
+          const tomb = this.#get(this.#tombKey(d, id));
+          const floor = Math.max(have?.updated ?? -Infinity, tomb?.at ?? -Infinity);
+          if ((rec?.updated ?? -Infinity) > floor) this.#set(this.#recordKey(d, id), rec, `record ${d}/${id}`);
+        }
+      }
+      if (!resurrected) this.#set(this.#markerKey, { at: now() }, "migration marker");
       this.#storage.removeItem(this.#legacy);
-    } catch { /* stays in the old format until a load where storage accepts it */ }
+    } catch { return; /* stays in the old format until a load where storage accepts it */ }
+    if (resurrected) {
+      this.#notice("older-tab",
+        "Another tab is running an older version of the builder. Its edits were merged, but reload that tab so it stops writing the old format.");
+    }
   }
 
   #id() {
@@ -169,8 +235,16 @@ export class LocalDb {
   async delete(domain, id) {
     const key = this.#recordKey(domain, id);
     if (this.#get(key) == null) return false;
+    // The tombstone FIRST: if it cannot be written the record is not removed,
+    // so a refused delete leaves storage exactly as it was.
+    this.#set(this.#tombKey(domain, id), { at: now() }, `delete ${domain}/${id}`);
     try { this.#storage.removeItem(key); }
-    catch (e) { throw new NotSaved(`delete ${domain}/${id}`, e); }
+    catch (e) {
+      // The record is still here, so its tombstone must not be: left behind it
+      // would out-date a genuine later edit from an older tab.
+      try { this.#storage.removeItem(this.#tombKey(domain, id)); } catch { /* best effort */ }
+      throw new NotSaved(`delete ${domain}/${id}`, e);
+    }
     return true;
   }
 

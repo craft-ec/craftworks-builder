@@ -88,6 +88,21 @@ try {
   assert.strictEqual(kept, 1, "after Retry the component is in storage, where a reload would find it");
   console.log("ok page: Retry after storage recovers saves the edit and clears the line", JSON.stringify({ kept }));
 
+  // AN OLDER TAB IS REPORTED. A legacy blob that appears AFTER the migration
+  // marker was written back by a tab still running the old builder; the page
+  // must say so, since reloading that tab is something a person can do.
+  await evaluate(`
+    localStorage.setItem("craftec.builder.db.v1/migrated", JSON.stringify({ at: 1 }));
+    localStorage.setItem("craftec.builder.db.v1", JSON.stringify({ schemas: {}, records: {}, seq: 0 }));`);
+  await send("Page.reload", { ignoreCache: true });
+  await sleep(300);
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after reload");
+  await until(`document.getElementById("storage-note")?.hidden === false`, "the older-tab notice");
+  await shot("66-older-tab-notice");
+  const note = await evaluate(`return document.getElementById("storage-note").textContent;`);
+  assert.match(note, /older version of the builder/, `got: ${note}`);
+  console.log("ok page: a blob written back by an older tab is reported", JSON.stringify({ note }));
+
   console.log(`\nsave state: all ok  (screenshots: ${SHOTS})`);
   done(0);
 } catch (e) {

@@ -52,6 +52,16 @@ const save = () => {
   );
 };
 
+/** What the store reported about itself, shown until the page is reloaded. */
+const storageNotices = [];
+function showStorageNotice(n) {
+  storageNotices.push(n);
+  const host = document.getElementById("storage-note");
+  if (!host) return;
+  host.hidden = false;
+  host.replaceChildren(...storageNotices.map(x => el("div", { className: `note-${x.kind}`, textContent: x.message })));
+}
+
 /** The unsaved line: shown only while the last edit is not on this device. */
 function renderSaveState() {
   const host = document.getElementById("save-state");
@@ -121,7 +131,10 @@ let versionsPanel = null, sdkSelfReport = null, bakedInfo = null;
 // decision: the same records go to the engine-backed one when there is a node.
 let projects = null;
 mountProjects($("projects"), {
-  db: new LocalDb(),
+  // Notices are what the store knows that is not the fault of any one save —
+  // another tab running an older builder, a legacy store it cannot read —
+  // and a person can act on each, so each is shown.
+  db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
   getCanvas: () => app.components,
   setCanvas: (components, project) => {
     // A DIFFERENT PROJECT, so a different runtime. The old one is disposed
