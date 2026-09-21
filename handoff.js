@@ -195,9 +195,19 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
     plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
   }
 
+  // ONE LOOP, TWO CONDITIONS: room and progress (builder#94). The target
+  // holds a bounded number of writes it has not had confirmed — the SDK's copy
+  // refuses the next one `NO_ROOM`, retryable, by name (sdk#180). A publish
+  // larger than that is not a failure: the handoff waits for the node to
+  // confirm a record, which frees room, and makes THAT row again — never
+  // skipping it, never counting it failed. The one deadline is progress: no
+  // record newly confirmed, and no row made, for `stallMs`.
+  const total = plan.reduce((n, { copies, live }) => n + copies.filter(c => !(live && c.row.seed !== undefined)).length, 0);
   const confirmRows = [];
+  const progress = tracker(target, confirmRows, { ...confirm, onProgress }, total);
+  const withRoom = fn => roomFor(fn, progress, confirmRows);
   for (const { d, copies, deletes, live } of plan) {
-    await target.define(d, schemas[d]);
+    await withRoom(() => target.define(d, schemas[d]));
     for (const { slot, row } of copies) {
       // A SEED is what a NEW app starts with. A live domain is not new: the
       // person may have edited those rows away, and writing them again brings
@@ -209,14 +219,14 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
         if (held && !sameFields(held.fields, row.fields)) did.kept += 1;
         continue;
       }
-      const r = await target.createAt(d, slot, row.fields);
+      const r = await withRoom(() => target.createAt(d, slot, row.fields));
       if (r.outcome === "created") {
         did[row.seed !== undefined ? "seeded" : "copied"] += 1;
       } else if (!sameFields(r.record.fields, row.fields)) {
         if (live) {
           did.kept += 1;
         } else {
-          await target.update(d, r.record.id, patchFor(r.record.fields, row.fields));
+          await withRoom(() => target.update(d, r.record.id, patchFor(r.record.fields, row.fields)));
           did.updated += 1;
         }
       }
@@ -225,7 +235,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
     // Create-only once live: a stale Preview deletes nothing live.
     if (!live) {
       for (const slot of deletes) {
-        if (await target.delete(d, slot)) did.removed += 1;
+        if (await withRoom(() => target.delete(d, slot))) did.removed += 1;
       }
     }
   }
@@ -233,7 +243,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   if (did.kept) {
     onNotice(`${did.kept} ${did.kept === 1 ? "record differs" : "records differ"} from the published app and ${did.kept === 1 ? "was" : "were"} kept as published.`);
   }
-  await acknowledged(target, confirmRows, { ...confirm, onProgress });
+  await settled(progress);
   // THE PUBLISH COMPLETED: every domain it touched is live from now on. By
   // `createAt`, so a second completion lands on the first marker. A crash
   // before these are written is benign: the retry runs in not-live mode from
@@ -246,67 +256,129 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   // the rows confirm, so a domain is never marked live over rows that may
   // yet be lost; a marker that does not confirm fails the publish exactly as
   // an unconfirmed row does, and the retry writes it once (`createAt`).
-  await target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA);
   const markers = [];
+  const marking = tracker(target, markers, confirm, plan.length);
+  const markerRoom = fn => roomFor(fn, marking, markers);
+  await markerRoom(() => target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA));
   for (const { d } of plan) {
-    const m = await target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {});
+    const m = await markerRoom(() => target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {}));
     markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
   }
-  await acknowledged(target, markers, confirm);
+  await settled(marking);
   return did;
 }
 
 /**
- * Wait until every copy reads CLEAN, and fail on anything lost.
+ * What the node has confirmed of `rows`, and the one deadline: PROGRESS.
  *
- * A deadline on PROGRESS, not on the total (builder#94). "Not confirmed yet"
+ * A deadline on progress, not on the total (builder#94). "Not confirmed yet"
  * can last for ever on a node that has gone away, and waiting on it would
  * leave the button saying Publishing… with nothing to act on. But the node
  * confirms one write per commit, about 3.4 a second: 100 rows took 27–29 s of
  * a 30 s total, and 300 rows could not fit at any speed. A publish that is
- * still ADVANCING is never failed for being large; one that has stalled —
- * `stallMs` with no record newly confirmed — fails as promptly as before, and
- * says how far it got.
+ * still ADVANCING — a record newly confirmed, or a row made — is never failed
+ * for being large; one that has stalled for `stallMs` fails as promptly as
+ * before, and says how far it got.
  *
- * `onProgress({ confirmed, total })` is told each time the count moves, for
- * the publish panel's "confirmed k of n".
- *
- * A LOST copy needs no forgetting: the next attempt's `createAt` finds its
- * slot empty and copies it again, and a copy merely PENDING at the deadline is
- * found there and not copied twice.
+ * `rows` may grow while this is in use: the handoff adds each row it makes.
+ * `onProgress({ confirmed, total })` is told each time the count moves.
  */
-export async function acknowledged(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), onProgress = () => {}, ...rest } = {}) {
+function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), onProgress = () => {}, ...rest } = {}, total = null) {
   // The old TOTAL budget, passed by a caller that was not updated, would be
   // silently ignored and wait 30 s of no progress instead. Refused by name.
   if ("budgetMs" in rest) throw new Error("handoff: `budgetMs` is gone — the deadline is on progress now; pass `stallMs` (builder#94)");
   let best = -1;
   let movedAt = now();
+  const t = {
+    everyMs, stallMs, now, rows,
+    get best() { return best; },
+    /** Something moved that is not a confirmation: a row was made. */
+    moved: () => { movedAt = now(); },
+    stalled: () => now() - movedAt > stallMs,
+    /** Read every row's state; throw on anything lost. */
+    async poll() {
+      let waiting = 0;
+      let lost = 0;
+      for (const row of rows) {
+        const r = await target.get(row.domain, row.id);
+        // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN,
+        // which let the handoff say Published on the strength of a field that
+        // was not there — the opposite of the builder's own rule that a
+        // record with no state is unpublished, not saved. Unknown waits.
+        const state = r?.state ?? "UNKNOWN";
+        if (!r || state === "ROLLED_BACK") lost += 1;
+        else if (state !== "CLEAN") waiting += 1;
+      }
+      if (lost) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
+      const confirmed = rows.length - waiting;
+      // PROGRESS is a record newly confirmed — the HIGHEST count so far
+      // moving up, so a count that dips and recovers is not mistaken for it.
+      if (confirmed > best) {
+        best = confirmed;
+        movedAt = now();
+        onProgress({ confirmed, total: total ?? rows.length });
+      }
+      return { waiting, confirmed };
+    },
+  };
+  return t;
+}
+
+const pause = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Make one write, and when the target has NO ROOM for it, wait for room.
+ *
+ * `NO_ROOM` is the SDK saying it already holds as many unconfirmed writes as
+ * it will (sdk#180) — retryable, and marked so by Rust (`retryable`), not
+ * recognised here by a list of codes. Room comes back as the node confirms:
+ * so this waits for the next record of ours to be confirmed and makes the
+ * SAME write again. If none of ours is waiting (the room is held by writes
+ * this handoff did not make), it looks again each `everyMs`. It gives up only
+ * when nothing has moved for `stallMs`. Anything that is not retryable is
+ * thrown as it came.
+ */
+async function roomFor(fn, t, rows) {
   for (;;) {
-    let waiting = 0;
-    let lost = 0;
-    for (const row of rows) {
-      const r = await target.get(row.domain, row.id);
-      // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN, which
-      // let the handoff say Published on the strength of a field that was not
-      // there — the opposite of the builder's own rule that a record with no
-      // state is unpublished, not saved. Unknown waits, like PENDING.
-      const state = r?.state ?? "UNKNOWN";
-      if (!r || state === "ROLLED_BACK") lost += 1;
-      else if (state !== "CLEAN") waiting += 1;
+    try {
+      const r = await fn();
+      t.moved();
+      return r;
+    } catch (e) {
+      if (!(e && e.retryable === true)) throw e;
+      const before = t.best;
+      for (;;) {
+        await pause(t.everyMs);
+        const { waiting, confirmed } = await t.poll();
+        if (t.best > before || waiting === 0) break;
+        if (t.stalled()) {
+          throw new Error(`the node has room for no more records and has confirmed none in ${Math.round(t.stallMs / 1000)} s — ${confirmed} of ${rows.length} made so far are confirmed; your data is still here`);
+        }
+      }
     }
-    if (lost) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
-    const confirmed = rows.length - waiting;
-    // PROGRESS is a record newly confirmed — the HIGHEST count so far moving
-    // up, so a count that dips and recovers is not mistaken for progress.
-    if (confirmed > best) {
-      best = confirmed;
-      movedAt = now();
-      onProgress({ confirmed, total: rows.length });
-    }
-    if (!waiting) return;
-    if (now() - movedAt > stallMs) {
-      throw new Error(`${waiting} of ${rows.length} records are not confirmed by the node yet — ${confirmed} confirmed, and none newly in ${Math.round(stallMs / 1000)} s; your data is still here`);
-    }
-    await new Promise(r => setTimeout(r, everyMs));
   }
+}
+
+/** Wait until every row `t` tracks reads CLEAN; fail on anything lost, or on no progress. */
+async function settled(t) {
+  for (;;) {
+    const { waiting, confirmed } = await t.poll();
+    if (!waiting) return;
+    if (t.stalled()) {
+      throw new Error(`${waiting} of ${t.rows.length} records are not confirmed by the node yet — ${confirmed} confirmed, and none newly in ${Math.round(t.stallMs / 1000)} s; your data is still here`);
+    }
+    await pause(t.everyMs);
+  }
+}
+
+/**
+ * Wait until every copy reads CLEAN, and fail on anything lost — or when
+ * `stallMs` passes with no record newly confirmed (see `tracker`).
+ *
+ * A LOST copy needs no forgetting: the next attempt's `createAt` finds its
+ * slot empty and copies it again, and a copy merely PENDING at the deadline is
+ * found there and not copied twice.
+ */
+export async function acknowledged(target, rows, opts = {}) {
+  await settled(tracker(target, rows, opts));
 }
