@@ -14,22 +14,18 @@
 // Screenshots are written beside each assertion (SHOTS dir printed at the end)
 // because a screenshot caught a data-losing bug here that no test could.
 import assert from "node:assert";
-import { spawn } from "node:child_process";
+import { openPageHost } from "./page-host.mjs";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8098, DEBUG = 9334;
 const SHOTS = process.env.SHOTS ?? mkdtempSync(join(tmpdir(), "cw-owner-shots-"));
 mkdirSync(SHOTS, { recursive: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const server = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "127.0.0.1"], { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
-const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", "--window-size=1280,800", `--remote-debugging-port=${DEBUG}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-owner-"))}`, "about:blank"], { stdio: "ignore" });
-const done = code => { server.kill(); chrome.kill(); process.exit(code); };
-// And a budget for the whole run, whatever it is stuck on.
-setTimeout(() => { console.error("owner page FAILED: the run exceeded its 90 s budget"); done(1); }, 90_000).unref();
+// This run's own server and Chrome, on ports the OS chose, with the run's
+// budget (builder#70).
+const { port: PORT, debug: DEBUG, nonce, pageProof, done } = await openPageHost("owner page");
 
 try {
   let target;
@@ -68,6 +64,9 @@ try {
   const fresh = async extra => {
     await send("Page.navigate", { url: url(extra) });
     await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+    // THE PAGE PROVES IT IS THIS TREE: it fetches this run's nonce through
+    // its own origin. A foreign server on a stale port cannot answer it.
+    assert.strictEqual(await evaluate(pageProof), nonce, "owner page: the page is not served from this tree");
     await evaluate(`localStorage.clear(); sessionStorage.clear();`);
     await send("Page.reload", { ignoreCache: true });
     await sleep(300);
