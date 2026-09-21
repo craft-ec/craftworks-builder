@@ -61,6 +61,7 @@ await t("THE MEASUREMENT, with both sides built the way a person builds", async 
     const b0 = pc.stats().blocks;
     await setComponentProps(pc, ids[mid], { ...props(mid), w: 1 });
     const pcTweak = pc.stats().blocks - b0;
+    const pcHeight = pc.stats().height;
 
     const wc = new sdk.Db();
     await wc.define("canvas", {
@@ -78,8 +79,9 @@ await t("THE MEASUREMENT, with both sides built the way a person builds", async 
     canvas[`c${mid}`].props.w = 1;
     await wc.update("canvas", rec.id, { components: JSON.stringify(canvas) });
     const wcTweak = wc.stats().blocks - c0;
+    const wcHeight = wc.stats().height;
 
-    rows.push({ n, pcBuild, wcBuild, pcTweak, wcTweak });
+    rows.push({ n, pcBuild, wcBuild, pcTweak, wcTweak, pcHeight, wcHeight });
   }
 
   for (const r of rows) {
@@ -90,12 +92,21 @@ await t("THE MEASUREMENT, with both sides built the way a person builds", async 
   }
 
   assert.ok(rows.every(r => r.pcTweak >= 1), "a tweak must write something, or this measures nothing");
-  // Tweak cost is a WASH — neither shape wins by more than a block. The
-  // issue's original rationale is dead and does not return in reverse.
+  // A TWEAK COSTS A PATH, in both shapes, whatever N is (builder#62). This
+  // was "within one block of each other", a fixed threshold INSIDE the noise:
+  // ids are time-derived, so chunk boundaries move between runs, and over 50
+  // repeats the pair differed by more than one block once (per-component 5
+  // at N=200). The claim that matters — ARCHITECTURE §5, per-edit cost does
+  // not grow with N — is the REGIME: one leaf-to-root path of `height` nodes,
+  // doubled for a chunk boundary that moves at a level, plus one if the root
+  // splits: at most 2·height + 1. Derived, not fitted: the worst measured
+  // case (5 at height 2) is exactly on it. A tweak that rewrote every
+  // component — `saveCanvas`'s original bug — costs O(N) and fails it.
+  const pathBound = h => 2 * h + 1;
   assert.ok(
-    rows.every(r => Math.abs(r.pcTweak - r.wcTweak) <= 1),
-    "tweak cost stopped being a wash — one shape now wins per edit, and the " +
-    "rationale in projects.js should be re-opened: " + JSON.stringify(rows),
+    rows.every(r => r.pcTweak <= pathBound(r.pcHeight) && r.wcTweak <= pathBound(r.wcHeight)),
+    "a tweak costs more than one path — per-edit cost now grows with the " +
+    "canvas, and the rationale in projects.js should be re-opened: " + JSON.stringify(rows),
   );
   // THE LEG THAT DECIDES, and it has a CROSSOVER — stated rather than hidden
   // by picking one size. Whole-canvas is cheaper for a small canvas and loses
