@@ -189,7 +189,12 @@ export class LocalDb {
           const have = this.#get(this.#recordKey(d, id));
           const tomb = this.#get(this.#tombKey(d, id));
           const floor = Math.max(have?.updated ?? -Infinity, tomb?.at ?? -Infinity);
-          if ((rec?.updated ?? -Infinity) > floor) this.#set(this.#recordKey(d, id), rec, `record ${d}/${id}`);
+          // NOTHING HERE YET is its own branch (builder#68): with no entry and
+          // no tombstone the record is written whatever it carries. Folded into
+          // the comparison, a record with no `updated` read `-Infinity >
+          // -Infinity`, was not written — and the blob was then removed.
+          const first = have == null && tomb == null;
+          if (first || (rec?.updated ?? -Infinity) > floor) this.#set(this.#recordKey(d, id), rec, `record ${d}/${id}`);
         }
       }
       if (!resurrected) this.#set(this.#markerKey, { at: now() }, "migration marker");
