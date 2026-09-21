@@ -63,7 +63,15 @@ const sameFields = (a, b) => {
   return ka.length === kb.length && ka.every(k => JSON.stringify(a[k]) === JSON.stringify(b?.[k]));
 };
 
-/** The slot seed row `i` of domain `d` is published at. `seedMs` is the project record's `created`. */
+/**
+ * The slot seed row `i` of domain `d` is published at. `seedMs` is the project
+ * record's `created`.
+ *
+ * Stated residual: the key is the POSITION, so editing the app's seed list
+ * between publishes shifts it. A row moved to another index lands on that
+ * index's slot, and a SHORTER list leaves its old last slot published — the
+ * handoff never deletes a seed slot it was not told was deleted.
+ */
 export const seedSlot = (slotFrom, namespace, seedMs, d, i) => slotFrom(seedMs, namespace, `seed/${d}/${i}`);
 
 /** Two Preview rows derive one slot. Nothing is copied. */

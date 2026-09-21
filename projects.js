@@ -207,6 +207,26 @@ export async function listProjects(db) {
   return db.scan(PROJECT, { reverse: true });
 }
 
+/**
+ * The slot a stored id is re-created at.
+ *
+ * An id is self-describing by length: 32 hex is a bare record's own key, 64
+ * is `parent ‖ key` in a domain keyed under a parent, and the parent is
+ * re-derived from the fields — so the slot is the last half. A LocalDb id is
+ * its own slot.
+ */
+const slotOfId = id => (/^[0-9a-f]{64}$/.test(id) ? id.slice(32) : id);
+
+/** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
+export async function restoreProject(db, pid, fields) {
+  return db.createAt(PROJECT, slotOfId(pid), fields);
+}
+
+/** Put one component back under ITS OWN id (builder#82). Never overwrites. */
+export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }) {
+  return db.createAt(COMPONENT, slotOfId(rid), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
+}
+
 /** Add one component to a project. ONE record. */
 export async function addComponent(db, pid, { kind, layout = null, binding = null, props = null }) {
   return db.put(COMPONENT, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
@@ -330,6 +350,10 @@ export async function openProject(db, pid) {
   }
   return {
     id: project.id,
+    // The stored record's fields, as they are: what a tab puts back if the
+    // store is lost under it (builder#82). Never re-derived from the decoded
+    // fields below, so a restore writes exactly what was there.
+    record: { ...project.fields },
     title: project.fields.title,
     created: project.fields.created,
     updated: project.fields.updated,

@@ -10,6 +10,7 @@ import { PROJECT,
   addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
   recordPublication, publicationsOf, hasPublished, nextSeq, recordPerComponentKey,
+  restoreProject, restoreComponent,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
 } from "./projects.js";
 
@@ -90,11 +91,18 @@ const MEMBERS = Symbol("members");
 // project's ids, with no record in the new one, would read as "deleted
 // elsewhere" and empty the canvas. So the set names the project it describes,
 // and a save into any other project uses the old rule.
-const setMembers = (canvas, pid, ids) =>
-  Object.defineProperty(canvas, MEMBERS, { value: { pid, ids: new Set(ids) }, enumerable: false, configurable: true, writable: true });
+//
+// It also holds the PROJECT RECORD as this tab last read it (builder#82). If
+// the store is lost under an open tab, this canvas is the only copy left of
+// the project as well as of its components, and a restore that put back only
+// the components left a project nobody could open: no record, not listed, and
+// the person told it had been saved.
+const setMembers = (canvas, pid, ids, project = canvas[MEMBERS]?.pid === pid ? canvas[MEMBERS].project : null) =>
+  Object.defineProperty(canvas, MEMBERS, { value: { pid, ids: new Set(ids), project }, enumerable: false, configurable: true, writable: true });
 
 /** A project's components as a canvas, with its base set. Use this, not a bare `map(fromRecord)`. */
-export const canvasOf = project => setMembers(project.components.map(fromRecord), project.id, project.components.map(c => c.id));
+export const canvasOf = project =>
+  setMembers(project.components.map(fromRecord), project.id, project.components.map(c => c.id), project.record ?? null);
 
 /** A raw stored record as the component `fromRecord` expects. */
 const decoded = r => {
@@ -200,7 +208,8 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
   // tab's write wins and the person is told.
   // `dropped`: a clean component another tab DELETED, taken off this canvas.
   // `restored`: this tab's components whose store was LOST, saved again.
-  const did = { added: 0, updated: 0, removed: 0, untouched: 0, adopted: 0, conflicts: 0, dropped: 0, restored: 0 };
+  // `restoredProject`: the project record itself was put back.
+  const did = { added: 0, updated: 0, removed: 0, untouched: 0, adopted: 0, conflicts: 0, dropped: 0, restored: 0, restoredProject: false };
   // No base set, or one recorded for ANOTHER project: nothing is deleted on
   // its say-so (see the removal pass).
   const members = components[MEMBERS]?.pid === pid ? components[MEMBERS].ids : undefined;
@@ -211,7 +220,31 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
   // a private window — and this canvas is the only copy left. Dropping clean
   // components there would destroy them; they are saved again instead, and the
   // person is told (found by the architect's probe of builder#78).
-  const projectStored = members ? Boolean(await db.get(PROJECT, pid)) : true;
+  //
+  // RESTORED IN PLACE (builder#82): the project record under its own id from
+  // the copy this tab holds, then each component under its own id — so a
+  // reload opens the SAME project, listed, with its components, and the
+  // definition follows in the save that called this. `createAt` never
+  // overwrites: a second tab restoring at the same moment finds the first's.
+  //
+  // "No project record ⇒ the store was lost" is sound only because NOTHING
+  // deletes a project today. The day that ships, a project deleted in another
+  // tab looks identical — so deletion must leave a tombstone, and `createAt`
+  // refuses to create over one.
+  // Read on every save, not only with a base set: the copy it leaves on the
+  // canvas is what a later restore puts back.
+  const stored = await db.get(PROJECT, pid);
+  const projectStored = members ? Boolean(stored) : true;
+  const held = components[MEMBERS]?.pid === pid ? components[MEMBERS].project : null;
+  let unrestorable = false;
+  if (!projectStored) {
+    if (held) {
+      await restoreProject(db, pid, held);
+      did.restoredProject = true;
+    } else {
+      unrestorable = true;
+    }
+  }
 
   for (const c of components) {
     const key = c[BUILDER].key;
@@ -227,12 +260,11 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
     // freshness: with two holders the highest count can be a revert.
     const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1, by }; };
     if (!rec && c.rid && members?.has(c.rid) && !projectStored) {
-      delete c.rid;
       bump();
-      const again = await addComponent(db, pid, toRecord(c));
-      c.rid = again.id;
+      const again = await restoreComponent(db, pid, c.rid, toRecord(c));
+      c.rid = again.record.id;
       setBase(c);
-      kept.add(again.id);
+      kept.add(again.record.id);
       did.added += 1;
       did.restored += 1;
       continue;
@@ -341,15 +373,21 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
     await removeComponent(db, r.id);
     did.removed += 1;
   }
-  // What this tab now holds is its new base set.
-  setMembers(components, pid, components.map(c => c.rid).filter(Boolean));
-  if (did.restored) {
-    // Told once, AFTER the components are safe again: with no one to tell, the
+  // What this tab now holds is its new base set — and the project record as
+  // it now stands.
+  setMembers(components, pid, components.map(c => c.rid).filter(Boolean), stored?.fields ?? held);
+  if (unrestorable) {
+    // Components back, record not: a canvas that never read the record holds
+    // no copy of it to put back. Loud, never "saved".
+    throw new Error("saveCanvas: this project's stored copy was lost, and this tab holds no copy of the project record to put it back under its own id");
+  }
+  if (did.restored || did.restoredProject) {
+    // Told once, AFTER the project is safe again: with no one to tell, the
     // save still fails loudly, but not before the data is back.
     if (typeof onConflict !== "function") {
       throw new Error("saveCanvas: this project's stored copy was lost and was saved again from this tab, and there is no onConflict to tell the person");
     }
-    onConflict("This project's saved copy was missing; this tab's version was saved again.");
+    onConflict("This device's saved copy of this project was missing; it has been saved again from this tab.");
   }
   return did;
 }

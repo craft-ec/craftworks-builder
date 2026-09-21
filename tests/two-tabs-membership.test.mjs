@@ -11,7 +11,7 @@
 // Node and LocalDb over ONE shared storage, as the architect ran it.
 import assert from "node:assert";
 import { LocalDb } from "../local-db.js";
-import { defineProjectDomains, createProject, openProject, componentsOf } from "../projects.js";
+import { defineProjectDomains, createProject, openProject, componentsOf, listProjects, saveDefinition, PROJECT } from "../projects.js";
 
 const node = () => new Proxy({ hidden: false, style: {}, contains: () => false },
   { get: (t, p) => (p in t ? t[p] : () => {}), set: (t, p, v) => { t[p] = v; return true; } });
@@ -33,9 +33,8 @@ const told = [];
 const opts = by => ({ by, onConflict: m => told.push({ by, m }) });
 const labels = canvas => canvas.map(c => c.label).sort();
 const storedLabels = async (db, pid) => (await openProject(db, pid)).components.map(c => c.props?.label).sort();
-// The components stored under a project id, read directly: after a LOST store
-// the project record itself is gone (orphans are builder#82, not this PR), so
-// `openProject` has nothing to open.
+// The components stored under a project id, read directly — what is in storage
+// whether or not the project record is.
 const rawLabels = async (db, pid) => (await componentsOf(db, pid)).map(r => JSON.parse(r.fields.props).label).sort();
 
 async function twoTabs() {
@@ -181,8 +180,68 @@ await t("**the store is LOST under an open tab: nothing is dropped; the componen
   assert.strictEqual(did.restored, 2);
   assert.deepStrictEqual(labels(tab1), ["K v0", "M v0"], "the canvas — the only copy left — is intact");
   assert.deepStrictEqual(await rawLabels(db, pid), ["K v0", "M v0"], "and it is back in storage");
-  assert.strictEqual(told.length, 1);
-  assert.match(told[0].m, /saved copy was missing/);
+  assert.deepStrictEqual(told.map(x => x.m), ["This device's saved copy of this project was missing; it has been saved again from this tab."],
+    "told once, and told what is TRUE: the same project, saved again");
+});
+
+// ---- builder#82: a restore a reload can OPEN ---------------------------------
+
+/**
+ * The store lost under an open tab, then that tab's save — through
+ * `mountProjects`' own save chain, so the definition follows the canvas as it
+ * does in the product — then a RELOAD: a fresh LocalDb over the same storage.
+ */
+async function lostThenReload() {
+  told.length = 0;
+  const { st, db, pid, tab1 } = await twoTabs();
+  const definition = { schemas: { k: { type: "K", fields: [{ name: "title", kind: "text" }] } }, seed: {}, tree: { realm: "public", identity: null } };
+  await saveDefinition(db, pid, definition);
+  const before = await openProject(db, pid);
+  const tab = canvasOf(before);
+  st.m.clear();                                       // cleared site data, with the tab still open
+  await defineProjectDomains(db);
+  const did = await saveCanvas(db, pid, tab, opts("tab1"));
+  await saveDefinition(db, pid, definition);          // what the panel's save does next
+  const reloaded = new LocalDb(st);
+  return { did, before, pid, reloaded, st };
+}
+
+await t("**after a restore, a RELOAD opens THE SAME project — listed, its components under their own ids, its schemas**", async () => {
+  const { did, before, pid, reloaded } = await lostThenReload();
+  assert.strictEqual(did.restoredProject, true);
+  assert.deepStrictEqual((await listProjects(reloaded)).map(p => p.id), [pid], "listed, under its own id");
+  const after = await openProject(reloaded, pid);
+  assert.ok(after, "openProject opens it: on the code before this change it returned null");
+  assert.strictEqual(after.title, before.title);
+  assert.deepStrictEqual(after.record, before.record, "the record the tab held, put back exactly");
+  assert.deepStrictEqual(after.components.map(c => c.id).sort(), before.components.map(c => c.id).sort(),
+    "the components under THEIR OWN ids, not new ones");
+  assert.deepStrictEqual(Object.keys(after.schemas), ["k"], "and its definition");
+});
+
+await t("THE CONTROL: an ORDINARY save writes nothing to the project record", async () => {
+  const { st, db, pid, tab1 } = await twoTabs();
+  const projectKey = k => k.includes(`/r/${PROJECT}/`);
+  const writes = [];
+  const set = st.setItem;
+  st.setItem = (k, v) => { if (projectKey(k)) writes.push(k); return set.call(st, k, v); };
+  tab1.find(c => c.domain === "k").label = "K v1";
+  const did = await saveCanvas(db, pid, tab1, opts("tab1"));
+  assert.strictEqual(did.updated, 1);
+  assert.strictEqual(did.restoredProject, false);
+  assert.deepStrictEqual(writes, [], "the restore path must not run on a store that is intact");
+});
+
+await t("a canvas that never read the record cannot put it back: the components return, and the save FAILS loudly", async () => {
+  told.length = 0;
+  const { st, db, pid, tab1 } = await twoTabs();
+  // A base set with no record copy: what a canvas assembled some other way holds.
+  const bare = canvasOf({ id: pid, components: (await openProject(db, pid)).components });
+  st.m.clear();
+  await defineProjectDomains(db);
+  await assert.rejects(saveCanvas(db, pid, bare, opts("tab1")), /holds no copy of the project record/);
+  assert.deepStrictEqual(await rawLabels(db, pid), ["K v0", "M v0"], "the components are back before the error");
+  assert.deepStrictEqual(told, [], "and nobody was told it was saved");
 });
 
 await t("with no one to tell, a lost store is still saved again FIRST, then the save fails loudly", async () => {
