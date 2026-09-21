@@ -250,9 +250,10 @@ try {
         get: () => later(null),
         // A REAL BINDING: listeners included, because the thing under test is
         // whether anything listens.
-        bind: () => {
+        bind: (domain, opts = {}) => {
           const ls = new Set();
           const b = {
+            limit: opts.limit, reverse: opts.reverse ?? false,
             getSnapshot: () => snap,
             subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
             reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },
@@ -345,7 +346,7 @@ try {
         // EVERY bind recorded, with what it asked for.
         bind: (domain, opts = {}) => {
           const b = {
-            domain, opts,
+            domain, opts, limit: opts.limit, reverse: opts.reverse ?? false,
             getSnapshot: () => [],
             subscribe: () => () => {},
             reload: async () => false,
@@ -367,8 +368,19 @@ try {
         ],
         schemas: { notes: SCHEMA },
       }, () => {}, db, "published");
-      return { binds: binds.length, limits: binds.map(b => b.opts.limit), PAGE };
+      const one = binds.length;
+      // A LIST over the same domain is a different read — the newest end, not
+      // the first — so it must NOT share the table's binding (builder#51).
+      await mountApp(document.createElement("div"), {}, {
+        components: [{ type: "table", domain: "notes", mode: "owned" }, { type: "list", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA },
+      }, () => {}, db, "published");
+      return { binds: one, limits: binds.map(b => b.opts.limit), PAGE,
+        directions: binds.slice(one).map(b => b.opts.reverse) };
     `);
+    assert.deepStrictEqual(out.directions, [false, true],
+      `a table and a list over one domain took bindings with directions ${JSON.stringify(out.directions)} — ` +
+      "a forward table and a newest-first list are two reads, and sharing one shows one of them the wrong end");
 
     assert.strictEqual(out.binds, 1,
       `two components over one domain took ${out.binds} bindings — the same rows are ` +
@@ -377,6 +389,100 @@ try {
       `the binding asked for limit ${out.limits[0]} instead of a screenful (${out.PAGE}). ` +
       "A list over a cold domain then fetches every record in it to show twenty rows.");
     console.log(`ok e2e: **two components over one domain share ONE read, of ${out.PAGE} rows**`);
+  }
+
+  // ---------------------------------------------------------------------
+  // A NEWEST-FIRST LIST SHOWS THE NEWEST RECORDS, AND A FULL PAGE SAYS SO
+  // (builder#51) — over the REAL SDK, not a fake.
+  //
+  // The defect this replaces, measured by core dev at `ad67cf7` with 60
+  // records: the binding read the first 50 of a FORWARD scan — the OLDEST,
+  // since ids are time-ordered — and `list()` reversed them. Top row
+  // "note 50"; notes 51..60 never on screen; nothing saying there was more.
+  //
+  // A fake cannot be this test: the earlier one's `scan` returned `[]`, so it
+  // was green whether or not a page was ever read, and it never held more
+  // than a page, so it could not see WHICH end reached the screen.
+  // ---------------------------------------------------------------------
+  {
+    const out = await evaluate(`
+      const { mountApp, PAGE } = await import("./runtime.js");
+      const sdk = window.craftec;
+      const N = PAGE + 10;
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text" }] };
+      const name = i => "note " + String(i).padStart(2, "0");
+      const seed = { notes: Array.from({ length: N }, (_, i) => ({ title: name(i + 1) })) };
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const db = await mountApp(root, sdk, {
+        components: [{ type: "list", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+        schemas: { notes: SCHEMA }, seed,
+      }, () => {}, null, "idle");
+      const [listC, tableC] = root.querySelectorAll(".rt-comp");
+      const items = () => [...listC.querySelectorAll("li > span:first-child")].map(e => e.textContent);
+      const more = c => c.querySelector(".rt-more")?.textContent ?? "";
+      // THE CONTROL: an unbounded binding over the same db. If this does not
+      // hold every record with the newest on top, the fixture is wrong and
+      // nothing below means anything.
+      const all = db.bind("notes", { reverse: true });
+      await all.reload();
+      const control = all.getSnapshot().map(r => r.fields.title);
+      const first = { list: items(), listMore: more(listC),
+        table: [...tableC.querySelectorAll("tbody tr")].map(tr => tr.cells[0].textContent), tableMore: more(tableC) };
+      // "Show more" on the list reads the next page with \`after\`.
+      listC.querySelector(".rt-more button")?.click();
+      for (let k = 0; k < 100 && !more(root.querySelectorAll(".rt-comp")[0]).startsWith("All"); k++) await new Promise(r => setTimeout(r, 20));
+      const after = { list: [...root.querySelectorAll(".rt-comp")[0].querySelectorAll("li > span:first-child")].map(e => e.textContent),
+        listMore: more(root.querySelectorAll(".rt-comp")[0]) };
+      return { N, PAGE, control, first, after, top: name(N), bottom: name(1) };
+    `);
+    assert.strictEqual(out.control.length, out.N, `CONTROL: an unbounded binding held ${out.control.length} of ${out.N} records — the fixture is wrong`);
+    assert.strictEqual(out.control[0], out.top, `CONTROL: an unbounded reverse binding's top row is ${out.control[0]}, not ${out.top}`);
+    console.log(`  records ${out.N} · PAGE ${out.PAGE} · CONTROL unbounded top row: ${out.control[0]} (${out.control.length} rows)`);
+    console.log(`  list: ${out.first.list.length} rows, top ${out.first.list[0]}, bottom ${out.first.list.at(-1)} · footer "${out.first.listMore}"`);
+    console.log(`  table: ${out.first.table.length} rows, top ${out.first.table[0]} · footer "${out.first.tableMore}"`);
+    assert.strictEqual(out.first.list[0], out.top,
+      `the newest record is not on screen: a newest-first list's top row is ${out.first.list[0]}, not ${out.top}. ` +
+      "It read the OLDEST page and reversed it (builder#51).");
+    assert.strictEqual(out.first.list.length, out.PAGE, "the list did not read a page");
+    assert.match(out.first.listMore, /may be more/,
+      `a full page of ${out.PAGE} said nothing about there being more — 'there are ${out.PAGE}' and 'at least ${out.PAGE}' drew the same`);
+    assert.strictEqual(out.first.table[0], out.bottom, "a table is oldest-first, deliberately");
+    assert.match(out.first.tableMore, /may be more/, "a full forward page said nothing about there being more");
+    assert.strictEqual(out.after.list.length, out.N, `"Show more" reached ${out.after.list.length} of ${out.N}`);
+    assert.strictEqual(out.after.list.at(-1), out.bottom, "the page past the first did not continue in the same direction");
+    assert.strictEqual(new Set(out.after.list).size, out.N, "a row was shown twice across pages");
+    assert.strictEqual(out.after.listMore, `All ${out.N} shown.`, "the read past the end came back short and the view still did not say so");
+    console.log(`ok e2e: **a list shows the NEWEST ${out.PAGE}, says there may be more, and "Show more" reaches all ${out.N}** — over the real SDK`);
+  }
+
+  // ---------------------------------------------------------------------
+  // A TOO-OLD SDK FAILS LOUDLY. Three stale pins in three PRs, each found by
+  // review: an SDK that does not know an option DROPS it, and the runtime
+  // drew a screen from a read it never asked for. So a binding that does not
+  // report the page it was asked for refuses to mount. The fake here is
+  // exactly an old SDK: it takes the options and ignores `reverse`.
+  // ---------------------------------------------------------------------
+  {
+    const refused = await evaluate(`
+      const { mountApp, PAGE } = await import("./runtime.js");
+      const SCHEMA = { type: "Note", fields: [{ name: "title", kind: "text" }] };
+      const make = honest => ({
+        define: async () => {}, put: async () => ({}), update: async () => {}, delete: async () => {},
+        schema: () => SCHEMA, domains: () => ["notes"], count: () => 0, get: () => null, scan: async () => [],
+        bind: (domain, opts = {}) => ({
+          limit: opts.limit, reverse: honest ? (opts.reverse ?? false) : false,
+          getSnapshot: () => [], subscribe: () => () => {}, reload: async () => false, liveMode: () => ({ mode: "Polled" }),
+        }),
+        liveMode: () => ({ mode: "Polled" }),
+      });
+      const app = { components: [{ type: "list", domain: "notes", mode: "owned" }], schemas: { notes: SCHEMA } };
+      const tryMount = async honest => { try { await mountApp(document.createElement("div"), {}, app, () => {}, make(honest), "published"); return ""; } catch (e) { return e.message; } };
+      return { old: await tryMount(false), current: await tryMount(true) };
+    `);
+    assert.match(refused.old, /SDK_REV/, `an SDK that ignored \`reverse\` mounted anyway ("${refused.old}") — the oldest page would be drawn as the newest`);
+    assert.strictEqual(refused.current, "", `CONTROL: an SDK that honours the page was refused too ("${refused.current}")`);
+    console.log("ok e2e: **an SDK that ignores the page refuses to mount** (control: one that honours it mounts)");
   }
 
   // ---------------------------------------------------------------------
@@ -432,9 +538,10 @@ try {
         put: async (d, fields) => { const rec = { id: String(rows.length), fields, state: "CLEAN" }; rows.push(rec); return rec; },
         schema: () => SCHEMA, domains: () => ["notes"], count: () => rows.length,
         scan: () => rows.slice(), get: () => null,
-        bind: () => {
+        bind: (domain, opts = {}) => {
           const ls = new Set();
           return {
+            limit: opts.limit, reverse: opts.reverse ?? false,
             getSnapshot: () => snap,
             subscribe: cb => { ls.add(cb); return () => ls.delete(cb); },
             reload: async () => { snap = rows.slice(); for (const cb of ls) cb(); },

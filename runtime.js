@@ -1,7 +1,7 @@
 // Runs an app definition as live UI over the SDK. Used by the builder's Preview;
 // the published app will use the same module.
 import { byType } from "./catalogue.js";
-import { openApp, toFields, display, headline, inputType } from "./runtime-logic.js";
+import { openApp, toFields, display, headline, inputType, readsNewestFirst, pageView } from "./runtime-logic.js";
 import { show, isLive, rowState } from "./publish-state.js";
 
 /**
@@ -48,14 +48,41 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // (craftworks-sdk#122). A page over a filtered scan would be actively
   // misleading — twenty scanned rows can yield zero matches — so it is left
   // alone and pinned by a test rather than papered over.
+  //
+  // THE DIRECTION IS PART OF THE READ. A list shows the newest rows, so it
+  // reads a REVERSE page; a forward table and a reverse list over one domain
+  // are two different reads and do not share (builder#51).
   const bindings = [];
   const shared = new Map();
   for (const inst of app.components) {
     const live = isLive(inst);
-    const key = `${inst.domain}\u0000${live}\u0000${PAGE}`;
-    if (!shared.has(key)) shared.set(key, db.bind(inst.domain, { live, limit: PAGE }));
+    const reverse = readsNewestFirst(inst.type);
+    const key = `${inst.domain}\u0000${live}\u0000${PAGE}\u0000${reverse}`;
+    if (!shared.has(key)) {
+      const b = db.bind(inst.domain, { live, limit: PAGE, reverse });
+      // THE BINDING MUST SAY IT READS WHAT WAS ASKED FOR.
+      //
+      // An SDK too old to know an option drops it without a word: at an old
+      // pin `limit` was ignored and every component read its whole domain,
+      // and `reverse` ignored puts the OLDEST page under a newest-first list.
+      // Three stale pins in three PRs, each found by review, not by running.
+      // So the runtime checks the binding it got back and refuses to draw a
+      // screen it knows would be wrong — a loud refusal, not a quiet one.
+      if (b.limit !== PAGE || b.reverse !== reverse) {
+        throw new Error(
+          `This SDK ignored the page the app asked for on “${inst.domain}” ` +
+          `(asked limit ${PAGE}, reverse ${reverse}; the binding reports limit ${b.limit}, reverse ${b.reverse}). ` +
+          "SDK_REV is older than the runtime needs — bump it.");
+      }
+      shared.set(key, b);
+    }
     bindings.push(shared.get(key));
   }
+
+  // PAST THE PAGE, per binding: what the person asked for with "Show more".
+  // `{ rows, ended, err }` — see `pageView` for what each may claim.
+  const beyond = new Map();
+  const moreOf = b => beyond.get(b) ?? { rows: [], ended: false, err: "" };
 
   // Reloading is a ROUND TRIP once this is over the engine, so it is awaited
   // even though the in-memory backend answers at once. Writing it synchronous
@@ -105,7 +132,10 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // subscribe twice and re-render twice for one change, and reloading per
   // component would read the same rows twice.
   const each = [...new Set(bindings)];
-  const stops = each.map(b => b.subscribe(() => render()));
+  // A change resets what was fetched past the page: new rows shift the page
+  // itself, so pages fetched against the old one could leave a gap or repeat
+  // a row. Back to the first page is honest; a stitched-together one is not.
+  const stops = each.map(b => b.subscribe(() => { beyond.delete(b); render(); }));
 
   const refresh = async () => { for (const b of each) await b.reload(); };
   const changed = async () => { await refresh(); render(); onData(db); };
@@ -164,21 +194,56 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     el("button", { textContent: "Edit", onclick: () => { editing[inst.domain] = r; render(); } }),
     el("button", { textContent: "Delete", onclick: async () => { await db.delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
 
-  function table(inst, schema, i) {
-    const recs = bindings[i].getSnapshot();
-    if (!recs.length) return el("p", { className: "rt-empty", textContent: "No records yet." });
-    return el("div", { className: "rt-scroll" }, el("table", {},
-      el("thead", {}, el("tr", {}, schema.fields.map(f => el("th", { textContent: f.name })), el("th", { textContent: "state" }), el("th"))),
-      el("tbody", {}, recs.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip(r)), el("td", {}, actions(inst, r)))))));
+  // WHAT THE VIEW SAYS ABOUT ITS OWN EXTENT.
+  //
+  // A full page is "at least this many", never "this many" — so a full page
+  // always carries a line saying so, and "Show more" reads the next page with
+  // `after`, in the same direction. Only a read that comes back SHORT turns
+  // the line into "all N shown".
+  function footer(inst, i, view) {
+    if (!view.footer) return "";
+    const b = bindings[i], m = moreOf(b);
+    const end = readsNewestFirst(inst.type) ? "newest" : "first";
+    if (!view.footer.more) return el("p", { className: "rt-more", textContent: `All ${view.footer.shown} shown.` });
+    const btn = el("button", { textContent: "Show more" });
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const last = view.rows[view.rows.length - 1];
+      try {
+        const next = await db.scan(inst.domain, { limit: PAGE, reverse: b.reverse, after: last.id });
+        beyond.set(b, { rows: [...m.rows, ...next], ended: next.length < PAGE, err: "" });
+      } catch (e) {
+        // A failed read proves nothing about the end — it stays "may be more".
+        beyond.set(b, { ...m, err: e.message });
+      }
+      render();
+    };
+    return el("p", { className: "rt-more" },
+      `Showing the ${end} ${view.footer.shown} — there may be more. `, btn,
+      m.err ? el("span", { className: "rt-err", textContent: ` ${m.err}` }) : "");
   }
 
+  const viewOf = i => pageView(bindings[i].getSnapshot(), moreOf(bindings[i]), PAGE);
+
+  function table(inst, schema, i) {
+    const view = viewOf(i);
+    if (!view.rows.length) return el("p", { className: "rt-empty", textContent: "No records yet." });
+    return [el("div", { className: "rt-scroll" }, el("table", {},
+      el("thead", {}, el("tr", {}, schema.fields.map(f => el("th", { textContent: f.name })), el("th", { textContent: "state" }), el("th"))),
+      el("tbody", {}, view.rows.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip(r)), el("td", {}, actions(inst, r))))))),
+      footer(inst, i, view)];
+  }
+
+  // NEWEST FIRST BECAUSE IT READ THE NEWEST END — no reversing here. The
+  // snapshot of a reverse page is already in the order the list shows.
   function list(inst, schema, i) {
-    const recs = [...bindings[i].getSnapshot()].reverse();
+    const view = viewOf(i);
     const h = headline(schema);
-    if (!recs.length) return el("p", { className: "rt-empty", textContent: "Nothing here yet." });
-    return el("ul", { className: "rt-list" }, recs.map(r => el("li", {},
+    if (!view.rows.length) return el("p", { className: "rt-empty", textContent: "Nothing here yet." });
+    return [el("ul", { className: "rt-list" }, view.rows.map(r => el("li", {},
       el("span", { textContent: display(schema.fields.find(f => f.name === h)?.kind, r.fields[h]) || "(untitled)" }),
-      el("small", { textContent: new Date(r.created).toLocaleString() }), stateChip(r))));
+      el("small", { textContent: new Date(r.created).toLocaleString() }), stateChip(r)))),
+      footer(inst, i, view)];
   }
 
   const RENDER = { form, table, list };

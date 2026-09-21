@@ -100,3 +100,37 @@ export async function openApp(sdk, app, db = new sdk.Db()) {
  * frame's bandwidth on data nothing is going to show.
  */
 export const preloadManifest = app => domainsOf(app);
+
+/**
+ * Which end of a domain a component shows, and so which end its page reads.
+ *
+ * Record ids are time-ordered, so the first rows of a FORWARD scan are the
+ * OLDEST. A list shows newest-first; a list that read a forward page and
+ * reversed it showed the oldest `PAGE` records upside down, and a person's
+ * 51st note never appeared at all (builder#51). So the direction is decided
+ * HERE, per component type, and the read carries it. A table stays
+ * oldest-first, deliberately: it is a ledger, read top to bottom.
+ */
+export const readsNewestFirst = type => type === "list";
+
+/**
+ * What a paged view holds, and what it is allowed to SAY about itself.
+ *
+ * `page` is the binding's snapshot — at most `size` rows. `more` is what the
+ * person has asked for past it: `{ rows, ended }`, where `ended` means a read
+ * with `after` came back short, so there is provably nothing further.
+ *
+ * THE POINT: a full page is a FLOOR, not a count. Fifty rows back from a
+ * fifty-row read means "at least fifty", and a view that drew them with no
+ * mark said "there are fifty" — the same value meaning two things. So:
+ *   * `page` short of `size`        → complete; nothing to say (`footer: null`);
+ *   * full, and not proven ended    → `{ more: true }`  — "there may be more";
+ *   * full, and a later read ended  → `{ more: false }` — "all N shown".
+ * Only a read that came back SHORT proves the end; nothing else may.
+ */
+export function pageView(page, more, size) {
+  const seen = new Set(page.map(r => r.id));
+  const rows = [...page, ...more.rows.filter(r => !seen.has(r.id))];
+  if (page.length < size) return { rows, footer: null };
+  return { rows, footer: { more: !more.ended, shown: rows.length } };
+}
