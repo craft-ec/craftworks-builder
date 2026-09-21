@@ -7,7 +7,7 @@
 
 import {
   defineProjectDomains, createProject, listProjects, openProject,
-  addComponent, componentsOf, removeComponent,
+  addComponent, componentsOf, removeComponent, setComponentProps,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
   recordPublication, publicationsOf, nextSeq,
 } from "./projects.js";
@@ -21,20 +21,70 @@ const el = (tag, props = {}, ...kids) => {
 const when = ms => (ms ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "—");
 
 /** A builder component <-> a stored component record. */
-export const toRecord = c => ({ kind: c.type, layout: null, binding: null, props: { ...c } });
-export const fromRecord = r => ({ ...(r.props ?? {}), type: r.kind });
+/**
+ * A canvas component carries the id of the record backing it, as `rid`.
+ *
+ * Without it a save cannot tell which record a component IS, so it can only
+ * delete everything and re-add — which is what this did, and it made the whole
+ * per-component record shape buy nothing: ids changed on every save, so no
+ * neighbour was untouched, no id was stable for phase-6 conflict granularity,
+ * and `changes_since` saw the entire project as changed after any edit.
+ *
+ * `rid` is deliberately NOT stored inside the record's props: a record does not
+ * contain its own id.
+ */
+export const toRecord = c => {
+  const { rid, ...props } = c;
+  return { kind: c.type, layout: null, binding: null, props };
+};
+export const fromRecord = r => ({ ...(r.props ?? {}), type: r.kind, rid: r.id });
+
+/** Do two components differ in anything that is stored? */
+const changed = (c, rec) =>
+  rec.fields.kind !== c.type ||
+  rec.fields.props !== JSON.stringify(toRecord(c).props);
 
 /**
- * Save the open canvas as records: the project, then one record per component.
+ * Save the open canvas as records — as a DIFF, so ids survive.
  *
- * Components are REPLACED rather than diffed. A diff is the right thing once
- * there is something to preserve per component (a stable id from the canvas),
- * and the canvas does not carry one yet — so this is honest about rewriting
- * them rather than pretending to be incremental.
+ * Update what changed, add what is new, remove what is gone. A component that
+ * did not change is not written at all, which is what makes a tweak cost one
+ * record instead of the canvas, and what makes the neighbour's record
+ * byte-identical THROUGH THE PATH THE APP TAKES rather than only through the
+ * data model underneath it.
+ *
+ * Returns what it did, so a caller can assert on it rather than infer it.
  */
 export async function saveCanvas(db, pid, components) {
-  for (const r of await componentsOf(db, pid)) await removeComponent(db, r.id);
-  for (const c of components) await addComponent(db, pid, toRecord(c));
+  const existing = await componentsOf(db, pid);
+  const byId = new Map(existing.map(r => [r.id, r]));
+  const kept = new Set();
+  const did = { added: 0, updated: 0, removed: 0, untouched: 0 };
+
+  for (const c of components) {
+    const rec = c.rid ? byId.get(c.rid) : null;
+    if (!rec) {
+      const added = await addComponent(db, pid, toRecord(c));
+      // The new id goes back onto the canvas component, or the next save
+      // cannot find it either and the re-keying returns.
+      c.rid = added.id;
+      kept.add(added.id);
+      did.added += 1;
+      continue;
+    }
+    kept.add(rec.id);
+    if (changed(c, rec)) {
+      await setComponentProps(db, rec.id, toRecord(c).props);
+      did.updated += 1;
+    } else {
+      did.untouched += 1;
+    }
+  }
+
+  for (const r of existing) {
+    if (!kept.has(r.id)) { await removeComponent(db, r.id); did.removed += 1; }
+  }
+  return did;
 }
 
 export async function mountProjects(host, {
