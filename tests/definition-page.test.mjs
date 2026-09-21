@@ -143,6 +143,35 @@ try {
   assert.strictEqual((await def()).schemas?.tables?.type, "SchemaOld", "and it is now STORED with the project");
   console.log("ok page: an existing project keeps its schema across the upgrade, and it is now stored with it");
   await evaluate(`localStorage.clear();`);
+
+  // A LEGACY PROJECT THAT WAS NOT THE LAST ONE OPEN adopts its own domains too
+  // (review of builder#67). P2 was open, so the working copy holds its schema
+  // for `b` AND the schema P1 set for `a` earlier. P1 must open with SA — and
+  // only SA: taking the whole copy would hand it P2's SB, which is the bug.
+  await evaluate(`
+    const { LocalDb } = await import("/local-db.js");
+    const P = await import("/projects.js");
+    const db = new LocalDb();
+    await P.defineProjectDomains(db);
+    const p1 = await P.createProject(db, { title: "Legacy one" });
+    await P.addComponent(db, p1.id, { kind: "table", props: { domain: "a", mode: "owned" } });
+    const p2 = await P.createProject(db, { title: "Legacy two" });
+    await P.addComponent(db, p2.id, { kind: "table", props: { domain: "b", mode: "owned" } });
+    localStorage.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p2.id }));
+    localStorage.setItem("craftec.builder.app.v2", JSON.stringify({
+      name: "Legacy two", tree: { realm: "public", identity: null },
+      components: [{ type: "table", domain: "b", mode: "owned" }],
+      schemas: { a: { type: "SA", fields: [{ name: "title", kind: "text" }] },
+                 b: { type: "SB", fields: [{ name: "title", kind: "text" }] } },
+      seed: {} }));`);
+  await reloadInto("Legacy two", "the last-opened legacy project");
+  assert.deepStrictEqual(Object.keys((await def()).schemas ?? {}), ["b"], "the open one keeps only its own domain");
+  await openByTitle("Legacy one");
+  const one = (await def()).schemas ?? {};
+  assert.strictEqual(one.a?.type, "SA", `a legacy project that was NOT last opened must adopt its own schema: ${JSON.stringify(one)}`);
+  assert.ok(!("b" in one), `and only its own — never P2's SB: ${JSON.stringify(one)}`);
+  console.log("ok page: every legacy project adopts exactly its own domains' schemas from the working copy");
+  await evaluate(`localStorage.clear();`);
   }
 
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
@@ -186,6 +215,28 @@ try {
   assert.deepStrictEqual(fresh.schemas, {}, `a new project must start with no schemas: ${JSON.stringify(fresh.schemas)}`);
   assert.deepStrictEqual(fresh.seed, {});
   console.log("ok page: a new project inherits no schemas and no seed");
+
+  // A PANEL WITHOUT `getDefinition` MUST NOT WIPE (review of builder#67). The
+  // old default, `() => ({})`, looked like a no-op and was a wipe: `persist`
+  // saved an empty definition, which removes every domain record.
+  const kept = await evaluate(`
+    const { LocalDb } = await import("/local-db.js");
+    const P = await import("/projects.js");
+    const { mountProjects } = await import("/projects-panel.js");
+    const mem = new Map();
+    const storage = { get length() { return mem.size; }, key: i => [...mem.keys()][i] ?? null,
+      getItem: k => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: k => mem.delete(k) };
+    const db = new LocalDb(storage);
+    await P.defineProjectDomains(db);
+    const p = await P.createProject(db, { title: "kept" });
+    await P.saveDefinition(db, p.id, { schemas: { a: { type: "Kept", fields: [] } } });
+    storage.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p.id }));
+    const panel = await mountProjects(document.createElement("div"), {
+      db, storage, getCanvas: () => [], setCanvas: () => {} });   // NO getDefinition
+    await panel.persist();
+    return (await P.openProject(db, p.id)).schemas;`);
+  assert.deepStrictEqual(kept, { a: { type: "Kept", fields: [] } }, `persist without getDefinition wiped the definition: ${JSON.stringify(kept)}`);
+  console.log("ok page: a panel with no getDefinition leaves a project's definition alone");
 
   console.log(`\ndefinition page: all ok  (screenshots: ${SHOTS})`);
   done(0);

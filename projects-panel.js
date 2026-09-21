@@ -197,7 +197,11 @@ export async function mountProjects(host, {
   // () => the rest of what the open project is MADE OF: schemas, seed, tree
   // binding, version stamp (builder#53). Saved beside the components; without
   // it they lived only on the builder's one shared app object.
-  getDefinition = () => ({}),
+  //
+  // NO DEFAULT. `() => ({})` looked like a no-op and was a WIPE: `persist`
+  // hands it to `saveDefinition`, which removes every domain record the
+  // project has. A caller that supplies none gets its definition left alone.
+  getDefinition = null,
   setCanvas,          // (components, project) => load them, and project's definition, into the builder
   storage = globalThis.localStorage,
   onChange = () => {},
@@ -206,7 +210,7 @@ export async function mountProjects(host, {
   // Every save of this panel goes through here, one at a time (builder#49).
   const save = serialSaves(async (pid, canvas, definition) => {
     await saveCanvas(db, pid, canvas);
-    await saveDefinition(db, pid, definition);
+    if (definition) await saveDefinition(db, pid, definition);
   });
   let open = false;
   // True while a project is being loaded INTO the builder; see `choose`.
@@ -316,7 +320,7 @@ export async function mountProjects(host, {
     // A duplicate is a copy of the definition too — the same schemas, seed and
     // stamp — or "copy" would mean "the components, over whatever is lying
     // around".
-    await save(p.id, getCanvas(), getDefinition());
+    await save(p.id, getCanvas(), getDefinition ? getDefinition() : null);
     writeDeviceSettings(storage, { lastOpened: p.id });
     await paint();
     onChange();
@@ -359,7 +363,9 @@ export async function mountProjects(host, {
     // save (see `serialSaves`). The definition rides the SAME chain: it is a
     // diff like the canvas, and two overlapping runs of it would duplicate
     // domain records exactly as overlapping canvas saves duplicated components.
-    await save(pid, getCanvas(), getDefinition());
+    // No `getDefinition`, no definition write — never an empty one, which is a
+    // wipe.
+    await save(pid, getCanvas(), getDefinition ? getDefinition() : null);
     await paint();
   }
 
@@ -387,22 +393,44 @@ export async function mountProjects(host, {
     if (open && !pop.contains(e.target) && e.target !== chip) { open = false; pop.hidden = true; }
   });
 
+  // PROJECTS FROM BEFORE builder#53 have no stored definition: their schemas
+  // and seeds lived only in the builder's one shared working copy. Opened as
+  // they are, each would show an empty definition and its first edit would
+  // store that — losing the schema for good. So, once, at mount, EVERY such
+  // project adopts from the working copy exactly the domains ITS OWN
+  // components bind to, and stores them.
+  //
+  // By its own domains, never the whole copy: a project on domain `a` takes
+  // the schema of `a` and not the one for `b` that another project set. Where
+  // two legacy projects used the SAME domain name, the working copy only ever
+  // held one schema for it, and both adopt that one — the other was
+  // overwritten before this change existed, and no store can recover it.
+  //
+  // The binding and version stamp in the copy are the open project's, so only
+  // the last-opened one adopts those.
+  const last = current();
+  if (getDefinition) {
+    const copy = getDefinition();
+    for (const row of await listProjects(db)) {
+      const p = await openProject(db, row.id);
+      if (!p?.legacy) continue;
+      const own = new Set(p.components.map(c => c.props?.domain).filter(Boolean));
+      const pick = m => Object.fromEntries(Object.entries(m ?? {}).filter(([d]) => own.has(d)));
+      await saveDefinition(db, p.id, {
+        schemas: pick(copy.schemas),
+        seed: pick(copy.seed),
+        tree: p.id === last ? copy.tree ?? null : null,
+        versions: p.id === last ? copy.versions ?? null : null,
+      });
+    }
+  }
+
   await paint();
   // Reopen what this DEVICE had open — never a synced value, which would be
   // wrong on a second device.
-  const last = current();
   if (last) {
-    let project = await openProject(db, last);
-    // A project from before builder#53 has no stored definition. The shared
-    // working copy the builder loaded IS the definition of the project that
-    // was open — this one — so it is adopted and stored rather than replaced
-    // by an empty one, which saved back would have deleted a person's real
-    // schemas on the first load after the upgrade. Only for the last-opened
-    // project: any other legacy project never had its definition stored, and
-    // guessing it from the working copy would be the old bug again.
-    if (project?.legacy) project = { ...project, ...getDefinition() };
+    const project = await openProject(db, last);
     if (project) setCanvas(project.components.map(fromRecord), project);
-    if (project?.legacy) await persist();
   }
   return { persist, refresh: paint, openProjectId: current, published };
 }
