@@ -38,7 +38,35 @@ export const toRecord = c => {
   const { rid, ...props } = c;
   return { kind: c.type, layout: null, binding: null, props };
 };
-export const fromRecord = r => ({ ...(r.props ?? {}), type: r.kind, rid: r.id });
+
+/**
+ * WHAT A COMPONENT LOOKED LIKE when this tab last loaded or wrote it: its
+ * stored content, and the token of the write that produced it (builder#74).
+ *
+ * A component is DIRTY against this base, never against storage. With one
+ * holder the two are the same; with two tabs they are not, and diffing against
+ * storage made a tab that never touched K write its stale K over another tab's
+ * edit. NOT STORED: a non-enumerable symbol, so no spread, `toRecord`, or JSON
+ * of the working copy ever carries it.
+ *
+ * SAFE ONLY WHILE COMPONENTS ARE MUTATED IN PLACE. The same non-enumerability
+ * means a COPY (`{ ...c }`, `structuredClone`, a JSON round trip) drops the
+ * base without a word, and a component with no base falls back to the old
+ * storage diff — the two-tab revert, back. Anything that replaces a canvas
+ * component with a copy must carry the base across (`setBase` from a record,
+ * or copy the symbol) or it reintroduces builder#74.
+ */
+const BASE = Symbol("base");
+/** This tab. A write's token is `{ gen, by }`, so "stored == my base" cannot be true of a write that was not mine. */
+const TAB = globalThis.crypto.randomUUID();
+const contentOf = c => {
+  const { [BUILDER]: _m, ...rest } = toRecord(c).props;
+  return JSON.stringify({ kind: c.type, props: rest });
+};
+const tokenOf = c => ({ gen: c[BUILDER]?.gen ?? 0, by: c[BUILDER]?.by ?? null });
+const setBase = c => Object.defineProperty(c, BASE, { value: { content: contentOf(c), token: tokenOf(c) }, enumerable: false, configurable: true, writable: true });
+
+export const fromRecord = r => setBase({ ...(r.props ?? {}), type: r.kind, rid: r.id });
 
 const meta = c => c[BUILDER] ?? {};
 
@@ -57,6 +85,20 @@ const changed = (c, rec) => {
 const genOf = rec => {
   try { return JSON.parse(rec.fields.props)?.[BUILDER]?.gen ?? 0; } catch { return 0; }
 };
+/** The token of the write a record holds: `{ gen, by }`. */
+const storedToken = rec => {
+  try { const m = JSON.parse(rec.fields.props)?.[BUILDER] ?? {}; return { gen: m.gen ?? 0, by: m.by ?? null }; }
+  catch { return { gen: 0, by: null }; }
+};
+/** Replace a canvas component's content with a record's, in place, keeping its identity. */
+const adopt = (c, rec) => {
+  let props = {};
+  try { props = JSON.parse(rec.fields.props) ?? {}; } catch { /* unreadable: leave the canvas as it is */ return false; }
+  for (const k of Object.keys(c)) if (k !== "rid") delete c[k];
+  Object.assign(c, props, { type: rec.fields.kind, rid: rec.id });
+  setBase(c);
+  return true;
+};
 
 /**
  * Save the open canvas as records — as a DIFF, so ids survive.
@@ -69,7 +111,7 @@ const genOf = rec => {
  *
  * Returns what it did, so a caller can assert on it rather than infer it.
  */
-export async function saveCanvas(db, pid, components) {
+export async function saveCanvas(db, pid, components, { by = TAB, onConflict } = {}) {
   // A STABLE KEY PER CANVAS COMPONENT, assigned before the first `await`,
   // kept under `_builder` beside the component's generation.
   //
@@ -118,7 +160,10 @@ export async function saveCanvas(db, pid, components) {
     if (k) topGen.set(k, Math.max(topGen.get(k) ?? 0, genOf(r)));
   }
   const kept = new Set();
-  const did = { added: 0, updated: 0, removed: 0, untouched: 0 };
+  // `adopted`: this tab's clean copy was behind another tab's write, and took
+  // it — nothing written. `conflicts`: both tabs changed one component; this
+  // tab's write wins and the person is told.
+  const did = { added: 0, updated: 0, removed: 0, untouched: 0, adopted: 0, conflicts: 0 };
 
   for (const c of components) {
     const key = c[BUILDER].key;
@@ -128,26 +173,61 @@ export async function saveCanvas(db, pid, components) {
       c.rid = rec.id;
     }
     // EVERY WRITE OF A COMPONENT BUMPS ITS GENERATION, past both what this
-    // canvas last wrote and what ANY record of this key holds: freshness is counted, not
-    // read off an id or a clock, both of which can go backwards.
-    const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1 }; };
+    // canvas last wrote and what ANY record of this key holds, and names THIS
+    // tab. `gen` is a per-key WRITE COUNTER — it chooses one record
+    // deterministically and is a holder's base version — not a measure of
+    // freshness: with two holders the highest count can be a revert.
+    const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1, by }; };
     if (!rec) {
       bump();
       const added = await addComponent(db, pid, toRecord(c));
       // The new id goes back onto the canvas component, or the next save
       // cannot find it either and the re-keying returns.
       c.rid = added.id;
+      setBase(c);
       kept.add(added.id);
       did.added += 1;
       continue;
     }
     kept.add(rec.id);
-    if (changed(c, rec)) {
+    const base = c[BASE];
+    if (!base) {
+      // Never loaded from a record by this tab (made here, or reached by key):
+      // there is no base to compare with, so the stored copy stands in for it.
+      if (changed(c, rec)) {
+        bump();
+        await setComponentProps(db, rec.id, toRecord(c).props);
+        did.updated += 1;
+      } else {
+        did.untouched += 1;
+      }
+      setBase(c);
+      continue;
+    }
+    const theirs = storedToken(rec);
+    const mine = base.token.gen === theirs.gen && base.token.by === theirs.by;
+    const dirty = contentOf(c) !== base.content;
+    if (!dirty && mine) {
+      did.untouched += 1;
+    } else if (!dirty) {
+      // CLEAN HERE, CHANGED ELSEWHERE: adopt theirs, write nothing. This is the
+      // case that used to write a stale copy back over another tab's edit.
+      if (adopt(c, rec)) did.adopted += 1; else did.untouched += 1;
+    } else {
+      if (!mine) {
+        // A REAL CONFLICT: this tab and another both changed it. Last writer
+        // wins, and the person is TOLD — never silently. With no one to tell,
+        // this is a wiring error and it fails before anything is written.
+        if (typeof onConflict !== "function") {
+          throw new Error("saveCanvas: a component was changed in two tabs and there is no onConflict to tell the person");
+        }
+        did.conflicts += 1;
+      }
       bump();
       await setComponentProps(db, rec.id, toRecord(c).props);
+      setBase(c);
       did.updated += 1;
-    } else {
-      did.untouched += 1;
+      if (!mine) onConflict("This component was also changed in another tab; your version was kept.");
     }
   }
 
@@ -273,12 +353,20 @@ export async function mountProjects(host, {
   setCanvas,          // (components, project) => load them, and project's definition, into the builder
   storage = globalThis.localStorage,
   onChange = () => {},
+  // Told when a save finds a component that another tab also changed (its
+  // version was kept). No default: with nobody to tell, `saveCanvas` fails
+  // at the conflict rather than being quiet about it (builder#74, #73).
+  onConflict,
 }) {
   await defineProjectDomains(db);
   // Every save of this panel goes through here, one at a time (builder#49).
   const save = serialSaves(async (pid, canvas, definition) => {
-    await saveCanvas(db, pid, canvas);
+    const did = await saveCanvas(db, pid, canvas, { onConflict });
     if (definition) await saveDefinition(db, pid, definition);
+    // A save that ADOPTED another tab's version changed the canvas under the
+    // person, so what is on screen must be drawn again from it.
+    if (did.adopted) onChange();
+    return did;
   });
   let open = false;
   // True while a project is being loaded INTO the builder; see `choose`.

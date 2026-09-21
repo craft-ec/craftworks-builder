@@ -164,6 +164,9 @@ mountProjects($("projects"), {
     render();
   },
   onChange: () => render(),
+  // Two tabs changed one component; this tab's version was kept. Said once
+  // per conflict, in the same line storage notices use.
+  onConflict: message => showStorageNotice({ kind: "conflict", message }),
 }).then(p => { projects = p; }).catch(e => {
   // Storage refused at load. The builder still works — but nothing is being
   // kept, and that is exactly what the person needs to know before editing.
