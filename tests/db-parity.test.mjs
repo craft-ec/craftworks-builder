@@ -132,7 +132,7 @@ const ARGS = {
   schema: ["d"], put: ["d", { t: "x" }], get: ["d", "0".repeat(32)], update: ["d", "0".repeat(32), { t: "y" }],
   delete: ["d", "0".repeat(32)], scan: ["d"], count: ["d"], children: ["d", "0".repeat(32)],
   createAt: ["d", "0".repeat(32), { t: "x" }], bind: ["d"], deleted: ["d"], seedOf: ["d", "x"],
-  markSeed: ["d", "x", 0], preload: [[]],
+  markSeed: ["d", "x", 0], preload: [[]], stats: [],
 };
 const kindOf = (obj, name) => {
   try {
