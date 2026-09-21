@@ -68,6 +68,41 @@ const setBase = c => Object.defineProperty(c, BASE, { value: { content: contentO
 
 export const fromRecord = r => setBase({ ...(r.props ?? {}), type: r.kind, rid: r.id });
 
+/**
+ * THE CANVAS'S BASE: the record ids this tab last loaded or wrote (builder#78).
+ *
+ * The component BASE settles CONTENT; this settles MEMBERSHIP. Diffed against
+ * storage, a tab's removal pass deleted every stored record not on its canvas
+ * — including one another tab ADDED that it never saw — and a component whose
+ * record was gone was taken for new and re-added. Against this set: a record
+ * not on my canvas and not in my set was added elsewhere (adopt it); one in my
+ * set I deleted (remove it); a rid in my set with no record was deleted
+ * elsewhere (drop it, or keep and tell if I changed it).
+ *
+ * Non-enumerable on the canvas ARRAY, never stored, and set where records
+ * become a canvas (`canvasOf`) and after every save. A canvas without one —
+ * brand new, or assembled some other way — behaves exactly as before until its
+ * first save records one.
+ */
+const MEMBERS = Symbol("members");
+// The set is OF A PROJECT. One canvas array can be saved into another project
+// — Duplicate saves the open canvas into the new copy — and there the old
+// project's ids, with no record in the new one, would read as "deleted
+// elsewhere" and empty the canvas. So the set names the project it describes,
+// and a save into any other project uses the old rule.
+const setMembers = (canvas, pid, ids) =>
+  Object.defineProperty(canvas, MEMBERS, { value: { pid, ids: new Set(ids) }, enumerable: false, configurable: true, writable: true });
+
+/** A project's components as a canvas, with its base set. Use this, not a bare `map(fromRecord)`. */
+export const canvasOf = project => setMembers(project.components.map(fromRecord), project.id, project.components.map(c => c.id));
+
+/** A raw stored record as the component `fromRecord` expects. */
+const decoded = r => {
+  let props = {};
+  try { props = JSON.parse(r.fields.props) ?? {}; } catch { /* unreadable: an empty component, rather than a throw */ }
+  return { id: r.id, kind: r.fields.kind, props };
+};
+
 const meta = c => c[BUILDER] ?? {};
 
 /** Do two components differ in anything stored — ignoring the generation? */
@@ -163,7 +198,11 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
   // `adopted`: this tab's clean copy was behind another tab's write, and took
   // it — nothing written. `conflicts`: both tabs changed one component; this
   // tab's write wins and the person is told.
-  const did = { added: 0, updated: 0, removed: 0, untouched: 0, adopted: 0, conflicts: 0 };
+  // `dropped`: a clean component another tab DELETED, taken off this canvas.
+  const did = { added: 0, updated: 0, removed: 0, untouched: 0, adopted: 0, conflicts: 0, dropped: 0 };
+  // No base set, or one recorded for ANOTHER project: the old rule.
+  const members = components[MEMBERS]?.pid === pid ? components[MEMBERS].ids : undefined;
+  const drop = new Set();
 
   for (const c of components) {
     const key = c[BUILDER].key;
@@ -178,6 +217,30 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
     // deterministically and is a holder's base version — not a measure of
     // freshness: with two holders the highest count can be a revert.
     const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1, by }; };
+    if (!rec && c.rid && members?.has(c.rid)) {
+      // I LOADED OR WROTE THIS, AND ITS RECORD IS GONE: deleted in another tab.
+      // `rid` is only ever set from an add that answered, so this is not "never
+      // landed". Clean here, it goes; changed here, the person's version is
+      // kept and they are TOLD.
+      if (c[BASE] && contentOf(c) === c[BASE].content) {
+        drop.add(c);
+        did.dropped += 1;
+        continue;
+      }
+      if (typeof onConflict !== "function") {
+        throw new Error("saveCanvas: a component was deleted in another tab and changed here, and there is no onConflict to tell the person");
+      }
+      delete c.rid;
+      bump();
+      const readded = await addComponent(db, pid, toRecord(c));
+      c.rid = readded.id;
+      setBase(c);
+      kept.add(readded.id);
+      did.added += 1;
+      did.conflicts += 1;
+      onConflict("This component was deleted in another tab; your version was kept.");
+      continue;
+    }
     if (!rec) {
       bump();
       const added = await addComponent(db, pid, toRecord(c));
@@ -231,9 +294,29 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
     }
   }
 
+  // Drops happen in place: the canvas is the person's, and this is its array.
+  for (let i = components.length - 1; i >= 0; i -= 1) if (drop.has(components[i])) components.splice(i, 1);
+
+  const onCanvasKeys = new Set(components.map(c => c[BUILDER]?.key).filter(Boolean));
   for (const r of existing) {
-    if (!kept.has(r.id)) { await removeComponent(db, r.id); did.removed += 1; }
+    if (kept.has(r.id)) continue;
+    const key = componentKeyOf(r);
+    // A second record of a component already on the canvas is a DUPLICATE
+    // (builder#49): removed, as ever — never adopted as a second copy.
+    const duplicate = key && onCanvasKeys.has(key);
+    if (!duplicate && members && !members.has(r.id) && (!key || byKey.get(key) === r)) {
+      // ADDED ELSEWHERE: not on my canvas, never in my set. Adopt, write nothing.
+      const c = fromRecord(decoded(r));
+      components.push(c);
+      if (key) onCanvasKeys.add(key);
+      did.adopted += 1;
+      continue;
+    }
+    await removeComponent(db, r.id);
+    did.removed += 1;
   }
+  // What this tab now holds is its new base set.
+  setMembers(components, pid, components.map(c => c.rid).filter(Boolean));
   return did;
 }
 
@@ -365,7 +448,7 @@ export async function mountProjects(host, {
     if (definition) await saveDefinition(db, pid, definition);
     // A save that ADOPTED another tab's version changed the canvas under the
     // person, so what is on screen must be drawn again from it.
-    if (did.adopted) onChange();
+    if (did.adopted || did.dropped) onChange();
     return did;
   });
   let open = false;
@@ -501,7 +584,7 @@ export async function mountProjects(host, {
       setLastOpened: id => writeDeviceSettings(storage, { lastOpened: id }),
       handOver: p => {
         loading = true;
-        try { setCanvas(p.components.map(fromRecord), p); }
+        try { setCanvas(canvasOf(p), p); }
         finally { loading = false; }
       },
     });
@@ -580,7 +663,7 @@ export async function mountProjects(host, {
   // wrong on a second device.
   if (last) {
     const project = await openProject(db, last);
-    if (project) setCanvas(project.components.map(fromRecord), project);
+    if (project) setCanvas(canvasOf(project), project);
   }
   return { persist, refresh: paint, openProjectId: current, published };
 }
