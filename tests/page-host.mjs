@@ -38,7 +38,13 @@ function announced(child, streams, re, what, ms) {
       if (m) { clearTimeout(timer); ok(Number(m[1])); }
     };
     for (const s of streams) s.setEncoding("utf8"), s.on("data", read);
-    child.once("exit", code => { clearTimeout(timer); bad(new Error(`${what} exited (${code}) before listening; it said: ${seen.slice(-400) || "(nothing)"}`)); });
+    child.once("exit", code => {
+      clearTimeout(timer);
+      // The line that says WHY (python ends a failed bind with the OSError),
+      // not the tail of a traceback.
+      const why = seen.split("\n").map(l => l.replace(/\x1b\[[0-9;]*m/g, "").trim()).filter(l => /Error|error:/.test(l)).pop();
+      bad(new Error(`${what} exited (${code}) before listening: ${why ?? (seen.slice(-400) || "(it said nothing)")}`));
+    });
     child.once("error", e => { clearTimeout(timer); bad(new Error(`${what} could not start: ${e.message}`)); });
   });
 }
