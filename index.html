@@ -9,6 +9,21 @@
   body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:grid; grid-template-rows:auto 1fr; }
   header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
   header b { font-size:15px; } header .sp { flex:1; }
+  .projwrap { position:relative; }
+  .proj-chip { font:inherit; padding:5px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); cursor:pointer; }
+  .proj-pop { position:absolute; top:calc(100% + 6px); left:0; width:320px; z-index:30;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.12); }
+  .proj-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .proj-acts { display:flex; gap:6px; }
+  .proj-head button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); cursor:pointer; }
+  .proj-list { display:flex; flex-direction:column; gap:4px; max-height:300px; overflow:auto; }
+  .proj-row { display:flex; flex-direction:column; gap:2px; align-items:flex-start; text-align:left;
+    font:inherit; padding:7px 9px; border:1px solid transparent; border-radius:7px; background:none; cursor:pointer; }
+  .proj-row:hover { background:var(--bg); }
+  .proj-row.is-open { border-color:var(--line); background:var(--bg); }
+  .proj-row small { color:var(--dim); font-size:11px; }
+  .proj-empty, .proj-note { color:var(--dim); font-size:11px; margin:8px 2px 0; line-height:1.5; }
   button { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); cursor:pointer; }
   button:disabled { opacity:.45; cursor:not-allowed; }
   button.pri { background:var(--acc); border-color:var(--acc); color:#fff; }
@@ -126,6 +141,7 @@
 <header>
   <b>Craftec Builder</b><span id="sdk" class="b" style="color:var(--mute)">loading SDK…</span>
   <span id="tree-addr" class="addr" title="The tree this app works on"></span><span class="sp"></span>
+  <div class="projwrap" id="projects"></div>
   <button id="preview">Preview</button>
   <button id="clear">Clear</button>
   <button class="pri" id="publish">Publish</button>

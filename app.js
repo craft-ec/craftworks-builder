@@ -8,6 +8,8 @@ import { LIVE_NOTE, isLive } from "./publish-state.js";
 import { buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
+import { LocalDb } from "./local-db.js";
+import { mountProjects } from "./projects-panel.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -20,7 +22,12 @@ let app = { name: "Untitled app", tree: { realm: "public", identity: null }, com
 try { const s = localStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
 // An app definition can arrive in the URL (`#app=<json>`): shareable, and testable.
 try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) app = { ...app, ...JSON.parse(h) }; } catch (_) {}
-const save = () => { try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (_) {} };
+const save = () => {
+  try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (_) {}
+  // And into the open project's RECORDS, if one is open. Fire-and-forget: a
+  // storage failure must not take an edit away from the person who made it.
+  projects?.persist?.().catch(() => {});
+};
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
@@ -48,6 +55,23 @@ async function refreshCounts(db, app) {
 // when the wasm arrives. It does NOT force a load: a panel that pulled in the
 // wasm on every page view to read one string would cost more than it tells.
 let versionsPanel = null, sdkSelfReport = null, bakedInfo = null;
+// PROJECTS. Stored as records — the project plus one per component — in a db
+// that survives a reload. Which db is a backend decision, not a shape
+// decision: the same records go to the engine-backed one when there is a node.
+let projects = null;
+mountProjects($("projects"), {
+  db: new LocalDb(),
+  getCanvas: () => app.components,
+  setCanvas: (components, project) => {
+    app.components = components;
+    app.name = project.title;
+    sel = app.components.length ? 0 : -1;
+    save();
+    render();
+  },
+  onChange: () => render(),
+}).then(p => { projects = p; }).catch(() => { /* storage refused: the builder still works */ });
+
 readBuildInfo().then(baked => {
   bakedInfo = baked;
   versionsPanel = mountVersions($("versions"), {
@@ -204,6 +228,16 @@ async function doPublish() {
     // A preload that fails is not a failed publish. The data is all still
     // reachable; the first read simply pays for it. So it is recorded and
     // the publish goes on.
+    // The publication is RECORDED before the preload, because the publish has
+    // already succeeded by this point: a failed preload is not a failed
+    // publish, and history that omitted it would be wrong about what happened.
+    try {
+      await projects?.published?.({
+        sourceRoot: db.root?.() ?? null,
+        sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+      });
+    } catch (e) { publishError = `history: ${e.message}`; }
+
     try { await db.preload(preloadManifest(app)); }
     catch (e) { publishError = `preload: ${e.message}`; }
 
