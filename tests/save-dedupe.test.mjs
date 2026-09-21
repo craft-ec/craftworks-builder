@@ -229,3 +229,22 @@ await t("records saved before keys existed are never collapsed", async () => {
   }
   assert.strictEqual((await openProject(db, p.id)).components.length, 2, "two keyless records were collapsed");
 });
+
+await t("upgrading: components saved before keys existed KEEP their ids on the first save after", async () => {
+  const db = await fresh(BACKENDS.LocalDb);
+  const p = await createProject(db, { title: "upgrade" });
+  for (const domain of ["a", "b"]) {
+    await db.put(COMPONENT, { pid: p.id, kind: "table", props: JSON.stringify({ type: "table", domain }) });
+  }
+  const before = (await componentsOf(db, p.id)).map(r => r.id).sort();
+  const canvas = (await openProject(db, p.id)).components.map(fromRecord);
+  const did = await saveCanvas(db, p.id, canvas);
+  assert.deepStrictEqual({ added: did.added, removed: did.removed }, { added: 0, removed: 0 }, "the upgrade re-keyed every component");
+  assert.deepStrictEqual((await componentsOf(db, p.id)).map(r => r.id).sort(), before, "ids changed on upgrade");
+  // A COPY of a legacy component — same rid, no key — is a new component.
+  const copy = { ...canvas[0] };
+  delete copy._builder;
+  canvas.push(copy);
+  await saveCanvas(db, p.id, canvas);
+  assert.strictEqual((await openProject(db, p.id)).components.length, 3, "a copy of a legacy component was lost");
+});

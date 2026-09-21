@@ -85,11 +85,20 @@ export async function saveCanvas(db, pid, components) {
   // A key is ONE component, so it must be unique on the canvas. A component
   // that repeats a key already seen — a copy of another, or an imported canvas
   // that listed one twice — is a NEW component: fresh key, and no record yet.
-  const seen = new Set();
+  //
+  // A component with a record but no key yet (saved before keys existed)
+  // keeps its record: it gets a key and is UPDATED, so its id survives. Only a
+  // REPEATED key or record id — a copy — is a new component and loses the rid,
+  // or two canvas components would write one record and one would vanish.
+  const seenKeys = new Set();
+  const seenRids = new Set();
   for (const c of components) {
     const m = meta(c);
-    if (!m.key || seen.has(m.key)) { c[BUILDER] = { key: newKey(), gen: 0 }; delete c.rid; }
-    seen.add(c[BUILDER].key);
+    const copy = (m.key && seenKeys.has(m.key)) || (c.rid && seenRids.has(c.rid));
+    if (copy) delete c.rid;
+    if (!m.key || copy) c[BUILDER] = { key: newKey(), gen: 0 };
+    seenKeys.add(c[BUILDER].key);
+    if (c.rid) seenRids.add(c.rid);
   }
   const existing = await componentsOf(db, pid);
   const byId = new Map(existing.map(r => [r.id, r]));
