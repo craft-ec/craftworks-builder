@@ -9,7 +9,8 @@ import {
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent, setComponentProps,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
-  recordPublication, publicationsOf, nextSeq,
+  recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
+  oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
 } from "./projects.js";
 
 const el = (tag, props = {}, ...kids) => {
@@ -39,10 +40,23 @@ export const toRecord = c => {
 };
 export const fromRecord = r => ({ ...(r.props ?? {}), type: r.kind, rid: r.id });
 
-/** Do two components differ in anything that is stored? */
-const changed = (c, rec) =>
-  rec.fields.kind !== c.type ||
-  rec.fields.props !== JSON.stringify(toRecord(c).props);
+const meta = c => c[BUILDER] ?? {};
+
+/** Do two components differ in anything stored — ignoring the generation? */
+const changed = (c, rec) => {
+  const without = p => {
+    const { [BUILDER]: m, ...rest } = p ?? {};
+    return JSON.stringify({ ...rest, [BUILDER]: { key: m?.key } });
+  };
+  let stored = null;
+  try { stored = JSON.parse(rec.fields.props); } catch { return true; }
+  return rec.fields.kind !== c.type || without(stored) !== without(toRecord(c).props);
+};
+
+/** The generation a record was written at. */
+const genOf = rec => {
+  try { return JSON.parse(rec.fields.props)?.[BUILDER]?.gen ?? 0; } catch { return 0; }
+};
 
 /**
  * Save the open canvas as records — as a DIFF, so ids survive.
@@ -56,7 +70,8 @@ const changed = (c, rec) =>
  * Returns what it did, so a caller can assert on it rather than infer it.
  */
 export async function saveCanvas(db, pid, components) {
-  // A STABLE KEY PER CANVAS COMPONENT, assigned before the first `await`.
+  // A STABLE KEY PER CANVAS COMPONENT, assigned before the first `await`,
+  // kept under `_builder` beside the component's generation.
   //
   // `rid` names the RECORD, and it is only known once an add has come back.
   // An add that landed but whose answer was lost, or two saves overlapping
@@ -66,15 +81,49 @@ export async function saveCanvas(db, pid, components) {
   // synchronously so a save that overlaps this one sees it, and `openProject`
   // keeps one record per key. Two components that merely look alike have
   // different keys and both stay.
-  for (const c of components) if (!c.key) c.key = newKey();
+  //
+  // A key is ONE component, so it must be unique on the canvas. A component
+  // that repeats a key already seen — a copy of another, or an imported canvas
+  // that listed one twice — is a NEW component: fresh key, and no record yet.
+  const seen = new Set();
+  for (const c of components) {
+    const m = meta(c);
+    if (!m.key || seen.has(m.key)) { c[BUILDER] = { key: newKey(), gen: 0 }; delete c.rid; }
+    seen.add(c[BUILDER].key);
+  }
   const existing = await componentsOf(db, pid);
   const byId = new Map(existing.map(r => [r.id, r]));
+  // ADOPT BY KEY. A component whose record id this canvas never learnt — its
+  // add landed but the answer was lost, or its rid names another project's
+  // record — already HAS a record here if one carries its key. That record is
+  // it: update it rather than add a second and delete the first. One write
+  // instead of two, and no second record for the load path to resolve.
+  const byKey = recordPerComponentKey(existing);
+  // The highest generation ANY record of a key holds. A write must outrank
+  // all of them, not only the record it updates: two records of one key can
+  // sit at the same generation, and a write that only passed its own would
+  // tie with the other and could lose the tie-break.
+  const topGen = new Map();
+  for (const r of existing) {
+    const k = componentKeyOf(r);
+    if (k) topGen.set(k, Math.max(topGen.get(k) ?? 0, genOf(r)));
+  }
   const kept = new Set();
   const did = { added: 0, updated: 0, removed: 0, untouched: 0 };
 
   for (const c of components) {
-    const rec = c.rid ? byId.get(c.rid) : null;
+    const key = c[BUILDER].key;
+    let rec = c.rid ? byId.get(c.rid) : null;
+    if (!rec && byKey.has(key)) {
+      rec = byKey.get(key);
+      c.rid = rec.id;
+    }
+    // EVERY WRITE OF A COMPONENT BUMPS ITS GENERATION, past both what this
+    // canvas last wrote and what ANY record of this key holds: freshness is counted, not
+    // read off an id or a clock, both of which can go backwards.
+    const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1 }; };
     if (!rec) {
+      bump();
       const added = await addComponent(db, pid, toRecord(c));
       // The new id goes back onto the canvas component, or the next save
       // cannot find it either and the re-keying returns.
@@ -85,6 +134,7 @@ export async function saveCanvas(db, pid, components) {
     }
     kept.add(rec.id);
     if (changed(c, rec)) {
+      bump();
       await setComponentProps(db, rec.id, toRecord(c).props);
       did.updated += 1;
     } else {
@@ -102,15 +152,23 @@ export async function saveCanvas(db, pid, components) {
 const newKey = () => globalThis.crypto.randomUUID();
 
 /**
- * Saves run ONE AT A TIME, each on what was asked for when it was asked.
+ * Saves run ONE AT A TIME, each on the project and canvas named when it was
+ * asked for.
  *
  * `persist` is called on every canvas change and did not wait for the previous
  * save: two saves could both read the project before either added a new
  * component, and both added it (builder#49, reproduced with two successful
  * saves and no failure at all). So each call is chained behind the last, and
- * captures its project and canvas at CALL time — a save that ran on "whatever
- * is open when it starts" would write one project's canvas into another if the
+ * NAMES its project and canvas at call time — a save that ran on "whatever is
+ * open when it starts" would write one project's canvas into another if the
  * person switched in between.
+ *
+ * The canvas is a REFERENCE, not a snapshot: a queued save writes the canvas
+ * as it is when the save runs. That is right here because switching project or
+ * clearing replaces the array (`setCanvas`, `clear`) rather than editing it, so
+ * the reference a save holds is still that project's canvas. A snapshot would
+ * be wrong the other way: `saveCanvas` writes each record's id back onto the
+ * live components, and a copy would never learn them.
  *
  * A save that fails does not stop the ones after it; its error still reaches
  * its own caller.
@@ -149,7 +207,9 @@ export async function mountProjects(host, {
     const openId = current();
     const items = [];
     for (const r of rows) {
-      const n = (await componentsOf(db, r.id)).length;
+      // What `openProject` would show, not the raw record count: a project
+      // holding a duplicate listed "2 components" and opened 1.
+      const n = oneRecordPerComponent(await componentsOf(db, r.id)).length;
       const isOpen = r.id === openId;
       items.push(el("button", {
         className: `proj-row${isOpen ? " is-open" : ""}`,
@@ -268,7 +328,8 @@ export async function mountProjects(host, {
     if (loading) return;   // see `choose`
     const pid = current();
     if (!pid) return;
-    // Project and canvas taken NOW, before waiting on any earlier save.
+    // Project and canvas NAMED now, before waiting on any earlier save (the
+    // canvas by reference — see `serialSaves`).
     await save(pid, getCanvas());
     await paint();
   }
