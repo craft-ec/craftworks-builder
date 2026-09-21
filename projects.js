@@ -305,13 +305,13 @@ export const componentKey = r => builderOf(r).key;
 
 /** Open a project: its record and its components, decoded. */
 export async function openProject(db, pid) {
-  // `db.get` THROWS on an id it cannot parse rather than answering "not
-  // found", and the ids reaching here come from outside this module: a stale
+  // The ids reaching here come from outside this module: a stale
   // `lastOpened` in device storage, a link, a project someone deleted on
-  // another device. A builder that cannot open its last project should show an
-  // empty canvas, not fail to start.
-  let project = null;
-  try { project = await db.get(PROJECT, pid); } catch { return null; }
+  // another device. `db.get` answers null for an id it cannot address
+  // (craftworks-sdk#118), so no catch: the catch that used to stand here also
+  // turned a read that FAILED — a node out of reach — into "no such project",
+  // and the builder opened an empty canvas as if the project were gone.
+  const project = await db.get(PROJECT, pid);
   if (!project) return null;
   const components = oneRecordPerComponent(await componentsOf(db, pid)).map(r => ({
     id: r.id,
@@ -446,6 +446,11 @@ export async function recordPublication(db, pid, { seq, sdk_version = null, sche
 export async function nextSeq(db, pid) {
   const hist = await publicationsOf(db, pid);
   return hist.length ? Math.max(...hist.map(h => h.seq ?? 0)) + 1 : 1;
+}
+
+/** Whether this project has COMPLETED a publish — what a handoff decides from (builder#83). */
+export async function hasPublished(db, pid) {
+  return (await publicationsOf(db, pid)).length > 0;
 }
 
 /** A project's publications, newest first. */

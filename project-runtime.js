@@ -46,10 +46,6 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
   let session = null;          // the publish handle, OWNED once handed over
   let publishedDb = null;
   let phase = "idle", error = "";
-  // What the handoff has already copied, so a retry after a partial failure
-  // copies only what is missing (handoff.js). Per PROJECT: it describes this
-  // project's rows and their copies, and is dropped with the runtime.
-  const ledger = { rows: new Map(), seeded: new Set() };
 
   const stopMounted = () => {
     const m = mounted;
@@ -67,7 +63,6 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
     get db() { return mounted?.db ?? reported; },
     get mountState() { return mountState; },
     get disposed() { return disposed; },
-    get ledger() { return ledger; },
 
     /**
      * Start a mount if none is active or in progress.
@@ -165,14 +160,14 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
       // copied to the new backend and must be acknowledged there before
       // anything calls this published (builder#52). On failure the preview
       // stays mounted and in use, nothing claims the data moved, and a retry
-      // continues from the ledger.
+      // lands on the same slots and copies only what is missing (builder#83).
       //
       // `publishedDb` is adopted only AFTER it succeeds. Adopted before, any
       // edit during a failed handoff would remount the preview onto a
       // half-copied backend.
       report("migrating");
       try {
-        await handoff({ source: rt.db, target: res.db, ledger });
+        await handoff({ source: rt.db, target: res.db });
       } catch (e) {
         if (disposed) return null;
         phase = "failed"; error = e.message;

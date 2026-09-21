@@ -92,9 +92,18 @@ export async function openApp(sdk, app, db = new sdk.Db(), { seed = true } = {})
   // That one persists: seeding it on every mount put the rows in again each
   // time, and brought back seed rows the person had deleted in Preview. What
   // reaches a published backend is the HANDOFF (handoff.js), once (builder#52).
+  //
+  // Each seed row is MARKED as seed row `i` of its domain where the db can
+  // record it (the Preview's, `previewDb`): a seed row's identity is its
+  // position in the definition, not the id this mount happened to mint, so a
+  // reload's fresh Preview and a second tab hand off the SAME seed rows
+  // (builder#83).
   if (seed) for (const [d, rows] of Object.entries(app.seed ?? {})) {
-    for (const row of rows) {
-      try { await db.put(d, row); } catch (e) { problems.push(`${d} seed: ${e.message}`); }
+    for (const [i, row] of rows.entries()) {
+      try {
+        const r = await db.put(d, row);
+        if (typeof db.markSeed === "function") db.markSeed(d, r.id, i);
+      } catch (e) { problems.push(`${d} seed: ${e.message}`); }
     }
   }
   return { db, problems, schemas };

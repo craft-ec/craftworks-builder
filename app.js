@@ -92,6 +92,9 @@ let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("
 // others, so project B inherited A's "Published" and A's backend, a rejected
 // mount left Preview dead until a reload, and no path ever closed a session
 // (builder#54, #57, #58). One object per project now, disposed on a switch.
+// THE OPEN PROJECT'S id and created time: what the handoff's slots derive
+// from (builder#83). Set when a project is loaded or adopted.
+let openedProject = null;
 const mountCanvas = ({ backend, phase, alive, adopt }) =>
   mountApp($("canvas"), sdkReady, app, db => {
     adopt(db);
@@ -143,6 +146,7 @@ mountProjects($("projects"), {
     // before anything of the new one exists: its listeners stop, its session
     // closes, and a mount or publish of it still in flight disowns itself.
     rt.dispose();
+    openedProject = { id: project.id, created: project.created };
     rt = newRuntime();
     app.components = components;
     app.name = project.title;
@@ -304,6 +308,20 @@ function renderPublish() {
  */
 async function doPublish() {
   if (!sdkReady) return;
+  // NO PROJECT OPEN — an app opened from a link, say. A publish is keyed by
+  // its project (builder#83), so the app on screen is kept as one first, and
+  // published under its id. Pressing Publish on an app you can see should not
+  // send you off to do a step the builder can do.
+  let adopted = null;
+  if (!openedProject && projects?.adopt) {
+    try {
+      adopted = await projects.adopt({ title: app.name });
+      if (adopted) openedProject = { id: adopted.id, created: adopted.created };
+    } catch (e) {
+      showStorageNotice({ kind: "not-saved", message: `Could not keep this app as a project, so it was not published: ${e.message}` });
+      return;
+    }
+  }
   // Published by THIS project's runtime. If the project is switched while the
   // publish is in flight, the runtime closes the session it produced and runs
   // none of `after` — so a late publish of A cannot record its history into B.
@@ -320,8 +338,20 @@ async function doPublish() {
       onPhase: () => { renderPublish(); renderAddr(); },
       // What Publish owes the records made in Preview: copied, and confirmed
       // by the node, before anything says Published (builder#52).
-      handoff: ({ source, target, ledger }) =>
-        handoff({ source, target, app, schemas: schemasOf(app), ledger }),
+      //
+      // Keyed by the PROJECT, and decided by whether it has completed a
+      // publish before (builder#83). Each is required: with no project open
+      // the handoff refuses by name rather than publishing rows it could not
+      // key.
+      handoff: async ({ source, target }) => {
+        const p = openedProject;
+        return handoff({
+          source, target, app, schemas: schemasOf(app), slotFrom: sdkReady.slotFrom,
+          namespace: p?.id, seedMs: p?.created,
+          published: p && projects ? await projects.hasPublished(p.id) : undefined,
+          onNotice: message => showStorageNotice({ kind: "kept", message }),
+        });
+      },
       // The publication is RECORDED before the preload, because the publish
       // has already succeeded by this point: a failed preload is not a failed
       // publish, and history that omitted it would be wrong about what
@@ -346,6 +376,9 @@ async function doPublish() {
         if (warn) throw new Error(warn);
       },
     });
+    if (adopted && rt.phase === "published") {
+      showStorageNotice({ kind: "saved-as", message: `Saved as project “${adopted.title}” and published.` });
+    }
     // The runtime has switched its backend and invalidated its mount, so this
     // render REMOUNTS on the new database: definition, components and
     // bindings rebuilt against it.
