@@ -99,6 +99,15 @@ try {
   assert.match(note, /also changed in another tab; your version was kept/, `got: ${note}`);
   console.log("ok page: a component changed in two tabs is TOLD through app.js's onConflict wiring", JSON.stringify({ note }));
 
+  // CLEAR STILL CLEARS (review of #79). A canvas with no base set now deletes
+  // nothing, so a Clear that REPLACED the array would silently stop removing
+  // anything — the person clears, reloads, and it is all back. app.js empties
+  // it in place, keeping the base set; this proves the records go.
+  await evaluate(`document.getElementById("clear").click();`);
+  await until(`${stored}.then(c => c.length === 0)`, "Clear to remove the stored components",
+    { show: stored.replace(/\)\(\)$/, ")()") });
+  console.log("ok page: Clear removes this tab's components from storage");
+
   console.log(`\ntwo tabs page: all ok  (screenshots: ${SHOTS})`);
   done(0);
 } catch (e) {

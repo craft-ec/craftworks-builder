@@ -11,7 +11,7 @@
 // Node and LocalDb over ONE shared storage, as the architect ran it.
 import assert from "node:assert";
 import { LocalDb } from "../local-db.js";
-import { defineProjectDomains, createProject, openProject } from "../projects.js";
+import { defineProjectDomains, createProject, openProject, componentsOf } from "../projects.js";
 
 const node = () => new Proxy({ hidden: false, style: {}, contains: () => false },
   { get: (t, p) => (p in t ? t[p] : () => {}), set: (t, p, v) => { t[p] = v; return true; } });
@@ -26,21 +26,26 @@ const canvasOf = panel.canvasOf ?? (p => p.components.map(fromRecord));
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
 const storage = () => {
   const m = new Map();
-  return { get length() { return m.size; }, key: i => [...m.keys()][i] ?? null,
+  return { m, get length() { return m.size; }, key: i => [...m.keys()][i] ?? null,
     getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) };
 };
 const told = [];
 const opts = by => ({ by, onConflict: m => told.push({ by, m }) });
 const labels = canvas => canvas.map(c => c.label).sort();
 const storedLabels = async (db, pid) => (await openProject(db, pid)).components.map(c => c.props?.label).sort();
+// The components stored under a project id, read directly: after a LOST store
+// the project record itself is gone (orphans are builder#82, not this PR), so
+// `openProject` has nothing to open.
+const rawLabels = async (db, pid) => (await componentsOf(db, pid)).map(r => JSON.parse(r.fields.props).label).sort();
 
 async function twoTabs() {
-  const db = new LocalDb(storage());
+  const st = storage();
+  const db = new LocalDb(st);
   await defineProjectDomains(db);
   const p = await createProject(db, { title: "shared" });
   await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K v0" }, { type: "form", domain: "m", label: "M v0" }], { by: "setup" });
   const open = async () => canvasOf(await openProject(db, p.id));
-  return { db, pid: p.id, tab1: await open(), tab2: await open() };
+  return { st, db, pid: p.id, tab1: await open(), tab2: await open() };
 }
 
 await t("**A: tab 1 ADDS N, tab 2 edits only M — tab 2 must not delete N; it ADOPTS it**", async () => {
@@ -139,6 +144,53 @@ await t("**the panel RE-RENDERS after a membership DROP, too**", async () => {
   await x.persist();
   assert.strictEqual(renders - before, 1, "a component deleted elsewhere left this canvas: drawn again");
   assert.deepStrictEqual(canvas.map(c => c.label), ["M"]);
+});
+
+// ---- Clear, and a canvas with no base set (review of #79) -------------------
+
+await t("**a canvas with NO base set deletes nothing it cannot show it held** (a Clear that replaced the array)", async () => {
+  const { db, pid, tab1 } = await twoTabs();
+  tab1.push({ type: "list", domain: "n", label: "N (tab 1)" });
+  await saveCanvas(db, pid, tab1, opts("tab1"));
+  // The old Clear: a FRESH array, with no record of what this tab held.
+  const did = await saveCanvas(db, pid, [], opts("tab2"));
+  assert.strictEqual(did.removed, 0, `a fresh canvas must not delete what another tab added: ${JSON.stringify(did)}`);
+  assert.deepStrictEqual(await storedLabels(db, pid), ["K v0", "M v0", "N (tab 1)"]);
+});
+
+await t("**Clear in place removes what THIS tab held, and adopts what another tab added since**", async () => {
+  const { db, pid, tab1, tab2 } = await twoTabs();
+  tab1.push({ type: "list", domain: "n", label: "N (tab 1)" });
+  await saveCanvas(db, pid, tab1, opts("tab1"));
+  tab2.length = 0;                                   // app.js's Clear, now in place
+  const did = await saveCanvas(db, pid, tab2, opts("tab2"));
+  assert.strictEqual(did.removed, 2, "K and M, which this tab held and cleared");
+  assert.deepStrictEqual(await storedLabels(db, pid), ["N (tab 1)"], "N, which it never saw, survives");
+  assert.deepStrictEqual(labels(tab2), ["N (tab 1)"], "and arrives on the cleared canvas");
+});
+
+// ---- the store LOST under an open tab (architect's probe of #78) ------------
+
+await t("**the store is LOST under an open tab: nothing is dropped; the components are saved again and the person is TOLD**", async () => {
+  told.length = 0;
+  const { st, db, pid, tab1 } = await twoTabs();
+  st.m.clear();                                       // cleared site data, with the tab still open
+  await defineProjectDomains(db);
+  const did = await saveCanvas(db, pid, tab1, opts("tab1"));
+  assert.strictEqual(did.dropped, 0, "deleted-elsewhere presumes the project is still there; it is not");
+  assert.strictEqual(did.restored, 2);
+  assert.deepStrictEqual(labels(tab1), ["K v0", "M v0"], "the canvas — the only copy left — is intact");
+  assert.deepStrictEqual(await rawLabels(db, pid), ["K v0", "M v0"], "and it is back in storage");
+  assert.strictEqual(told.length, 1);
+  assert.match(told[0].m, /saved copy was missing/);
+});
+
+await t("with no one to tell, a lost store is still saved again FIRST, then the save fails loudly", async () => {
+  const { st, db, pid, tab1 } = await twoTabs();
+  st.m.clear();
+  await defineProjectDomains(db);
+  await assert.rejects(saveCanvas(db, pid, tab1, { by: "tab1" }), /stored copy was lost.*no onConflict/);
+  assert.deepStrictEqual(await rawLabels(db, pid), ["K v0", "M v0"], "the data is back before the error");
 });
 
 console.log("\ntwo tabs, membership: all ok");
