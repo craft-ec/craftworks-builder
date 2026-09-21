@@ -289,6 +289,11 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
   if ("budgetMs" in rest) throw new Error("handoff: `budgetMs` is gone — the deadline is on progress now; pass `stallMs` (builder#94)");
   let best = -1;
   let movedAt = now();
+  // The fewest writes the target has held unconfirmed — ANY of this page's,
+  // not only these rows. The node confirming someone else's write is the node
+  // making progress: behind 255 of them, these rows wait 77 s on a healthy
+  // node, and counting only our own confirmations called that a stall.
+  let fewest = null;
   const t = {
     everyMs, stallMs, now, rows,
     get best() { return best; },
@@ -310,6 +315,13 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
         else if (state !== "CLEAN") waiting += 1;
       }
       if (lost) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
+      // The engine surface says how many writes it holds unconfirmed
+      // (`stats().pendingWrites`); a store with nothing to wait on does not.
+      const unconfirmed = typeof target.stats === "function" ? (await target.stats())?.pendingWrites : undefined;
+      if (Number.isInteger(unconfirmed)) {
+        if (fewest !== null && unconfirmed < fewest) movedAt = now();
+        if (fewest === null || unconfirmed < fewest) fewest = unconfirmed;
+      }
       const confirmed = rows.length - waiting;
       // PROGRESS is a record newly confirmed — the HIGHEST count so far
       // moving up, so a count that dips and recovers is not mistaken for it.
@@ -331,12 +343,14 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
  *
  * `NO_ROOM` is the SDK saying it already holds as many unconfirmed writes as
  * it will (sdk#180) — retryable, and marked so by Rust (`retryable`), not
- * recognised here by a list of codes. Room comes back as the node confirms:
- * so this waits for the next record of ours to be confirmed and makes the
- * SAME write again. If none of ours is waiting (the room is held by writes
- * this handoff did not make), it looks again each `everyMs`. It gives up only
- * when nothing has moved for `stallMs`. Anything that is not retryable is
- * thrown as it came.
+ * recognised here by a list of codes. Room comes back as the node confirms
+ * ANY write this page made — the handoff's, or writes it did not make — so
+ * this looks again every `everyMs` and makes the SAME write again as soon as
+ * there is room. It does NOT wait for a confirmation of its own rows: with
+ * 255 other writes ahead of them, that is 77 s of freed room left unused and
+ * a false stall. It gives up only when nothing has moved — no record of ours
+ * newly confirmed, no row made — for `stallMs`. Anything that is not
+ * retryable is thrown as it came.
  */
 async function roomFor(fn, t, rows) {
   for (;;) {
@@ -346,14 +360,10 @@ async function roomFor(fn, t, rows) {
       return r;
     } catch (e) {
       if (!(e && e.retryable === true)) throw e;
-      const before = t.best;
-      for (;;) {
-        await pause(t.everyMs);
-        const { waiting, confirmed } = await t.poll();
-        if (t.best > before || waiting === 0) break;
-        if (t.stalled()) {
-          throw new Error(`the node has room for no more records and has confirmed none in ${Math.round(t.stallMs / 1000)} s — ${confirmed} of ${rows.length} made so far are confirmed; your data is still here`);
-        }
+      await pause(t.everyMs);
+      const { confirmed } = await t.poll();
+      if (t.stalled()) {
+        throw new Error(`the node has room for no more records and has confirmed none in ${Math.round(t.stallMs / 1000)} s — ${confirmed} of ${rows.length} made so far are confirmed; your data is still here`);
       }
     }
   }

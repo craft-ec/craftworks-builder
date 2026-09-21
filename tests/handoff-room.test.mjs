@@ -11,9 +11,9 @@
 // so a refusal arrives exactly as a page sees it (a `DbError` with `code`,
 // `retryable`, `cap`) — over a session that behaves as the copy does: a cap
 // of unconfirmed writes, and a node confirming them in order, one per 300 ms
-// of a fake clock that moves 5 ms per READ — and the handoff reads only when
-// it polls for confirmations. Making a row takes no time on this clock, so a
-// burst meets the cap as it would.
+// of a fake clock: every call to the node costs 5 ms, and every time the
+// handoff reads the clock costs 1 ms — so time passes however the handoff
+// waits, and a loop that never gives up shows up as a stall, never as a hang.
 import assert from "node:assert";
 import { engineDb } from "../sdk/engine-db.js";
 import { handoff } from "../handoff.js";
@@ -30,9 +30,10 @@ const slotFrom = (ms, ns, id) => `${String(ms).padStart(12, "0")}${ns}${id}`.rep
  * node confirms one every `confirmMs` of the clock, oldest first, or never
  * once `stopAt` writes are confirmed.
  */
-function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity } = {}) {
+function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0 } = {}) {
   let clock = 0;
-  const order = [];                 // keys in the order written
+  // Writes that are NOT the handoff's, made before it starts and holding room.
+  const order = Array.from({ length: foreign }, (_, i) => `foreign/${i}`);
   const rows = new Map();           // key → { fields }
   const schemas = new Map();
   let refusals = 0;
@@ -45,12 +46,15 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity } = {}) {
     return { code: "NO_ROOM", message: `not written: ${cap} writes are already waiting for an answer`, transient: false, retryable: true, cap };
   };
   const write = key => {
+    clock += 5;
     if (unconfirmed() >= cap) throw noRoom();
     order.push(key);
   };
   const record = (d, id) => ({ id, created: 1, updated: 1, fields: rows.get(`${d}/${id}`).fields, state: stateOf(`${d}/${id}`) });
   const session = {
     take_loads: () => "[]",
+    // What the SDK's session reports: every write held unconfirmed, the page's own and others'.
+    stats: () => JSON.stringify({ blocks: null, bytes: null, height: null, heldBytes: 0, pendingWrites: unconfirmed(), pendingBytes: 0 }),
     define(d, schema) { write(`schema/${d}`); schemas.set(d, JSON.parse(schema)); },
     schema: d => JSON.stringify(schemas.get(d) ?? null),
     get(d, id) {
@@ -69,7 +73,7 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity } = {}) {
   };
   return {
     session,
-    now: () => clock,
+    now: () => (clock += 1),
     clock: () => clock,
     refusals: () => refusals,
     stored: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`)).length,
@@ -83,13 +87,16 @@ function source(n) {
 }
 
 const app = { components: [{ type: "table", domain: "notes", mode: "owned" }], schemas: { notes: SCHEMA } };
+/** A deadline on the REAL clock, so a handoff that never ends fails by name instead of hanging the suite. */
+const within = (p, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`${what}: the handoff never ended (10 s real time)`)), 10_000).unref())]);
+
 const run = (node, n, over = {}) => {
   const heard = [];
-  const go = handoff({
+  const go = within(handoff({
     source: source(n), target: engineDb({ session: node.session }), app, schemas: { notes: SCHEMA },
     slotFrom, namespace: PID, seedMs: SEED_MS, onNotice: () => {},
     onProgress: p => heard.push(p), confirm: { everyMs: 0, now: node.now }, ...over,
-  });
+  }), `${n} rows`);
   return { go, heard };
 };
 
@@ -100,6 +107,9 @@ await t("**300 rows against a target with room for 256: all 300 land, none refus
   assert.ok(node.refusals() > 0, "the target never refused for room, so this tested nothing about waiting for it");
   assert.strictEqual(node.stored("notes"), 300, `only ${node.stored("notes")} of 300 rows reached the target`);
   assert.deepStrictEqual(heard.at(-1), { confirmed: 300, total: 300 }, `progress ended at ${JSON.stringify(heard.at(-1))}`);
+  // The TOTAL is the whole publish from the first report on — never "120 of 256" becoming "… of 300".
+  const totals = [...new Set(heard.map(p => p.total))];
+  assert.deepStrictEqual(totals, [300], `the total changed while the person watched: ${JSON.stringify(totals)}`);
   const counts = heard.map(p => p.confirmed);
   assert.deepStrictEqual(counts, [...counts].sort((a, b) => a - b), "progress went backwards");
   process.stdout.write(`  300 rows, room for 256: ${node.refusals()} NO_ROOM answers waited out; done at ${node.clock() / 1000} s of the fake clock\n`);
@@ -114,6 +124,19 @@ await t("**a target that has no room and confirms nothing more fails on NO PROGR
     return true;
   });
   assert.ok(node.stored("notes") < 60, "it cannot have made every row");
+});
+
+await t("**the room is held by writes that are NOT the handoff's: once they confirm, the refused rows are made and the publish completes**", async () => {
+  // Every one of the 256 places is taken before the handoff starts, by
+  // writes it did not make. It has nothing of its own waiting to be
+  // confirmed — so it must look again, not wait for a confirmation of ITS
+  // OWN that can never come.
+  const node = roomySession({ foreign: 256 });
+  const { go, heard } = run(node, 20);
+  await go;
+  assert.ok(node.refusals() > 0, "the foreign writes held no room, so this tested nothing");
+  assert.strictEqual(node.stored("notes"), 20, `only ${node.stored("notes")} of 20 rows reached the target`);
+  assert.deepStrictEqual(heard.at(-1), { confirmed: 20, total: 20 });
 });
 
 await t("THE CONTROL: a refusal that is NOT retryable is thrown at once, not waited on", async () => {
