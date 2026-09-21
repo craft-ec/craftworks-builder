@@ -19,9 +19,17 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle") {
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive = () => true } = {}) {
+  // `alive` says whether this mount is still WANTED. The owner of a project's
+  // runtime (project-runtime.js) answers false once the project was switched,
+  // the definition edited, or the preview left — and a mount that finishes
+  // after that must not paint the canvas, must not report data, and must not
+  // leave listeners behind. Checked after every await, because each await is
+  // a point where the world can have moved on (builder#54, #57).
   const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db());
+  if (!alive()) return null;
   const editing = {}; // domain → record being edited
+  const report = d => { if (alive()) onData(d); };
 
   // ONE BINDING PER DOMAIN, not per component — and it reads a PAGE.
   //
@@ -135,10 +143,13 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // A change resets what was fetched past the page: new rows shift the page
   // itself, so pages fetched against the old one could leave a gap or repeat
   // a row. Back to the first page is honest; a stitched-together one is not.
-  const stops = each.map(b => b.subscribe(() => { beyond.delete(b); render(); }));
+  const stops = each.map(b => b.subscribe(() => { if (!alive()) return; beyond.delete(b); render(); }));
+  // Stops EVERY subscription this mount made — one per unique binding, which
+  // is what `each` holds — and is what the mount's owner calls to dispose it.
+  const stop = () => { for (const s of stops.splice(0)) s?.(); };
 
   const refresh = async () => { for (const b of each) await b.reload(); };
-  const changed = async () => { await refresh(); render(); onData(db); };
+  const changed = async () => { await refresh(); if (!alive()) return; render(); report(db); };
   const guard = async (fn, box) => { try { await fn(); box.textContent = ""; } catch (e) { box.textContent = e.message; } };
 
   // What a row says about ITSELF.
@@ -216,7 +227,9 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
         // A failed read proves nothing about the end — it stays "may be more".
         beyond.set(b, { ...m, err: e.message });
       }
-      render();
+      // The read was a round trip; a page that was disowned meanwhile must
+      // not repaint the canvas that now belongs to a later mount.
+      if (alive()) render();
     };
     return el("p", { className: "rt-more" },
       `Showing the ${end} ${view.footer.shown} — there may be more. `, btn,
@@ -276,9 +289,10 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // Awaited, like every other reload here: the round trip is the part that is
   // not synchronous.
   await refresh();
+  if (!alive()) { stop(); return null; }
 
   render();
-  onData(db);
+  report(db);
 
   // THE ACCEPTANCE SEAM.
   //
@@ -300,9 +314,11 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   db.__id ??= (globalThis.__dbSeq = (globalThis.__dbSeq ?? 0) + 1);
   // The previous mount's listeners, stopped: two mounts both re-rendering
   // into one canvas is the shape that made Preview mount the app twice.
-  globalThis.__craftworksStop?.();
-  globalThis.__craftworksStop = () => { for (const s of stops) s?.(); };
+  // The previous mount's listeners are stopped by whoever OWNS the mount, via
+  // the `stop` returned here. This used to be a page global that each mount
+  // called on the one before — so a stale mount finishing late stopped the
+  // CURRENT mount's listeners and took its place (builder#54).
   globalThis.__craftworks = { db, app, phase };
 
-  return db;
+  return { db, stop };
 }

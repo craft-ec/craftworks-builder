@@ -128,12 +128,29 @@ export async function publish(app, deps, onPhase = () => {}) {
     phase("provisioning");
     await waitFor(handle, { neverConnected: () => !connected && refusals >= 2 });
   } catch (e) {
+    // THE HANDLE IS OURS UNTIL IT IS HANDED OVER, so a failed handoff closes
+    // it. It owns a reconnecting socket, a tick interval and page-lifecycle
+    // listeners; the caller gets no handle on a rejection and so cannot, and
+    // every retry used to open another one alongside the last (builder#58).
+    closeQuietly(handle);
     onPhase("failed", e.message);
     throw e;
   }
 
   phase("opening");
+  // Handed over: from here the caller owns the session and must close it.
   return { session: handle, db: handle.db };
+}
+
+/**
+ * Close a session, and never let the cleanup replace the reason.
+ *
+ * A close that throws while reporting a failure would surface the close's
+ * error instead of the one that explains what went wrong, so it is swallowed
+ * here — the ORIGINAL error is what the caller rethrows.
+ */
+export function closeQuietly(handle) {
+  try { handle?.close?.(); } catch (_) { /* the original error is the one that matters */ }
 }
 
 /**

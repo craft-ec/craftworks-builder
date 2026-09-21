@@ -10,6 +10,7 @@ import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
 import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
+import { createProjectRuntime } from "./project-runtime.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -30,12 +31,29 @@ const save = () => {
 };
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
-let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1", liveDb = null;
-// The engine-backed database, once Publish has switched the backend, and a
-// sentinel so an async mount cannot be started twice.
-let publishedDb = null, mounting = false;
-// Where publishing has got to, and what went wrong if it did.
-let publishPhase = "idle", publishError = "";
+let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1";
+// THE OPEN PROJECT'S RUNTIME: its mount, its publish session and phase, and
+// the backend it publishes to. These were four page globals — `publishedDb`,
+// `mounting`, `publishPhase`, `liveDb` — each reset on some paths and not
+// others, so project B inherited A's "Published" and A's backend, a rejected
+// mount left Preview dead until a reload, and no path ever closed a session
+// (builder#54, #57, #58). One object per project now, disposed on a switch.
+const mountCanvas = ({ backend, phase, alive, adopt }) =>
+  mountApp($("canvas"), sdkReady, app, db => {
+    adopt(db);
+    renderTree();
+    // The counts the panel just rendered without. Resolved after, and the
+    // panel is drawn again with them — one extra pass, and the number is a
+    // number.
+    refreshCounts(db, app).then(renderTree);
+  }, backend, phase, { alive }).then(h => {
+    // The acceptance seam the tools read also carries the session now that
+    // something owns one.
+    if (h && globalThis.__craftworks) globalThis.__craftworks.session = rt?.session ?? null;
+    return h;
+  });
+const newRuntime = () => createProjectRuntime({ mount: mountCanvas, publish, onChange: () => render() });
+let rt = newRuntime();
 /**
  * Record counts per domain, resolved asynchronously and READ synchronously.
  *
@@ -63,6 +81,11 @@ mountProjects($("projects"), {
   db: new LocalDb(),
   getCanvas: () => app.components,
   setCanvas: (components, project) => {
+    // A DIFFERENT PROJECT, so a different runtime. The old one is disposed
+    // before anything of the new one exists: its listeners stop, its session
+    // closes, and a mount or publish of it still in flight disowns itself.
+    rt.dispose();
+    rt = newRuntime();
     app.components = components;
     app.name = project.title;
     sel = app.components.length ? 0 : -1;
@@ -158,7 +181,7 @@ function renderAddr() {
   // IS published — and not a moment before. It is the one line a person reads
   // to decide whether closing the tab loses their work, so it tracks what the
   // node has actually confirmed rather than what was asked for.
-  const note = publishPhase === "published" ? "" : "  · in-memory, not published";
+  const note = rt.phase === "published" ? "" : "  · in-memory, not published";
   $("tree-addr").replaceChildren(
     "craftec://", el("b", { textContent: realm }), "/", el("b", { textContent: identity ?? "‹you›" }), "/",
     el("span", { textContent: note }),
@@ -179,7 +202,7 @@ function nodePort() {
 }
 
 function renderPublish() {
-  const b = buttonFor(publishPhase, { error: publishError });
+  const b = buttonFor(rt.phase, { error: rt.error });
   const btn = $("publish");
   btn.textContent = b.label;
   btn.disabled = !b.enabled;
@@ -190,7 +213,7 @@ function renderPublish() {
   // which renders as nothing in a screenshot and needs a hover to find — so
   // the one thing that makes a failure fixable was the one thing invisible.
   const note = $("publish-note");
-  if (note) note.textContent = publishPhase === "failed" ? publishError : "";
+  if (note) note.textContent = rt.phase === "failed" ? rt.error : "";
 }
 
 /**
@@ -203,9 +226,11 @@ function renderPublish() {
  */
 async function doPublish() {
   if (!sdkReady) return;
-  publishError = "";
+  // Published by THIS project's runtime. If the project is switched while the
+  // publish is in flight, the runtime closes the session it produced and runs
+  // none of `after` — so a late publish of A cannot record its history into B.
   try {
-    const { db } = await publish(app, {
+    await rt.publish(app, {
       open: sdkReady.open,
       artefacts: sdkReady.SHIPPED_ARTEFACTS,
       // NAMED, never defaulted. The node to publish to is a decision: it
@@ -213,48 +238,39 @@ async function doPublish() {
       // points at whatever is listening, and what was listening here was the
       // owner's own node.
       port: nodePort(),
-    }, (phase, err = "") => {
-      publishPhase = phase;
-      publishError = err;
-      renderPublish(); renderAddr();
+    }, {
+      onPhase: () => { renderPublish(); renderAddr(); },
+      // The publication is RECORDED before the preload, because the publish
+      // has already succeeded by this point: a failed preload is not a failed
+      // publish, and history that omitted it would be wrong about what
+      // happened.
+      //
+      // PRELOAD before the first frame, so a read the canvas is about to make
+      // is answered from memory instead of from a round trip. Generated from
+      // the canvas: a domain nobody has placed a component for is not read on
+      // open. Naming DOMAINS and not key ranges is deliberate — what a range
+      // is, is the SDK's business (craftworks-sdk#66). A preload that fails is
+      // not a failed publish; the first read simply pays for it.
+      after: async db => {
+        let warn = "";
+        try {
+          await projects?.published?.({
+            sourceRoot: db.root?.() ?? null,
+            sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+          });
+        } catch (e) { warn = `history: ${e.message}`; }
+        try { await db.preload(preloadManifest(app)); }
+        catch (e) { warn = `preload: ${e.message}`; }
+        if (warn) throw new Error(warn);
+      },
     });
-    // PRELOAD before the first frame, so a read the canvas is about to make
-    // is answered from memory instead of from a round trip. Generated from
-    // the canvas: a domain nobody has placed a component for is not read on
-    // open, and fetching it would spend the first frame on data nothing
-    // shows. Naming DOMAINS and not key ranges is deliberate — what a range
-    // is, is the SDK's business (craftworks-sdk#66).
-    //
-    // A preload that fails is not a failed publish. The data is all still
-    // reachable; the first read simply pays for it. So it is recorded and
-    // the publish goes on.
-    // The publication is RECORDED before the preload, because the publish has
-    // already succeeded by this point: a failed preload is not a failed
-    // publish, and history that omitted it would be wrong about what happened.
-    try {
-      await projects?.published?.({
-        sourceRoot: db.root?.() ?? null,
-        sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-      });
-    } catch (e) { publishError = `history: ${e.message}`; }
-
-    try { await db.preload(preloadManifest(app)); }
-    catch (e) { publishError = `preload: ${e.message}`; }
-
-    // The backend is switched by REMOUNTING on the new database: the app
-    // definition, the components and the bindings are all rebuilt against it.
-    // Nothing in the app changes, which is the whole promise of Publish.
-    publishedDb = db;
-    liveDb = null; mounting = false;
-    publishPhase = "published";
+    // The runtime has switched its backend and invalidated its mount, so this
+    // render REMOUNTS on the new database: definition, components and
+    // bindings rebuilt against it.
     render();
-  } catch (e) {
-    publishPhase = "failed";
-    // `publish` already reported a reason through `onPhase`, and its reason
-    // says what to DO. Overwriting it with the raw exception replaced advice
-    // a person can act on with a message they cannot — which is what this
-    // line used to do.
-    if (!publishError) publishError = e.message;
+  } catch (_) {
+    // `publish` reported a reason through `onPhase`, and its reason says what
+    // to DO; the runtime keeps it rather than the raw exception.
     renderPublish(); renderAddr();
   }
 }
@@ -264,7 +280,7 @@ function renderPalette() {
     const ready = c.phase <= BUILT_PHASE + 1;
     const b = el("button", { className: "chip", disabled: !ready, title: `${c.primitives.join(" + ")} · ${c.schema} — ${c.note}${ready ? "" : ` (lands in phase ${c.phase})`}` },
       c.label, el("small", { textContent: ready ? c.schema : `phase ${c.phase}` }));
-    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0] }); sel = app.components.length - 1; liveDb = null; save(); render(); };
+    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0] }); sel = app.components.length - 1; rt.invalidate(); save(); render(); };
     return b;
   }));
 }
@@ -274,22 +290,12 @@ function usesPath(i, path) { const m = mapping(app.components[i]); return m.keys
 function renderCanvas() {
   if (preview) {
     if (!sdkReady) { $("canvas").replaceChildren(el("p", { className: "empty", textContent: "Loading the SDK…" })); return; }
-    // Guarded by a SENTINEL rather than by `liveDb`: mounting is async now,
-    // and a second render arriving before the first finished would mount the
-    // app twice — two engines, two sets of writes, one canvas.
-    if (!mounting) {
-      mounting = true;
-      mountApp($("canvas"), sdkReady, app, db => {
-        liveDb = db;
-        renderTree();
-        // The counts the panel just rendered without. Resolved after, and the
-        // panel is drawn again with them — one extra pass, and the number is
-        // a number.
-        refreshCounts(db, app).then(renderTree);
-      }, publishedDb, publishPhase)
-        .then(db => { liveDb = db; })
-        .catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
-    }
+    // Mounting is async, and a second render arriving before the first
+    // finished would mount the app twice — two engines, two sets of writes,
+    // one canvas. The runtime refuses a second mount while one is starting or
+    // active, and a REJECTED one returns it to idle so the next render retries.
+    rt.ensureMounted()
+      ?.catch(e => $("canvas").replaceChildren(el("p", { className: "empty", textContent: e.message })));
     return;
   }
   $("canvas").replaceChildren(...(app.components.length ? app.components.map((inst, i) => {
@@ -330,6 +336,7 @@ const freezeRoot = () => location.hash.includes("stale-root=1");
 
 /** The real tree behind the preview: its root, and what it holds. */
 function renderRoot() {
+  const liveDb = rt.db;
   if (!liveDb) { $("tree-root").replaceChildren(); shownRoot = null; return; }
   const root = liveDb.root();
   if (!freezeRoot() || shownRoot === null) shownRoot = root;
@@ -398,7 +405,7 @@ function renderProps() {
   if (!inst) { $("props").replaceChildren(el("p", { className: "note", textContent: "Select a component." })); $("map").replaceChildren(); return; }
   const c = byType[inst.type];
   const domain = el("input", { value: inst.domain });
-  domain.oninput = () => { inst.domain = domain.value.trim(); liveDb = null; save(); renderCanvas(); renderTree(); renderMap(); renderDef(); };
+  domain.oninput = () => { inst.domain = domain.value.trim(); rt.invalidate(); save(); renderCanvas(); renderTree(); renderMap(); renderDef(); };
   const mode = el("select");
   c.modes.forEach(m => mode.append(el("option", { value: m, textContent: m, selected: m === inst.mode })));
   mode.onchange = () => { inst.mode = mode.value; save(); render(); };
@@ -413,14 +420,14 @@ function renderProps() {
     // put a key in every project definition to say the default, which is how
     // a definition stops being readable.
     if (live.checked) inst.live = true; else delete inst.live;
-    liveDb = null; save(); render();
+    rt.invalidate(); save(); render();
   };
   const liveRow = el("label", { className: "live" }, live,
     el("span", { textContent: "Live — updates by itself" }));
   const liveWhy = el("p", { className: "note", id: "live-note", textContent: LIVE_NOTE });
 
   const rm = el("button", { textContent: "Remove", style: "margin-top:12px" });
-  rm.onclick = () => { app.components.splice(sel, 1); sel = -1; liveDb = null; save(); render(); };
+  rm.onclick = () => { app.components.splice(sel, 1); sel = -1; rt.invalidate(); save(); render(); };
   $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode,
     liveRow, liveWhy,
     el("label", { textContent: `Schema of “${inst.domain}” — shared by every component on it` }), schemaEditor(inst.domain), rm);
@@ -429,7 +436,7 @@ function renderProps() {
 
 function schemaEditor(domain) {
   const schema = (app.schemas[domain] ??= defaultSchema(domain));
-  const touch = () => { save(); liveDb = null; renderDef(); };
+  const touch = () => { save(); rt.invalidate(); renderDef(); };
   const type = el("input", { value: schema.type, title: "Record type name" });
   type.oninput = () => { schema.type = type.value.trim(); touch(); };
   const rows = schema.fields.map((f, i) => {
@@ -480,6 +487,7 @@ const renderDef = () => { $("def").textContent = JSON.stringify(app, null, 2); }
 function renderTracePanel() {
   const box = $("trace");
   if (!box) return;
+  const publishedDb = rt.publishedDb;
   if (!publishedDb) {
     box.replaceChildren(el("p", { className: "note", textContent:
       "Traces show what an operation actually did on the network. Publish this project first." }));
@@ -496,6 +504,6 @@ function render() {
 }
 
 $("publish").onclick = doPublish;
-$("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; liveDb = null; save(); render(); };
-$("preview").onclick = () => { preview = !preview; liveDb = null; render(); };
+$("clear").onclick = () => { app.components = []; app.seed = {}; sel = -1; rt.invalidate(); save(); render(); };
+$("preview").onclick = () => { preview = !preview; rt.invalidate(); render(); };
 render();

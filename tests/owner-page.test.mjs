@@ -1,0 +1,179 @@
+// THE PAGE, for builder#54 and #57 — the two audit findings reproduced where
+// they were found: in headless Chrome, through the real page.
+//
+// `tests/project-runtime.test.mjs` proves the owner. This proves app.js USES
+// it: a correct owner nobody consults behaves exactly like the old globals.
+//
+//   #57  preview -> design -> preview. The second preview used to render
+//        nothing: `mounting` was set and never cleared outside the publish
+//        path, so the page skipped the mount for good.
+//   #54  publish A (an injected provisioned backend over a second real SDK
+//        Db — no node), then New project. B used to read "Published", with
+//        nothing requested, on A's backend.
+//
+// Screenshots are written beside each assertion (SHOTS dir printed at the end)
+// because a screenshot caught a data-losing bug here that no test could.
+import assert from "node:assert";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const PORT = 8098, DEBUG = 9334;
+const SHOTS = process.env.SHOTS ?? mkdtempSync(join(tmpdir(), "cw-owner-shots-"));
+mkdirSync(SHOTS, { recursive: true });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const server = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "127.0.0.1"], { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
+const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", "--window-size=1280,800", `--remote-debugging-port=${DEBUG}`, `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-owner-"))}`, "about:blank"], { stdio: "ignore" });
+const done = code => { server.kill(); chrome.kill(); process.exit(code); };
+// And a budget for the whole run, whatever it is stuck on.
+setTimeout(() => { console.error("owner page FAILED: the run exceeded its 90 s budget"); done(1); }, 90_000).unref();
+
+try {
+  let target;
+  for (let i = 0; i < 50 && !target; i++) {
+    await sleep(200);
+    try { target = (await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json()).find(t => t.type === "page"); } catch (_) {}
+  }
+  assert.ok(target, "chrome did not start");
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
+  let seq = 0; const waiting = new Map();
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
+  const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  // A DEADLINE ON EVERY CALL. `awaitPromise` waits for the page's promise, and
+  // a page that stalls never settles it — which hung the first control run of
+  // this file past ten minutes with no output. A stall is a failure to report,
+  // not a thing to wait on.
+  const within = (p, ms, what) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(`no answer in ${ms} ms: ${what}`)), ms))]);
+  const evaluate = async expr => {
+    const r = await within(send("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true }), 5000, expr.slice(0, 60));
+    if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "page error");
+    return r.result.result.value;
+  };
+  const until = async (expr, what) => {
+    for (let i = 0; i < 80; i++) { if (await evaluate(`return ${expr}`)) return; await sleep(100); }
+    throw new Error(`timed out: ${what}`);
+  };
+  const shot = async name => {
+    const r = await send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(r.result.data, "base64"));
+  };
+  const inputs = `document.querySelectorAll(".rt-comp input").length`;
+  const cards = `document.querySelectorAll("#canvas .comp").length`;
+
+  const app = { components: [{ type: "form", domain: "tasks", mode: "owned" }, { type: "table", domain: "tasks", mode: "owned" }] };
+  const url = extra => `http://127.0.0.1:${PORT}/#${extra}app=${encodeURIComponent(JSON.stringify(app))}`;
+
+  // `ONLY=54` / `ONLY=57` runs one scenario, so each can be checked against
+  // the unfixed page on its own — the first failure would otherwise hide the
+  // second.
+  const only = process.env.ONLY;
+  // ---- builder#57: the auditor's exact sequence --------------------------
+  if (!only || only === "57") {
+  await send("Page.navigate", { url: url("preview=1&") });
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await until(`${inputs} > 0`, "the first preview's inputs");
+  await shot("57-1-first-preview");
+
+  await evaluate(`document.getElementById("preview").click();`);
+  await until(`${cards} === 2`, "two design cards after Back to design");
+  await shot("57-2-back-to-design");
+
+  await evaluate(`document.getElementById("preview").click();`);
+  await until(`document.body.classList.contains("previewing") && ${inputs} > 0`,
+    "the SECOND preview's inputs — this is where it used to stay empty (builder#57)");
+  await shot("57-3-second-preview");
+  const again = await evaluate(`return { previewing: document.body.classList.contains("previewing"), inputs: ${inputs}, cards: ${cards} };`);
+  assert.ok(again.inputs > 0 && again.cards === 0, `second preview did not mount: ${JSON.stringify(again)}`);
+  console.log("ok page: preview -> design -> preview mounts again (builder#57)", JSON.stringify(again));
+  }
+
+  // ---- builder#54: publish A, then New project ---------------------------
+  if (!only || only === "54") {
+  // Design mode, with a node port that is not reserved, and the SDK's `open`
+  // replaced by a provisioned fake over a SECOND real Db — the auditor's
+  // setup. No node is involved.
+  await send("Page.navigate", { url: "about:blank" });
+  await send("Page.navigate", { url: url("node=18080&") });
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await until(`!!document.getElementById("projects-chip")`, "the projects chip");
+  await evaluate(`
+    window.__closed = 0;
+    window.craftec.open = async () => {
+      const db = new window.craftec.Db();
+      db.preload = async () => {};
+      db.trace = () => null;
+      return { db, provisioned: () => true, refused: () => null, exhausted: () => false,
+               close: () => { window.__closed += 1; } };
+    };`);
+  await evaluate(`document.getElementById("publish").click();`);
+  await until(`document.getElementById("publish").textContent === "Published"`, "A to publish");
+  await shot("54-1-A-published");
+
+  await evaluate(`document.getElementById("projects-chip").click();`);
+  await until(`!!document.getElementById("projects-new")`, "the New project button");
+  await evaluate(`document.getElementById("projects-new").click();`);
+  await until(`document.querySelectorAll("#canvas .comp").length === 0`, "B's empty canvas");
+  await sleep(200);
+  await shot("54-2-new-project-B");
+  const b = await evaluate(`
+    const btn = document.getElementById("publish");
+    return { label: btn.textContent, disabled: btn.disabled, closed: window.__closed,
+             addr: document.getElementById("tree-addr").textContent };`);
+  assert.notStrictEqual(b.label, "Published",
+    `B was never published and must not say so (builder#54): ${JSON.stringify(b)}`);
+  assert.strictEqual(b.disabled, false, "B's Publish must be pressable");
+  assert.ok(b.addr.includes("not published"), `B's address line must say it is not published: ${b.addr}`);
+  assert.strictEqual(b.closed, 1, "A's session is closed by the switch, not left running beside B");
+  console.log("ok page: after A publishes, New project B is not Published and A's session is closed (builder#54)", JSON.stringify(b));
+  }
+
+  // ---- `stop` releases EVERY subscription a mount made ---------------------
+  // Since #51 a mount binds once per unique (domain, live, page, direction), so
+  // three components over two domains make TWO subscriptions. The owner
+  // disposes a mount through the `stop` it returns, and that must release
+  // both. Driven in the page because `mountApp` renders into a real DOM.
+  if (!only || only === "stop") {
+  await send("Page.navigate", { url: url("") });
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  const r = await evaluate(`
+    const { mountApp } = await import("/runtime.js");
+    let live = 0, made = 0;
+    const binding = () => {
+      const rows = [];
+      return { limit: 50, reverse: false, rows,
+        subscribe: () => { live += 1; made += 1; return () => { live -= 1; }; },
+        reload: async () => {}, getSnapshot: () => rows, status: () => ({ state: "ready" }) };
+    };
+    const db = { define: async () => {}, put: async () => ({}), bind: () => binding(),
+                 root: () => "", stats: () => ({}), scan: async () => [] };
+    const app = { components: [
+      { type: "table", domain: "a", mode: "owned" },
+      { type: "form", domain: "a", mode: "owned" },
+      { type: "table", domain: "b", mode: "owned" } ], schemas: {} };
+    const root = document.createElement("div");
+    const h = await mountApp(root, {}, app, () => {}, db, "published");
+    const afterMount = live;
+    h.stop();
+    const afterStop = live;
+    // And a mount disowned before it finished subscribes to NOTHING.
+    const before = made;
+    const stale = await mountApp(document.createElement("div"), {}, app, () => {}, db, "published", { alive: () => false });
+    return { afterMount, afterStop, stale, staleMade: made - before };`);
+  assert.ok(r.afterMount > 0, `the mount subscribed to nothing, so this measures nothing: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.afterStop, 0, `stop left subscriptions running: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.stale, null);
+  assert.strictEqual(r.staleMade, 0, "a disowned mount must not subscribe");
+  console.log("ok page: stop releases every subscription the mount made; a disowned mount makes none", JSON.stringify(r));
+  }
+
+  console.log(`\nowner page: all ok  (screenshots: ${SHOTS})`);
+  done(0);
+} catch (e) {
+  console.error("owner page FAILED:", e.message);
+  console.error(`screenshots so far: ${SHOTS}`);
+  done(1);
+}
