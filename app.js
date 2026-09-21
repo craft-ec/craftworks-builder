@@ -137,6 +137,7 @@ mountProjects($("projects"), {
   // and a person can act on each, so each is shown.
   db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
   getCanvas: () => app.components,
+  getDefinition: () => ({ schemas: app.schemas, seed: app.seed, tree: app.tree, versions: app.versions ?? null }),
   setCanvas: (components, project) => {
     // A DIFFERENT PROJECT, so a different runtime. The old one is disposed
     // before anything of the new one exists: its listeners stop, its session
@@ -145,7 +146,20 @@ mountProjects($("projects"), {
     rt = newRuntime();
     app.components = components;
     app.name = project.title;
+    // THE PROJECT'S OWN DEFINITION, not the shared one's leftovers (builder#53).
+    // Every one of these used to survive a switch: open Project 1 and you read
+    // the schemas Project 2 last set, and a new project took the previous
+    // one's version stamp as its own.
+    app.schemas = project.schemas ?? {};
+    app.seed = project.seed ?? {};
+    app.tree = project.tree ?? { realm: "public", identity: null };
+    if (project.versions) app.versions = project.versions; else delete app.versions;
     sel = app.components.length ? 0 : -1;
+    // A project with no stamp yet is stamped with what it is being made with
+    // NOW — the same rule as a new app, and never another project's stamp.
+    stampIfNew();
+    versionsPanel?.refresh();
+    offerUpgrade();
     save();
     render();
   },

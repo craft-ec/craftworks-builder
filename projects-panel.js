@@ -7,7 +7,7 @@
 
 import {
   defineProjectDomains, createProject, listProjects, openProject,
-  addComponent, componentsOf, removeComponent, setComponentProps,
+  addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
   recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
@@ -182,10 +182,78 @@ const newKey = () => globalThis.crypto.randomUUID();
  * A save that fails does not stop the ones after it; its error still reaches
  * its own caller.
  */
+/** Where the pre-upgrade working copy is kept, once, as the recovery store. */
+export const LEGACY_SNAPSHOT_KEY = "craftec.builder.legacy-definition.v1";
+
+/**
+ * Adopt the pre-#53 working copy into the projects that were stored without a
+ * definition — once, from a snapshot. See the call site in `mountProjects`.
+ * `copy` is called only when the snapshot does not exist yet.
+ */
+export async function adoptLegacy({ db, storage, copy, last }) {
+  let snap = null;
+  try { snap = JSON.parse(storage.getItem(LEGACY_SNAPSHOT_KEY) ?? "null"); } catch { snap = null; }
+  if (!snap) {
+    const pending = [];
+    for (const row of await listProjects(db)) {
+      const p = await openProject(db, row.id);
+      // At the first mount of this build, "no definition stored" can only mean
+      // "made before it": every project this build creates stores one.
+      if (p?.legacy) pending.push(p.id);
+    }
+    snap = { taken: Date.now(), copy: JSON.parse(JSON.stringify(copy() ?? {})), last, pending, adopted: [] };
+    // Not stored → nothing adopted this mount. Adopting from a snapshot that
+    // was never kept would be adopting from the live copy by another name.
+    try { storage.setItem(LEGACY_SNAPSHOT_KEY, JSON.stringify(snap)); } catch { return; }
+  }
+  const todo = snap.pending.filter(id => !snap.adopted.includes(id));
+  if (!todo.length) return;
+
+  const listed = [];
+  for (const id of snap.pending) {
+    const p = await openProject(db, id);
+    if (p) listed.push(p);
+  }
+  const domainsOf = p => new Set(p.components.map(c => c.props?.domain).filter(Boolean));
+  const binders = d => listed.filter(p => domainsOf(p).has(d)).map(p => p.id);
+  const claimed = new Set(listed.flatMap(p => [...domainsOf(p)]));
+  const { schemas = {}, seed = {}, tree = null, versions = null } = snap.copy;
+  const seedOwner = d => {
+    const b = binders(d);
+    if (b.length === 1) return b[0];
+    if (b.includes(snap.last)) return snap.last;
+    return null;   // the rows stay in the snapshot
+  };
+
+  for (const id of todo) {
+    const p = listed.find(x => x.id === id);
+    // STILL legacy, checked NOW. The definition is written before the marker,
+    // so a marker write that fails — or a page that dies between the two —
+    // leaves a project adopted but unmarked, and the person may have defined
+    // it since. Adopting again from the older snapshot would overwrite that.
+    if (p?.legacy) {
+      const isLast = id === snap.last;
+      const own = domainsOf(p);
+      // The last-opened project also keeps copy domains NO listed project binds:
+      // they were set in the open project and nothing else can claim them.
+      const mine = d => own.has(d) || (isLast && !claimed.has(d));
+      await saveDefinition(db, id, {
+        schemas: Object.fromEntries(Object.entries(schemas).filter(([d]) => mine(d))),
+        seed: Object.fromEntries(Object.entries(seed).filter(([d]) => mine(d) && (seedOwner(d) === id || (isLast && !claimed.has(d))))),
+        tree: isLast ? (tree ?? { realm: "public", identity: null }) : { realm: "public", identity: null },
+        versions: isLast ? versions : null,
+      });
+    }
+    // RECORDED, adopted or not, so it never runs for this project again.
+    snap.adopted.push(id);
+    try { storage.setItem(LEGACY_SNAPSHOT_KEY, JSON.stringify(snap)); } catch { return; }
+  }
+}
+
 export function serialSaves(save) {
   let tail = Promise.resolve();
-  return (pid, canvas) => {
-    const run = tail.then(() => save(pid, canvas));
+  return (...args) => {
+    const run = tail.then(() => save(...args));
     tail = run.catch(() => {});
     return run;
   };
@@ -194,13 +262,24 @@ export function serialSaves(save) {
 export async function mountProjects(host, {
   db,
   getCanvas,          // () => the builder's current components
-  setCanvas,          // (components, project) => load them into the builder
+  // () => the rest of what the open project is MADE OF: schemas, seed, tree
+  // binding, version stamp (builder#53). Saved beside the components; without
+  // it they lived only on the builder's one shared app object.
+  //
+  // NO DEFAULT. `() => ({})` looked like a no-op and was a WIPE: `persist`
+  // hands it to `saveDefinition`, which removes every domain record the
+  // project has. A caller that supplies none gets its definition left alone.
+  getDefinition = null,
+  setCanvas,          // (components, project) => load them, and project's definition, into the builder
   storage = globalThis.localStorage,
   onChange = () => {},
 }) {
   await defineProjectDomains(db);
   // Every save of this panel goes through here, one at a time (builder#49).
-  const save = serialSaves((pid, canvas) => saveCanvas(db, pid, canvas));
+  const save = serialSaves(async (pid, canvas, definition) => {
+    await saveCanvas(db, pid, canvas);
+    if (definition) await saveDefinition(db, pid, definition);
+  });
   let open = false;
   // True while a project is being loaded INTO the builder; see `choose`.
   let loading = false;
@@ -282,8 +361,16 @@ export async function mountProjects(host, {
     const p = await createProject(db, { title });
     writeDeviceSettings(storage, { lastOpened: p.id });
     loading = true;
-    try { setCanvas([], { ...p, title, components: [] }); }
+    // A new project inherits NOTHING from the one that was open: no schemas,
+    // no seed, the default binding, and no version stamp — it is stamped with
+    // what it is made with now, not with what another project was made with.
+    try { setCanvas([], { ...p, title, components: [], schemas: {}, seed: {}, tree: null, versions: null }); }
     finally { loading = false; }
+    // STORED NOW, not at the first edit. The handover stamps the new project
+    // with the versions it is made with, inside `loading`, which suppresses the
+    // save — so without this a reload before any edit re-stamped it with
+    // whatever the builder was by then, and "stamped once" would not hold.
+    await persist();
     await paint();
     onChange();
   }
@@ -298,7 +385,10 @@ export async function mountProjects(host, {
       forked_from: { project: from },
     });
     // Through the same one-at-a-time chain as `persist`, or the two overlap.
-    await save(p.id, getCanvas());
+    // A duplicate is a copy of the definition too — the same schemas, seed and
+    // stamp — or "copy" would mean "the components, over whatever is lying
+    // around".
+    await save(p.id, getCanvas(), getDefinition ? getDefinition() : null);
     writeDeviceSettings(storage, { lastOpened: p.id });
     await paint();
     onChange();
@@ -337,9 +427,13 @@ export async function mountProjects(host, {
     if (loading) return;   // see `choose`
     const pid = current();
     if (!pid) return;
-    // Project and canvas NAMED now, before waiting on any earlier save (the
-    // canvas by reference — see `serialSaves`).
-    await save(pid, getCanvas());
+    // Project, canvas AND definition NAMED now, before waiting on any earlier
+    // save (see `serialSaves`). The definition rides the SAME chain: it is a
+    // diff like the canvas, and two overlapping runs of it would duplicate
+    // domain records exactly as overlapping canvas saves duplicated components.
+    // No `getDefinition`, no definition write — never an empty one, which is a
+    // wipe.
+    await save(pid, getCanvas(), getDefinition ? getDefinition() : null);
     await paint();
   }
 
@@ -367,10 +461,35 @@ export async function mountProjects(host, {
     if (open && !pop.contains(e.target) && e.target !== chip) { open = false; pop.hidden = true; }
   });
 
+  // PROJECTS FROM BEFORE builder#53 have no stored definition: their schemas
+  // and seeds lived only in the builder's one shared working copy. Opened as
+  // they are, each would show an empty definition and its first edit would
+  // store that — losing the schema for good. So they ADOPT from that copy.
+  //
+  // From a SNAPSHOT, never the live copy (review of builder#67). The live copy
+  // keeps changing — the next project someone builds writes its schemas there
+  // — so adopting from it at a later mount hands one project another's data.
+  // At the FIRST mount of this build the copy is still the pre-upgrade one; it
+  // is copied, once, to its own key, together with the list of projects that
+  // had no definition AT THAT MOMENT, and the last-opened id. Only the
+  // projects on that list ever adopt, and only from that snapshot. It is kept
+  // afterwards: it is the recovery store for what the upgrade inherited.
+  //
+  // Each adoption is RECORDED in the snapshot — even one that adopted zero
+  // domains — so "done" is a fact, not inferred from three nulls.
+  //
+  // SEED IS NOT SCHEMA. A schema for domain `d` describes records; every
+  // listed project that binds `d` adopts it. Seed rows ARE records — one
+  // project's typed data — so rows for `d` go to exactly one project: the sole
+  // binder of `d`, else the last-opened if it binds `d`, else none (they stay
+  // in the snapshot). Two projects on the default `tables` domain would
+  // otherwise each store the other's rows.
+  const last = current();
+  if (getDefinition) await adoptLegacy({ db, storage, copy: getDefinition, last });
+
   await paint();
   // Reopen what this DEVICE had open — never a synced value, which would be
   // wrong on a second device.
-  const last = current();
   if (last) {
     const project = await openProject(db, last);
     if (project) setCanvas(project.components.map(fromRecord), project);
