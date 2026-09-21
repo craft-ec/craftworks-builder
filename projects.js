@@ -215,6 +215,64 @@ export async function removeComponent(db, componentId) {
   return db.delete(COMPONENT, componentId);
 }
 
+/**
+ * What the builder keeps on a component, under ONE reserved name in its props:
+ * `{ key, gen }`. `key` says which canvas component a record is; `gen` counts
+ * that component's writes. Reserved, so a component type with a `key` field of
+ * its own is never mistaken for it (builder#49).
+ */
+export const BUILDER = "_builder";
+const builderOf = r => dec(r.fields.props)?.[BUILDER] ?? {};
+
+/**
+ * For each component key, the record that IS that component (builder#49).
+ *
+ * Two records carry one key when an add landed but its answer was lost and a
+ * later save's removal of it was refused, or when saves overlapped. The winner
+ * is the one WRITTEN MOST — the highest generation, which every write of the
+ * component bumps. Not the larger id (that only ever meant "added later":
+ * an update keeps the id) and not `updated` (a clock: on `LocalDb` both ids and
+ * times are `Date.now()`, and a clock stepping back made the FRESH record lose
+ * and the next save delete the edit — measured in review).
+ *
+ * Ties — equal generations, which only a genuine race produces — fall to
+ * `updated`, then to the id. Those are not claims of freshness; they make the
+ * choice DETERMINISTIC, so the same stored state resolves the same way on
+ * every open and every device.
+ */
+export function recordPerComponentKey(records) {
+  const winner = new Map();
+  const rank = r => [builderOf(r).gen ?? 0, r.updated ?? 0, r.id];
+  const beats = (a, b) => {
+    const [x, y] = [rank(a), rank(b)];
+    for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i];
+    return false;
+  };
+  for (const r of records) {
+    const key = componentKey(r);
+    if (!key) continue;
+    const had = winner.get(key);
+    if (!had || beats(r, had)) winner.set(key, r);
+  }
+  return winner;
+}
+
+/**
+ * One record per canvas component, as the load path shows them. Records with
+ * no key (saved before keys existed) are each their own component and are
+ * never collapsed.
+ */
+export function oneRecordPerComponent(records) {
+  const winner = recordPerComponentKey(records);
+  return records.filter(r => {
+    const key = componentKey(r);
+    return !key || winner.get(key) === r;
+  });
+}
+
+/** Which canvas component a record is: the key `saveCanvas` stored, if any. */
+export const componentKey = r => builderOf(r).key;
+
 /** Open a project: its record and its components, decoded. */
 export async function openProject(db, pid) {
   // `db.get` THROWS on an id it cannot parse rather than answering "not
@@ -225,7 +283,7 @@ export async function openProject(db, pid) {
   let project = null;
   try { project = await db.get(PROJECT, pid); } catch { return null; }
   if (!project) return null;
-  const components = (await componentsOf(db, pid)).map(r => ({
+  const components = oneRecordPerComponent(await componentsOf(db, pid)).map(r => ({
     id: r.id,
     kind: r.fields.kind,
     layout: dec(r.fields.layout),
