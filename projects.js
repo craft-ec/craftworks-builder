@@ -240,9 +240,11 @@ export async function removeComponent(db, componentId) {
 
 /**
  * What the builder keeps on a component, under ONE reserved name in its props:
- * `{ key, gen }`. `key` says which canvas component a record is; `gen` counts
- * that component's writes. Reserved, so a component type with a `key` field of
- * its own is never mistaken for it (builder#49).
+ * `{ key, gen, by }`. `key` says which canvas component a record is; `gen`
+ * counts that component's writes; `by` names the tab that made the write, so a
+ * write's token `{ gen, by }` is unique to it (builder#74). Reserved, so a
+ * component type with a `key` field of its own is never mistaken for it
+ * (builder#49).
  */
 export const BUILDER = "_builder";
 const builderOf = r => dec(r.fields.props)?.[BUILDER] ?? {};
@@ -252,8 +254,13 @@ const builderOf = r => dec(r.fields.props)?.[BUILDER] ?? {};
  *
  * Two records carry one key when an add landed but its answer was lost and a
  * later save's removal of it was refused, or when saves overlapped. The winner
- * is the one WRITTEN MOST — the highest generation, which every write of the
- * component bumps. Not the larger id (that only ever meant "added later":
+ * has the highest generation, which every write of the component bumps.
+ *
+ * `gen` IS A PER-KEY WRITE COUNTER, NOT FRESHNESS. It chooses one record
+ * deterministically, and it is a holder's base version. It does not say which
+ * content is newest: with two tabs holding one project, the write with the
+ * highest count was, before builder#74, a stale copy written back over the
+ * other tab's edit. Newer is decided per holder, against its base. Not the larger id (that only ever meant "added later":
  * an update keeps the id) and not `updated` (a clock: on `LocalDb` both ids and
  * times are `Date.now()`, and a clock stepping back made the FRESH record lose
  * and the next save delete the edit — measured in review).
