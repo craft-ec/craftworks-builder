@@ -392,8 +392,17 @@ export async function mountProjects(host, {
   // wrong on a second device.
   const last = current();
   if (last) {
-    const project = await openProject(db, last);
+    let project = await openProject(db, last);
+    // A project from before builder#53 has no stored definition. The shared
+    // working copy the builder loaded IS the definition of the project that
+    // was open — this one — so it is adopted and stored rather than replaced
+    // by an empty one, which saved back would have deleted a person's real
+    // schemas on the first load after the upgrade. Only for the last-opened
+    // project: any other legacy project never had its definition stored, and
+    // guessing it from the working copy would be the old bug again.
+    if (project?.legacy) project = { ...project, ...getDefinition() };
     if (project) setCanvas(project.components.map(fromRecord), project);
+    if (project?.legacy) await persist();
   }
   return { persist, refresh: paint, openProjectId: current, published };
 }

@@ -81,6 +81,45 @@ try {
     await sleep(400);   // the save is asynchronous
   };
 
+  // 0. AN EXISTING PROJECT FROM BEFORE THIS CHANGE keeps its schema. Its
+  // schema lived only in the shared working copy ("craftec.builder.app.v2"),
+  // never with the project. Opening it with an empty definition and saving
+  // that back would have deleted a person's real schema on the first load
+  // after the deploy.
+  if (process.env.ONLY !== "main") {
+  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await evaluate(`
+    localStorage.clear();
+    const { LocalDb } = await import("/local-db.js");
+    const P = await import("/projects.js");
+    const db = new LocalDb();
+    await P.defineProjectDomains(db);
+    const p = await P.createProject(db, { title: "Old project" });   // stored the OLD way: no definition
+    await P.addComponent(db, p.id, { kind: "table", props: { domain: "tables", mode: "owned" } });
+    localStorage.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p.id }));
+    localStorage.setItem("craftec.builder.app.v2", JSON.stringify({
+      name: "Old project", tree: { realm: "public", identity: null },
+      components: [{ type: "table", domain: "tables", mode: "owned" }],
+      schemas: { tables: { type: "SchemaOld", fields: [{ name: "title", kind: "text", required: true }] } },
+      seed: {} }));`);
+  await send("Page.reload", { ignoreCache: true });
+  await sleep(300);
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after seeding an old project");
+  await sleep(600);
+  assert.strictEqual((await def()).schemas?.tables?.type, "SchemaOld",
+    "the last-opened OLD project must keep the schema its working copy held, not open empty");
+  await send("Page.reload", { ignoreCache: true });
+  await sleep(300);
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after a second reload");
+  await sleep(600);
+  assert.strictEqual((await def()).schemas?.tables?.type, "SchemaOld", "and it is now STORED with the project");
+  console.log("ok page: an existing project keeps its schema across the upgrade, and it is now stored with it");
+  await evaluate(`localStorage.clear();`);
+  await send("Page.reload", { ignoreCache: true });
+  await sleep(300);
+  }
+
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
 

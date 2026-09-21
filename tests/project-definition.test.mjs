@@ -81,6 +81,15 @@ for (const [name, make] of backends) {
     assert.deepStrictEqual(Object.keys((await openProject(db, a.id)).schemas), ["tables"]);
   });
 
+  await t(`[${name}] a project stored before #53 says it is LEGACY, and stops saying so once its definition is saved`, async () => {
+    const { db } = await open();
+    const a = await createProject(db, { title: "old" });
+    assert.strictEqual((await openProject(db, a.id)).legacy, true,
+      "no definition stored: the caller must not save an empty one over the working copy's");
+    await saveDefinition(db, a.id, defA);
+    assert.strictEqual((await openProject(db, a.id)).legacy, false);
+  });
+
   await t(`[${name}] definition records are keyed under their project, and the domain declares its parent`, async () => {
     const { db } = await open();
     assert.strictEqual(SCHEMAS[DOMAIN].parent, "pid");

@@ -314,7 +314,8 @@ export async function openProject(db, pid) {
     props: dec(r.fields.props),
   }));
   const schemas = {}, seed = {};
-  for (const r of await domainRecordsOf(db, pid)) {
+  const defs = await domainRecordsOf(db, pid);
+  for (const r of defs) {
     const d = r.fields.domain;
     const sc = dec(r.fields.schema), sd = dec(r.fields.seed);
     if (sc) schemas[d] = sc;
@@ -335,6 +336,11 @@ export async function openProject(db, pid) {
     seed,
     tree: dec(project.fields.tree),
     versions: dec(project.fields.versions),
+    // STORED BEFORE builder#53: nothing of its definition is with it. Its
+    // schemas lived only in the builder's shared working copy, so opening it
+    // with an empty definition and saving that back would DELETE them. The
+    // caller decides what to adopt; see the panel's startup reopen.
+    legacy: defs.length === 0 && project.fields.tree == null && project.fields.versions == null,
   };
 }
 
