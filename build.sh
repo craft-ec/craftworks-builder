@@ -31,6 +31,26 @@ if [ -d .sdk-build ]; then
   done
 fi
 
+# THE ARTEFACTS THIS SCRIPT NEEDS, named ONCE.
+#
+# Two loops used to name them separately: the completeness check listed two,
+# and the copy below listed three. So a build producing the first two and not
+# the rest earned a `.complete` marker, became a permanent HIT, and died at
+# the copy with "the SDK build has no block.wasm" — the exact failure the
+# marker exists to prevent, still reachable by half the artefacts.
+#
+# The comment above the check said "EVERY artefact this script goes on to
+# copy", which was false, and A COMMENT CLAIMING A PROPERTY IS A PLACE THE
+# PROPERTY STOPS BEING VERIFIED: it reads like the check, so nobody checks
+# the check. The same reasoning is already written below for why the `.js`
+# copy is a glob rather than a list — a list is correct on the day it is
+# written and silently wrong afterwards. One list up here, both loops read
+# it, and they cannot drift.
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm engine_delegate.wasm block.wasm register.wasm"
+# The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
+# is copied by the bundle step above, so it is checked but not re-copied.
+COPIED_ARTEFACTS="engine_delegate.wasm block.wasm register.wasm"
+
 out=.sdk-build/$rev
 
 # A CACHE HIT MEANS COMPLETE, NOT PRESENT.
@@ -48,10 +68,40 @@ out=.sdk-build/$rev
 # exited 0 and every artefact this script copies is present. A partial
 # directory has no marker, is a MISS, and is rebuilt.
 complete=$out/.complete
-if [ ! -f "$complete" ]; then
+
+# THE MARKER RECORDS WHAT IT VERIFIED, and a hit re-checks it.
+#
+# A marker that only says "I existed" has the same weakness one level up as
+# the check it replaced: it asserts completeness rather than verifying it, so
+# a directory that was complete when the marker was written and has been
+# damaged since still reads as a hit.
+#
+# That is not hypothetical — it happened here. A test wrote the 7-byte string
+# "partial" over the cached `craftworks_sdk_bg.wasm` and restored the marker
+# afterwards, leaving a cache that reported itself COMPLETE while holding a
+# corrupt artefact. The only tell would have been `(7 B wasm)` in a success
+# line nobody reads.
+#
+# So the marker holds each artefact's size, and a hit compares them. Sizes
+# rather than hashes because this runs on every build and a mismatch of ANY
+# kind means rebuild — the cheap check is the right one when the answer to a
+# difference is always the same.
+cache_is_sound() {
+  [ -f "$complete" ] || return 1
+  for want in $WASM_ARTEFACTS; do
+    f=$out/pkg/web/$want
+    [ -f "$f" ] || return 1
+    recorded=$(grep "^$want " "$complete" 2>/dev/null | cut -d' ' -f2)
+    [ -n "$recorded" ] || return 1
+    [ "$(wc -c < "$f" | tr -d ' ')" = "$recorded" ] || return 1
+  done
+  return 0
+}
+
+if ! cache_is_sound; then
   git -C "$repo" cat-file -e "$rev^{commit}" 2>/dev/null ||
     { echo "craftworks-sdk has no commit $rev — run: git -C $repo fetch"; exit 1; }
-  [ -d "$out" ] && echo "  cached SDK build $rev is incomplete — rebuilding"
+  [ -d "$out" ] && echo "  cached SDK build $rev is incomplete or damaged — rebuilding"
   rm -rf "$out" && mkdir -p "$out"
   git -C "$repo" archive "$rev" | tar -x -C "$out"
   # CHECKED. Without this the build could fail and the script carried on to
@@ -60,16 +110,19 @@ if [ ! -f "$complete" ]; then
     echo "the SDK build failed for $rev — see: (cd $out && ./build.sh)" >&2
     exit 1
   fi
-  # EVERY artefact this script goes on to copy, named here so the marker
-  # cannot be written over a build that produced only some of them.
-  for want in pkg/web/craftworks_sdk_bg.wasm pkg/web/engine_delegate.wasm; do
-    [ -f "$out/$want" ] || {
+  # Every artefact this script needs, from the ONE list above.
+  for want in $WASM_ARTEFACTS; do
+    [ -f "$out/pkg/web/$want" ] || {
       echo "the SDK build for $rev exited 0 without producing $want" >&2
       exit 1
     }
   done
-  # LAST. Anything that fails above leaves no marker, so the next run rebuilds.
+  # LAST, and it records what it verified so a later run can check rather
+  # than assume. Anything that fails above leaves no marker at all.
   : > "$complete"
+  for want in $WASM_ARTEFACTS; do
+    echo "$want $(wc -c < "$out/pkg/web/$want" | tr -d ' ')" >> "$complete"
+  done
 fi
 
 rm -rf sdk && mkdir sdk
@@ -96,7 +149,7 @@ cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
 # publish time, not imported, so no import walker finds them and nothing
 # above copies them — and without them Publish fails with a 404 on a path
 # nobody recognises, which is how this was found.
-for a in engine_delegate.wasm block.wasm register.wasm; do
+for a in $COPIED_ARTEFACTS; do
   [ -f "$out/pkg/web/$a" ] || { echo "the SDK build has no $a" >&2; exit 1; }
   cp "$out/pkg/web/$a" sdk/
 done
