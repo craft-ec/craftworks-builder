@@ -290,4 +290,24 @@ await t("storage that refuses to write does not take the builder down", async ()
   assert.deepEqual(next, { lastOpened: "p1" }, "the caller still gets the value it set");
 });
 
+await t("**a stale or malformed project id opens NOTHING, with no catch around the read** (sdk#118)", async () => {
+  const db = await fresh();
+  for (const id of ["not-an-id", "a".repeat(31), "b".repeat(64), "0".repeat(32)]) {
+    assert.strictEqual(await openProject(db, id), null, id);
+  }
+});
+
+await t("**a read that FAILS is reported, not taken for \"no such project\"**", async () => {
+  const db = await fresh();
+  const p = await createProject(db, { title: "Reachable later" });
+  const down = new Proxy(db, { get(o, k) {
+    if (k === "get") return async () => { const e = new Error("the range could not be loaded"); e.code = "UNAVAILABLE"; throw e; };
+    const v = Reflect.get(o, k);
+    return typeof v === "function" ? v.bind(o) : v;
+  } });
+  await assert.rejects(openProject(down, p.id), /could not be loaded/,
+    "swallowed, the builder opened an empty canvas as if the project had been deleted");
+  assert.ok(await openProject(db, p.id), "THE CONTROL: the same project over a working db opens");
+});
+
 process.stdout.write("\nprojects: all ok\n");

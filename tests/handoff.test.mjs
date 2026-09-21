@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadSdk } from "../sdk-loader.js";
-import { handoff, newLedger } from "../handoff.js";
+import { handoff, previewDb } from "../handoff.js";
 import { openApp, schemasOf } from "../runtime-logic.js";
 import { createProjectRuntime } from "../project-runtime.js";
 
@@ -26,17 +26,22 @@ const app = {
 };
 const titles = async (db, d = "tasks") => (await db.scan(d)).map(r => r.fields.title).sort();
 
-/** The preview database exactly as a mount makes it: defined and seeded. */
-const preview = async () => (await openApp(sdk, app, new sdk.Db())).db;
+const PID = "r0projectid0000";
+const SEED_MS = Date.now() - 86_400_000;
+/** The preview database exactly as a mount makes it: defined, seeded, recording deletes. */
+const preview = async () => (await openApp(sdk, app, previewDb(new sdk.Db()))).db;
+/** What the page supplies besides the two databases (builder#83). */
+const ctx = { app, schemas: schemasOf(app), slotFrom: sdk.slotFrom, namespace: PID, seedMs: SEED_MS, published: false, onNotice: () => {} };
 
 await t("**the audit's reproduction: a row entered in Preview reaches the published backend**", async () => {
   const src = await preview();
   await src.put("tasks", { title: "entered" });
   const dst = new sdk.Db();
-  const did = await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger() });
+  const did = await handoff({ source: src, target: dst, ...ctx });
   assert.deepStrictEqual(await titles(dst), ["entered", "seed one", "seed two"],
     "it was 0 rows: the preview db was dropped and nothing copied it");
-  assert.deepStrictEqual(did, { copied: 3, updated: 0, removed: 0, seeded: 0 });
+  // The two seed rows are the definition's, handed off at their seed slots (builder#83).
+  assert.deepStrictEqual(did, { copied: 1, updated: 0, kept: 0, removed: 0, seeded: 2 });
 });
 
 await t("**an EDITED and a DELETED seed row stay edited and deleted**", async () => {
@@ -45,7 +50,7 @@ await t("**an EDITED and a DELETED seed row stay edited and deleted**", async ()
   await src.update("tasks", one.id, { title: "seed one, edited" });
   await src.delete("tasks", two.id);
   const dst = new sdk.Db();
-  await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger() });
+  await handoff({ source: src, target: dst, ...ctx });
   assert.deepStrictEqual(await titles(dst), ["seed one, edited"]);
 
   // And MOUNTING the published backend does not bring the deleted seed row
@@ -64,9 +69,8 @@ await t("THE CONTROL: the default mount DOES seed, so the line above is doing so
 
 await t("**never previewed: the seed is written once, and a retry does not write it twice**", async () => {
   const dst = new sdk.Db();
-  const ledger = newLedger();
-  await handoff({ source: null, target: dst, app, schemas: schemasOf(app), ledger });
-  await handoff({ source: null, target: dst, app, schemas: schemasOf(app), ledger });
+  await handoff({ source: null, target: dst, ...ctx });
+  await handoff({ source: null, target: dst, ...ctx });
   assert.deepStrictEqual(await titles(dst), ["seed one", "seed two"]);
 });
 
@@ -79,11 +83,10 @@ await t("**a partial failure, then a retry: nothing lost, nothing doubled, later
   // The target refuses its third write, as a busy engine would.
   const flaky = new Proxy(dst, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "put") return async (...a) => { if (++puts === 3) throw new Error("Busy"); return v.apply(o, a); };
+    if (k === "createAt") return async (...a) => { if (++puts === 3) throw new Error("Busy"); return v.apply(o, a); };
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  const ledger = newLedger();
-  await assert.rejects(handoff({ source: src, target: flaky, app, schemas: schemasOf(app), ledger }), /Busy/);
+  await assert.rejects(handoff({ source: src, target: flaky, ...ctx }), /Busy/);
   assert.strictEqual((await titles(src)).length, 4, "the source is untouched by a failed handoff");
   assert.strictEqual((await titles(dst)).length, 2, "two copies landed before the refusal");
 
@@ -92,14 +95,14 @@ await t("**a partial failure, then a retry: nothing lost, nothing doubled, later
   await src.update("tasks", first.id, { title: "edited between attempts" });
   await src.put("tasks", { title: "added between attempts" });
 
-  const did = await handoff({ source: src, target: flaky, app, schemas: schemasOf(app), ledger });
+  const did = await handoff({ source: src, target: flaky, ...ctx });
   assert.deepStrictEqual(await titles(dst), (await titles(src)), "the target matches the preview exactly");
   assert.strictEqual(did.copied, 3, "only the three missing rows were copied");
   assert.strictEqual(did.updated, 1, "the edit made between attempts was carried");
 
   // And a THIRD run with nothing changed writes nothing.
-  const again = await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger });
-  assert.deepStrictEqual(again, { copied: 0, updated: 0, removed: 0, seeded: 0 });
+  const again = await handoff({ source: src, target: dst, ...ctx });
+  assert.deepStrictEqual(again, { copied: 0, updated: 0, kept: 0, removed: 0, seeded: 0 });
 });
 
 await t("**an edit in the SAME MILLISECOND as the write before it is still carried**", async () => {
@@ -109,8 +112,7 @@ await t("**an edit in the SAME MILLISECOND as the write before it is still carri
   // by `updated` missed exactly this, in 10 of 20 runs of the retry test.
   const src = await preview();
   const dst = new sdk.Db();
-  const ledger = newLedger();
-  await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger });
+  await handoff({ source: src, target: dst, ...ctx });
   const [first] = await src.scan("tasks");
   const frozen = first.updated;
   await src.update("tasks", first.id, { title: "edited within the same ms" });
@@ -119,19 +121,18 @@ await t("**an edit in the SAME MILLISECOND as the write before it is still carri
     if (k === "scan") return async (...a) => (await v.apply(o, a)).map(r => (r.id === first.id ? { ...r, updated: frozen } : r));
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  const did = await handoff({ source: sameMs, target: dst, app, schemas: schemasOf(app), ledger });
+  const did = await handoff({ source: sameMs, target: dst, ...ctx });
   assert.strictEqual(did.updated, 1, "the edit must be seen even though `updated` did not move");
   assert.deepStrictEqual(await titles(dst), await titles(src));
 });
 
-await t("a row deleted in the preview after a partial attempt is removed from the target", async () => {
+await t("a row deleted in the preview after an earlier attempt is removed from the target", async () => {
   const src = await preview();
   const dst = new sdk.Db();
-  const ledger = newLedger();
-  await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger });
+  await handoff({ source: src, target: dst, ...ctx });
   const [gone] = await src.scan("tasks");
   await src.delete("tasks", gone.id);
-  const did = await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger });
+  const did = await handoff({ source: src, target: dst, ...ctx });
   assert.strictEqual(did.removed, 1);
   assert.deepStrictEqual(await titles(dst), await titles(src));
 });
@@ -154,21 +155,21 @@ await t("**PENDING is not done: the handoff waits until the node says CLEAN**", 
   const src = await preview();
   let clean = false;
   const dst = acking(n => (n > 4 ? (clean = true, "CLEAN") : "PENDING"));
-  await handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: { everyMs: 0, budgetMs: 5_000 } });
+  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, budgetMs: 5_000 } });
   assert.ok(clean, "it returned before any row read CLEAN");
 });
 
 await t("**a ROLLED_BACK write fails the handoff, and says the data is still here**", async () => {
   const src = await preview();
   const dst = acking(() => "ROLLED_BACK");
-  await assert.rejects(handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: fast }),
+  await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: fast }),
     /did not reach the node; your data is still here/);
 });
 
 await t("**never confirmed fails at the deadline instead of waiting for ever**", async () => {
   const src = await preview();
   const dst = acking(() => "PENDING");
-  await assert.rejects(handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: fast }),
+  await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: fast }),
     /not confirmed by the node yet/);
 });
 
@@ -185,10 +186,10 @@ function losesOne(lose = 2) {
   let puts = 0, healthy = false;
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "put") return async (...a) => {
+    if (k === "createAt") return async (...a) => {
       const r = await v.apply(o, a);
       puts += 1;
-      if (!healthy && puts === lose) await o.delete(a[0], r.id);   // the node rolled it back
+      if (!healthy && puts === lose) await o.delete(a[0], r.record.id);   // the node rolled it back
       return r;
     };
     return typeof v === "function" ? v.bind(o) : v;
@@ -200,35 +201,21 @@ async function rollbackThenRetry(run) {
   const src = await preview();
   await src.put("tasks", { title: "row 3" });
   const node = losesOne(2);
-  const ledger = newLedger();
-  const go = () => run({ source: src, target: node.target, app, schemas: schemasOf(app), ledger, confirm: fast });
+  const go = () => run({ source: src, target: node.target, ...ctx, confirm: fast });
   await assert.rejects(go(), /did not reach the node/);
   const after1 = node.puts();
   node.heal();
-  await go();                                         // the retry, on a healthy node
-  return { after1, extra: node.puts() - after1, onNode: await titles(node.target), inPreview: await titles(src) };
+  const did = await go();                             // the retry, on a healthy node
+  return { after1, extra: node.puts() - after1, createdOnRetry: did.copied + did.seeded, onNode: await titles(node.target), inPreview: await titles(src) };
 }
 
 await t("**a copy the node ROLLED BACK is re-copied by the retry, and the retry succeeds**", async () => {
   const r = await rollbackThenRetry(handoff);
-  assert.strictEqual(r.extra, 1, "exactly ONE extra put: the lost row, and nothing else");
+  // Every row is ASKED for again — `createAt` is how a retry finds what is
+  // there — and only the lost one is created: the others answer `exists`.
+  assert.strictEqual(r.extra, 3, "the retry asks for each of the three slots once");
+  assert.strictEqual(r.createdOnRetry, 1, "and creates exactly ONE: the lost row");
   assert.deepStrictEqual(r.onNode, r.inPreview, "all three rows are on the node after the retry");
-});
-
-await t("THE CONTROL: with lost copies REMEMBERED — the code before this fix — the retry can never succeed", async () => {
-  // Self-contained rather than pinned to a commit: the handoff before this fix
-  // differed from this one in exactly one respect on this path — it never
-  // removed a lost copy from the ledger. A ledger whose `delete` does nothing
-  // reproduces that precisely, and cannot become unreachable the way a
-  // rewritten branch's commit does.
-  // The SAME ledger across both attempts, as in the product; only its rows'
-  // `delete` is disabled, once, in place.
-  const remembering = async args => {
-    args.ledger.rows.delete = () => false;
-    return handoff(args);
-  };
-  await assert.rejects(rollbackThenRetry(remembering), /did not reach the node/,
-    "a remembered lost copy is skipped as already copied, and the retry fails the same way, forever");
 });
 
 await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", async () => {
@@ -238,24 +225,22 @@ await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", a
   let puts = 0, slow = true;
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "put") return async (...a) => { puts += 1; return v.apply(o, a); };
+    if (k === "createAt") return async (...a) => { const r = await v.apply(o, a); if (r.outcome === "created") puts += 1; return r; };
     if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: slow ? "PENDING" : "CLEAN" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  const ledger = newLedger();
-  const go = () => handoff({ source: src, target, app, schemas: schemasOf(app), ledger, confirm: fast });
+  const go = () => handoff({ source: src, target, ...ctx, confirm: fast });
   await assert.rejects(go(), /not confirmed by the node yet/);
-  assert.strictEqual(ledger.rows.size, 2, "both copies are still remembered");
   const before = puts;
   slow = false;
   await go();
-  assert.strictEqual(puts - before, 0, "the retry copies nothing again");
+  assert.strictEqual(puts - before, 0, "the retry creates nothing again: the pending copies are found at their slots");
 });
 
 await t("**a record reporting NO state is not counted as confirmed**", async () => {
   const src = await preview();
   const dst = acking(() => undefined);
-  await assert.rejects(handoff({ source: src, target: dst, app, schemas: schemasOf(app), ledger: newLedger(), confirm: fast }),
+  await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: fast }),
     /not confirmed by the node yet/, "absent is UNKNOWN, and unknown waits — it does not say Published");
 });
 
@@ -278,7 +263,7 @@ await t("**a failed handoff leaves the preview in use and the phase 'failed', no
   assert.strictEqual(rt.mountState, "mounted", "and it was not torn down");
 });
 
-await t("and a successful one adopts the backend and hands the ledger through", async () => {
+await t("and a successful one adopts the backend", async () => {
   const src = await preview();
   const target = new sdk.Db();
   const rt = createProjectRuntime({
@@ -286,12 +271,11 @@ await t("and a successful one adopts the backend and hands the ledger through", 
     publish: async () => ({ session: { close() {} }, db: target }),
   });
   await rt.ensureMounted();
-  await rt.publish(app, {}, { after: async () => {} /* not under test: history */, handoff: ({ source, target: to, ledger }) =>
-    handoff({ source, target: to, app, schemas: schemasOf(app), ledger }) });
+  await rt.publish(app, {}, { after: async () => {} /* not under test: history */, handoff: ({ source, target: to }) =>
+    handoff({ source, target: to, ...ctx }) });
   assert.strictEqual(rt.phase, "published");
   assert.strictEqual(rt.publishedDb, target);
   assert.deepStrictEqual(await titles(target), ["seed one", "seed two"]);
-  assert.strictEqual(rt.ledger.rows.size, 2);
 });
 
 console.log("\nhandoff: all ok");

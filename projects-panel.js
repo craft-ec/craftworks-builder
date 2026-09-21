@@ -9,7 +9,7 @@ import { PROJECT,
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
-  recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
+  recordPublication, publicationsOf, hasPublished, nextSeq, recordPerComponentKey,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
 } from "./projects.js";
 
@@ -580,6 +580,39 @@ export async function mountProjects(host, {
     onChange();
   }
 
+  /**
+   * Keep what the builder is SHOWING as a new project, and make it the open
+   * one — for a Publish pressed with no project open (builder#83).
+   *
+   * A publish is keyed by its project, so it needs one; the person pressed
+   * Publish on an app they can see, and the builder can do this step for them.
+   * It is `create` minus the handover: `setCanvas` would dispose the runtime,
+   * and with it the Preview whose records this publish is about to copy. The
+   * canvas and definition are already the builder's, so they are saved as
+   * they are, through the same chain every save takes.
+   *
+   * Answers null when a project is already open: nothing to adopt, and never a
+   * second project. "Open" means the record EXISTS — a `lastOpened` naming a
+   * project deleted elsewhere is no project. And one adoption at a time: a
+   * second Publish pressed while the first is adopting gets the same project,
+   * not another.
+   */
+  let adopting = null;
+  function adopt({ title } = {}) {
+    adopting ??= (async () => {
+      const open = current();
+      if (open && await db.get(PROJECT, open)) return null;
+      const name = title || `Project ${(await listProjects(db)).length + 1}`;
+      const p = await createProject(db, { title: name });
+      writeDeviceSettings(storage, { lastOpened: p.id });
+      await save(p.id, getCanvas(), getDefinition ? getDefinition() : null);
+      await paint();
+      onChange();
+      return { id: p.id, created: p.fields.created, title: name };
+    })().finally(() => { adopting = null; });
+    return adopting;
+  }
+
   /** Duplicate the open project, recording where it came from. */
   async function duplicate() {
     const from = current();
@@ -699,5 +732,5 @@ export async function mountProjects(host, {
     const project = await openProject(db, last);
     if (project) setCanvas(canvasOf(project), project);
   }
-  return { persist, refresh: paint, openProjectId: current, published };
+  return { persist, refresh: paint, openProjectId: current, published, adopt, hasPublished: pid => hasPublished(db, pid) };
 }

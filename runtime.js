@@ -3,6 +3,7 @@
 import { byType } from "./catalogue.js";
 import { openApp, toFields, display, headline, inputType, readsNewestFirst, pageView } from "./runtime-logic.js";
 import { show, isLive, rowState } from "./publish-state.js";
+import { previewDb } from "./handoff.js";
 
 /**
  * How many rows a component reads.
@@ -37,7 +38,12 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // after that must not paint the canvas, must not report data, and must not
   // leave listeners behind. Checked after every await, because each await is
   // a point where the world can have moved on (builder#54, #57).
-  const { db, problems, schemas } = await openApp(sdk, app, backend ?? new sdk.Db(), { seed });
+  //
+  // The preview db RECORDS its deletes and which rows are the seed
+  // (`previewDb`): a delete made in it is the only proof a handoff accepts
+  // that a person removed a row, and a seed row is handed off by its place in
+  // the definition (builder#83).
+  const { db, problems, schemas } = await openApp(sdk, app, backend ?? previewDb(new sdk.Db()), { seed });
   if (!alive()) return null;
   const editing = {}; // domain → record being edited
   const report = d => { if (alive()) onData(d); };

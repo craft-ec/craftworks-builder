@@ -152,6 +152,29 @@ try {
     { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   await shot("54-1-A-published");
 
+  // NO PROJECT WAS OPEN — the app came from a link — so Publish kept it as one
+  // first and published under its id (builder#83). What the person did is
+  // unchanged; what is now TRUE of the store is asserted, not assumed.
+  const store = `(() => {
+    const ns = "craftec.builder.db.v1/r/";
+    const rows = p => Object.keys(localStorage).filter(k => k.startsWith(ns + p + "/")).map(k => JSON.parse(localStorage.getItem(k)));
+    const device = JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}");
+    return { projects: rows("project").map(r => ({ id: r.id, title: r.fields.title })),
+             publications: rows("project.publication").map(r => r.fields.pid),
+             open: device.lastOpened ?? null,
+             note: document.getElementById("storage-note")?.textContent ?? "" };
+  })()`;
+  const a = await evaluate(`return ${store}`);
+  assert.strictEqual(a.projects.length, 1, `Publish kept the app as ONE project: ${JSON.stringify(a)}`);
+  assert.strictEqual(a.open, a.projects[0].id, "and it is the open one");
+  assert.deepStrictEqual(a.publications, [a.projects[0].id], "with one publication record, under its id");
+  assert.match(a.note, /Saved as project “Untitled app” and published\./, "and the person is told");
+  await evaluate(`document.getElementById("projects-chip").click();`);
+  await until(`document.getElementById("projects-pop")?.textContent.includes("Untitled app")`, "the kept project to be listed",
+    { show: `document.getElementById("projects-pop")?.textContent` });
+  await evaluate(`document.getElementById("projects-chip").click();`);
+  console.log("ok page: Publish with no project open keeps the app as a project, opens it, and records its publication (builder#83)", JSON.stringify(a));
+
   await evaluate(`document.getElementById("projects-chip").click();`);
   await until(`!!document.getElementById("projects-new")`, "the New project button");
   await evaluate(`document.getElementById("projects-new").click();`);
@@ -161,7 +184,7 @@ try {
   const state = `({ name: JSON.parse(document.getElementById("def").textContent).name,
     cards: document.querySelectorAll("#canvas .comp").length, closed: window.__closed,
     label: document.getElementById("publish").textContent })`;
-  await until(`(() => { const s = ${state}; return s.name === "Project 1" && s.cards === 0 && s.closed >= 1; })()`,
+  await until(`(() => { const s = ${state}; return s.name === "Project 2" && s.cards === 0 && s.closed >= 1; })()`,
     "B to open and A's session to close", { show: state });
   await shot("54-2-new-project-B");
   const b = await evaluate(`
@@ -174,6 +197,15 @@ try {
   assert.ok(b.addr.includes("not published"), `B's address line must say it is not published: ${b.addr}`);
   assert.strictEqual(b.closed, 1, "A's session is closed by the switch, not left running beside B");
   console.log("ok page: after A publishes, New project B is not Published and A's session is closed (builder#54)", JSON.stringify(b));
+
+  // THE CONTROL: Publish with a project OPEN makes no second project of it.
+  await evaluate(`document.getElementById("publish").click();`);
+  await until(`document.getElementById("publish").textContent === "Published"`, "B to publish",
+    { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
+  const after = await evaluate(`return ${store}`);
+  assert.strictEqual(after.projects.length, 2, `A and B, and no third: ${JSON.stringify(after)}`);
+  assert.strictEqual(after.publications.filter(p => p === after.open).length, 1, "B's one publication, under B");
+  console.log("ok page: Publish with a project open creates no second project", JSON.stringify(after.projects.length));
   }
 
   // ---- `stop` releases EVERY subscription a mount made ---------------------
