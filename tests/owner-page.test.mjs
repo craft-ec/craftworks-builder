@@ -49,9 +49,19 @@ try {
     if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "page error");
     return r.result.result.value;
   };
-  const until = async (expr, what) => {
-    for (let i = 0; i < 80; i++) { if (await evaluate(`return ${expr}`)) return; await sleep(100); }
-    throw new Error(`timed out: ${what}`);
+  // A failed or unanswered evaluate is "not yet", not a failure: one sent while
+  // the page is mid-navigation never answers, and treating that as fatal made
+  // a reload look like a hung page. The condition itself keeps a deadline, and
+  // on timeout the message says what was last SEEN, not only what was wanted.
+  const until = async (expr, what, { ms = 10_000, show = null } = {}) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; } catch (_) { /* not yet */ }
+      await sleep(100);
+    }
+    let seen = "";
+    if (show) { try { seen = ` — last seen: ${JSON.stringify(await evaluate(`return ${show}`))}`; } catch (_) {} }
+    throw new Error(`timed out after ${ms} ms: ${what}${seen}`);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });
@@ -61,16 +71,31 @@ try {
   // storage, and the last-opened one is restored over the `#app=` definition
   // on load — so a scenario that ran after another opened the previous one's
   // project instead of its own. Cleared, then reloaded.
+  // TIME-TO-BADGE IS PRINTED for every navigation, so a slow start is a number
+  // rather than a story. It was suspected that a cold start (fresh profile,
+  // first wasm compile, loaded machine) outran the 5 s deadline; measured, it
+  // did not: 105-114 ms for the first navigation, cold or warm alike, at load
+  // 6.5-11, 12 of 12 runs with every page-test port free. So there is ONE
+  // deadline for every navigation, and the earlier "no answer in 5000 ms"
+  // failures are not explained by a slow start.
+  let navigations = 0;
+  const badge = `document.getElementById("sdk")?.textContent.startsWith("SDK ")`;
+  const toBadge = async what => {
+    const n = ++navigations;
+    const t0 = Date.now();
+    await until(badge, `${what} (navigation ${n})`,
+      { ms: 15_000, show: `({ badge: document.getElementById("sdk")?.textContent ?? null, readyState: document.readyState })` });
+    console.log(`  time-to-badge ${Date.now() - t0} ms — navigation ${n}: ${what}`);
+  };
   const fresh = async extra => {
     await send("Page.navigate", { url: url(extra) });
-    await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+    await toBadge("SDK badge");
     // THE PAGE PROVES IT IS THIS TREE: it fetches this run's nonce through
     // its own origin. A foreign server on a stale port cannot answer it.
     assert.strictEqual(await evaluate(pageProof), nonce, "owner page: the page is not served from this tree");
     await evaluate(`localStorage.clear(); sessionStorage.clear();`);
     await send("Page.reload", { ignoreCache: true });
-    await sleep(300);
-    await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after reset");
+    await toBadge("SDK badge after reset");
   };
   const inputs = `document.querySelectorAll(".rt-comp input").length`;
   const cards = `document.querySelectorAll("#canvas .comp").length`;
@@ -124,8 +149,14 @@ try {
   await evaluate(`document.getElementById("projects-chip").click();`);
   await until(`!!document.getElementById("projects-new")`, "the New project button");
   await evaluate(`document.getElementById("projects-new").click();`);
-  await until(`document.querySelectorAll("#canvas .comp").length === 0`, "B's empty canvas");
-  await sleep(200);
+  // WAIT ON THE SWITCH ITSELF — B open and A's session closed — not on "the
+  // canvas has no cards", which is a proxy that can be true before the switch
+  // has run. On timeout the message prints what the page actually showed.
+  const state = `({ name: JSON.parse(document.getElementById("def").textContent).name,
+    cards: document.querySelectorAll("#canvas .comp").length, closed: window.__closed,
+    label: document.getElementById("publish").textContent })`;
+  await until(`(() => { const s = ${state}; return s.name === "Project 1" && s.cards === 0 && s.closed >= 1; })()`,
+    "B to open and A's session to close", { show: state });
   await shot("54-2-new-project-B");
   const b = await evaluate(`
     const btn = document.getElementById("publish");
@@ -146,7 +177,7 @@ try {
   // both. Driven in the page because `mountApp` renders into a real DOM.
   if (!only || only === "stop") {
   await send("Page.navigate", { url: url("") });
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await toBadge("SDK badge (stop scenario)");
   const r = await evaluate(`
     const { mountApp } = await import("/runtime.js");
     let live = 0, made = 0;
