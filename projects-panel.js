@@ -182,6 +182,70 @@ const newKey = () => globalThis.crypto.randomUUID();
  * A save that fails does not stop the ones after it; its error still reaches
  * its own caller.
  */
+/** Where the pre-upgrade working copy is kept, once, as the recovery store. */
+export const LEGACY_SNAPSHOT_KEY = "craftec.builder.legacy-definition.v1";
+
+/**
+ * Adopt the pre-#53 working copy into the projects that were stored without a
+ * definition — once, from a snapshot. See the call site in `mountProjects`.
+ * `copy` is called only when the snapshot does not exist yet.
+ */
+export async function adoptLegacy({ db, storage, copy, last }) {
+  let snap = null;
+  try { snap = JSON.parse(storage.getItem(LEGACY_SNAPSHOT_KEY) ?? "null"); } catch { snap = null; }
+  if (!snap) {
+    const pending = [];
+    for (const row of await listProjects(db)) {
+      const p = await openProject(db, row.id);
+      // At the first mount of this build, "no definition stored" can only mean
+      // "made before it": every project this build creates stores one.
+      if (p?.legacy) pending.push(p.id);
+    }
+    snap = { taken: Date.now(), copy: JSON.parse(JSON.stringify(copy() ?? {})), last, pending, adopted: [] };
+    // Not stored → nothing adopted this mount. Adopting from a snapshot that
+    // was never kept would be adopting from the live copy by another name.
+    try { storage.setItem(LEGACY_SNAPSHOT_KEY, JSON.stringify(snap)); } catch { return; }
+  }
+  const todo = snap.pending.filter(id => !snap.adopted.includes(id));
+  if (!todo.length) return;
+
+  const listed = [];
+  for (const id of snap.pending) {
+    const p = await openProject(db, id);
+    if (p) listed.push(p);
+  }
+  const domainsOf = p => new Set(p.components.map(c => c.props?.domain).filter(Boolean));
+  const binders = d => listed.filter(p => domainsOf(p).has(d)).map(p => p.id);
+  const claimed = new Set(listed.flatMap(p => [...domainsOf(p)]));
+  const { schemas = {}, seed = {}, tree = null, versions = null } = snap.copy;
+  const seedOwner = d => {
+    const b = binders(d);
+    if (b.length === 1) return b[0];
+    if (b.includes(snap.last)) return snap.last;
+    return null;   // the rows stay in the snapshot
+  };
+
+  for (const id of todo) {
+    const p = listed.find(x => x.id === id);
+    if (p) {
+      const isLast = id === snap.last;
+      const own = domainsOf(p);
+      // The last-opened project also keeps copy domains NO listed project binds:
+      // they were set in the open project and nothing else can claim them.
+      const mine = d => own.has(d) || (isLast && !claimed.has(d));
+      await saveDefinition(db, id, {
+        schemas: Object.fromEntries(Object.entries(schemas).filter(([d]) => mine(d))),
+        seed: Object.fromEntries(Object.entries(seed).filter(([d]) => mine(d) && (seedOwner(d) === id || (isLast && !claimed.has(d))))),
+        tree: isLast ? (tree ?? { realm: "public", identity: null }) : { realm: "public", identity: null },
+        versions: isLast ? versions : null,
+      });
+    }
+    // RECORDED, adopted or not, so it never runs for this project again.
+    snap.adopted.push(id);
+    try { storage.setItem(LEGACY_SNAPSHOT_KEY, JSON.stringify(snap)); } catch { return; }
+  }
+}
+
 export function serialSaves(save) {
   let tail = Promise.resolve();
   return (...args) => {
@@ -396,51 +460,28 @@ export async function mountProjects(host, {
   // PROJECTS FROM BEFORE builder#53 have no stored definition: their schemas
   // and seeds lived only in the builder's one shared working copy. Opened as
   // they are, each would show an empty definition and its first edit would
-  // store that — losing the schema for good. So, once, at mount, EVERY such
-  // project adopts from the working copy exactly the domains ITS OWN
-  // components bind to, and stores them.
+  // store that — losing the schema for good. So they ADOPT from that copy.
   //
-  // By its own domains, never the whole copy: a project on domain `a` takes
-  // the schema of `a` and not the one for `b` that another project set. Where
-  // two legacy projects used the SAME domain name, the working copy only ever
-  // held one schema for it, and both adopt that one — the other was
-  // overwritten before this change existed, and no store can recover it.
+  // From a SNAPSHOT, never the live copy (review of builder#67). The live copy
+  // keeps changing — the next project someone builds writes its schemas there
+  // — so adopting from it at a later mount hands one project another's data.
+  // At the FIRST mount of this build the copy is still the pre-upgrade one; it
+  // is copied, once, to its own key, together with the list of projects that
+  // had no definition AT THAT MOMENT, and the last-opened id. Only the
+  // projects on that list ever adopt, and only from that snapshot. It is kept
+  // afterwards: it is the recovery store for what the upgrade inherited.
   //
-  // The binding and version stamp in the copy are the open project's, so only
-  // the last-opened one adopts those.
+  // Each adoption is RECORDED in the snapshot — even one that adopted zero
+  // domains — so "done" is a fact, not inferred from three nulls.
   //
-  // ONCE, and enforced: every project this pass touches LEAVES it non-legacy,
-  // even one whose domains the copy holds nothing for. Left legacy, such a
-  // project would adopt whatever the working copy held at some LATER mount —
-  // another project's schema by then (found in review of builder#67). A
-  // non-last project is given the default binding, which is what it had.
-  //
-  // The last-opened project also keeps every copy domain that NO legacy
-  // project's components bind to: those schemas were set in the open project
-  // and nothing else can claim them, so dropping them would lose them.
+  // SEED IS NOT SCHEMA. A schema for domain `d` describes records; every
+  // listed project that binds `d` adopts it. Seed rows ARE records — one
+  // project's typed data — so rows for `d` go to exactly one project: the sole
+  // binder of `d`, else the last-opened if it binds `d`, else none (they stay
+  // in the snapshot). Two projects on the default `tables` domain would
+  // otherwise each store the other's rows.
   const last = current();
-  if (getDefinition) {
-    const copy = getDefinition();
-    const legacy = [];
-    for (const row of await listProjects(db)) {
-      const p = await openProject(db, row.id);
-      if (p?.legacy) legacy.push(p);
-    }
-    const domainsOf = p => new Set(p.components.map(c => c.props?.domain).filter(Boolean));
-    const claimed = new Set(legacy.flatMap(p => [...domainsOf(p)]));
-    for (const p of legacy) {
-      const isLast = p.id === last;
-      const own = domainsOf(p);
-      const keep = d => own.has(d) || (isLast && !claimed.has(d));
-      const pick = m => Object.fromEntries(Object.entries(m ?? {}).filter(([d]) => keep(d)));
-      await saveDefinition(db, p.id, {
-        schemas: pick(copy.schemas),
-        seed: pick(copy.seed),
-        tree: isLast ? (copy.tree ?? { realm: "public", identity: null }) : { realm: "public", identity: null },
-        versions: isLast ? copy.versions ?? null : null,
-      });
-    }
-  }
+  if (getDefinition) await adoptLegacy({ db, storage, copy: getDefinition, last });
 
   await paint();
   // Reopen what this DEVICE had open — never a synced value, which would be
