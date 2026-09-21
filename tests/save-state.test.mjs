@@ -34,9 +34,20 @@ try {
     if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "page error");
     return r.result.result.value;
   };
-  const until = async (expr, what) => {
-    for (let i = 0; i < 80; i++) { if (await evaluate(`return ${expr}`)) return; await sleep(100); }
-    throw new Error(`timed out: ${what}`);
+  // A failed or unanswered evaluate is "not yet": one sent mid-navigation never
+  // answers. The condition keeps its deadline.
+  const until = async (expr, what, ms = 15_000) => {
+    const end = Date.now() + ms;
+    // The LAST error is kept: "not yet" must not swallow a genuine exception in
+    // the expression, which would otherwise time out looking like a condition
+    // that simply never became true.
+    let lastError = null;
+    while (Date.now() < end) {
+      try { if (await within(evaluate(`return ${expr}`), 2000, what)) return; lastError = null; }
+      catch (e) { lastError = e; }
+      await sleep(100);
+    }
+    throw new Error(`timed out after ${ms} ms: ${what}${lastError ? ` — last error: ${lastError.message}` : ""}`);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });
@@ -52,7 +63,10 @@ try {
   await evaluate(`document.getElementById("projects-chip").click();`);
   await until(`!!document.getElementById("projects-new")`, "New project");
   await evaluate(`document.getElementById("projects-new").click();`);
-  await sleep(300);
+  // Wait for the project to be OPEN, not for a duration: the edit below saves
+  // into whatever project is open, and a guess of 300 ms is a guess.
+  await until(`JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened
+    && document.querySelectorAll(".proj-row").length === 1`, "the new project to open");
   await evaluate(`document.getElementById("projects-chip").click();`);   // close the popover
   // `!== false`, not `=== true`: on a page with no unsaved line at all (main,
   // before this change) the check must fail at the CLAIM below — the line
@@ -95,7 +109,6 @@ try {
     localStorage.setItem("craftec.builder.db.v1/migrated", JSON.stringify({ at: 1 }));
     localStorage.setItem("craftec.builder.db.v1", JSON.stringify({ schemas: {}, records: {}, seq: 0 }));`);
   await send("Page.reload", { ignoreCache: true });
-  await sleep(300);
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after reload");
   await until(`document.getElementById("storage-note")?.hidden === false`, "the older-tab notice");
   await shot("66-older-tab-notice");
