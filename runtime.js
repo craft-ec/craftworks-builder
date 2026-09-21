@@ -19,7 +19,18 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive = () => true, seed = !backend } = {}) {
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive, seed = !backend } = {}) {
+  // NO DEFAULT (builder#73). `() => true` made the guard fail OPEN: a mount
+  // whose runtime was disposed, switched or edited away was never refused, and
+  // nothing said the guard was missing. A caller with no owner to ask says so
+  // with an explicit `() => true`.
+  if (typeof alive !== "function") {
+    throw new Error("mountApp: no `alive` — without it a mount that is no longer wanted would still paint the canvas and keep its listeners");
+  }
+  // `backend = null` means a fresh, in-memory `sdk.Db` below, which KEEPS
+  // NOTHING: safe because a null backend is the preview, whose records reach a
+  // real backend only through the publish handoff, and whose mounts are the
+  // only ones that seed (`seed = !backend`).
   // `alive` says whether this mount is still WANTED. The owner of a project's
   // runtime (project-runtime.js) answers false once the project was switched,
   // the definition edited, or the preview left — and a mount that finishes

@@ -29,6 +29,11 @@ const oldPath = join(dir, "local-db.mjs");
 writeFileSync(oldPath, execFileSync("git", ["show", "aef3994:local-db.js"], { cwd: new URL("..", import.meta.url).pathname }));
 const { LocalDb: OldDb } = await import(oldPath);
 const LEGACY = "craftec.builder.db.v1";
+// LocalDb has no default `onNotice` (builder#73): a store that raises a notice
+// with no one to tell fails. These tests READ `db.notices`, so they pass a
+// listener that keeps them — explicitly.
+const heard = [];
+const NEW = s => new LocalDb(s, undefined, { onNotice: n => heard.push(n) });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const title = async (db, id) => (await db.get("projects", id))?.fields.title;
 
@@ -36,14 +41,14 @@ await t("**the review's four steps: an edit in the new tab survives the old tab 
   const s = storage();
   const old = new OldDb(s);                        // a tab opened before the deploy
   const rec = await old.put("projects", { title: "original" });
-  const fresh = new LocalDb(s);                    // the deploy; a new tab migrates
+  const fresh = NEW(s);                    // the deploy; a new tab migrates
   assert.strictEqual(s.getItem(LEGACY), null, "1. the blob is migrated away");
   await sleep(2);
   await fresh.update("projects", rec.id, { title: "EDITED in the new tab" });
   assert.strictEqual(await title(fresh, rec.id), "EDITED in the new tab", "2. the new tab reads its edit");
   await old.put("projects", { title: "an ordinary edit in the old tab" });
   assert.ok(s.getItem(LEGACY), "3. the old tab resurrects the blob, as it will");
-  const later = new LocalDb(s);                    // any later load
+  const later = NEW(s);                    // any later load
   assert.strictEqual(await title(later, rec.id), "EDITED in the new tab",
     "4. the newer edit must NOT be reverted to the old tab's stale copy");
   assert.strictEqual((await later.scan("projects")).length, 2, "and the old tab's own new project is kept, not dropped");
@@ -53,11 +58,11 @@ await t("**a record DELETED in the new tab stays deleted when the blob comes bac
   const s = storage();
   const old = new OldDb(s);
   const gone = await old.put("projects", { title: "delete me" });
-  const fresh = new LocalDb(s);
+  const fresh = NEW(s);
   await sleep(2);
   await fresh.delete("projects", gone.id);
   await old.put("projects", { title: "old tab edits something else" });   // resurrects `gone` in the blob
-  const later = new LocalDb(s);
+  const later = NEW(s);
   assert.strictEqual(await later.get("projects", gone.id), null, "a resurrected blob must not bring a deleted record back");
 });
 
@@ -65,20 +70,20 @@ await t("an edit made in the OLD tab after the deploy is kept, not discarded", a
   const s = storage();
   const old = new OldDb(s);
   const rec = await old.put("projects", { title: "v1" });
-  new LocalDb(s);
+  NEW(s);
   await sleep(2);
   await old.update("projects", rec.id, { title: "v2 in the old tab" });  // genuinely newer
-  assert.strictEqual(await title(new LocalDb(s), rec.id), "v2 in the old tab");
+  assert.strictEqual(await title(NEW(s), rec.id), "v2 in the old tab");
 });
 
 await t("**a resurrected blob is RECOGNISED and reported: another tab runs an older builder**", async () => {
   const s = storage();
   const old = new OldDb(s);
   await old.put("projects", { title: "x" });
-  const first = new LocalDb(s);
+  const first = NEW(s);
   assert.deepStrictEqual(first.notices, [], "a genuine first-load migration is not a warning");
   await old.put("projects", { title: "y" });
-  const later = new LocalDb(s);
+  const later = NEW(s);
   assert.ok(later.notices.some(n => n.kind === "older-tab"), `expected an older-tab notice, got ${JSON.stringify(later.notices)}`);
 });
 
@@ -91,7 +96,7 @@ await t("THE CONTROL: a genuine first-load migration still moves EVERYTHING", as
   const ids = [];
   for (let i = 0; i < 5; i += 1) ids.push((await old.put("projects", { title: `p${i}` })).id);
   await old.delete("projects", ids[4]);
-  const fresh = new LocalDb(s);
+  const fresh = NEW(s);
   assert.deepStrictEqual((await fresh.scan("projects")).map(r => r.fields.title), ["p0", "p1", "p2", "p3"]);
   assert.deepStrictEqual(await fresh.schema("projects"), { type: "Project", fields: [] });
   assert.strictEqual(s.getItem(LEGACY), null);
@@ -100,7 +105,7 @@ await t("THE CONTROL: a genuine first-load migration still moves EVERYTHING", as
 await t("an UNREADABLE blob is kept and reported, not silently treated as no blob", async () => {
   const s = storage();
   s.setItem(LEGACY, "{not json");
-  const db = new LocalDb(s);
+  const db = NEW(s);
   assert.strictEqual(s.getItem(LEGACY), "{not json", "the only copy of whatever it held is not deleted");
   assert.ok(db.notices.some(n => n.kind === "unreadable-legacy"), `got ${JSON.stringify(db.notices)}`);
 });

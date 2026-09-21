@@ -270,7 +270,7 @@ await t("**a failed handoff leaves the preview in use and the phase 'failed', no
     publish: async () => ({ session: { close: () => { closed.n += 1; } }, db: target }),
   });
   await rt.ensureMounted();
-  await assert.rejects(rt.publish(app, {}, { handoff: async () => { throw new Error("2 of 3 records are not confirmed"); } }));
+  await assert.rejects(rt.publish(app, {}, { after: async () => {} /* not under test: history */, handoff: async () => { throw new Error("2 of 3 records are not confirmed"); } }));
   assert.strictEqual(rt.phase, "failed");
   assert.match(rt.error, /not confirmed/);
   assert.strictEqual(rt.publishedDb, null, "the half-copied backend is not adopted");
@@ -286,7 +286,7 @@ await t("and a successful one adopts the backend and hands the ledger through", 
     publish: async () => ({ session: { close() {} }, db: target }),
   });
   await rt.ensureMounted();
-  await rt.publish(app, {}, { handoff: ({ source, target: to, ledger }) =>
+  await rt.publish(app, {}, { after: async () => {} /* not under test: history */, handoff: ({ source, target: to, ledger }) =>
     handoff({ source, target: to, app, schemas: schemasOf(app), ledger }) });
   assert.strictEqual(rt.phase, "published");
   assert.strictEqual(rt.publishedDb, target);

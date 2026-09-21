@@ -280,7 +280,7 @@ try {
       // it (builder#52: seeding every mount re-added rows and resurrected
       // deleted ones); this check only uses the seed as a way to put a row on
       // an async backend, and its claim — render after reload — is unchanged.
-      await mountApp(root, {}, app, () => {}, db, "published", { seed: true });
+      await mountApp(root, {}, app, () => {}, db, "published", { seed: true, alive: () => true /* no owner here */ });
       return {
         inputs: root.querySelectorAll("input[name=title]").length,
         comps: root.querySelectorAll(".rt-comp").length,
@@ -369,14 +369,14 @@ try {
           { type: "table", domain: "notes", mode: "owned" },
         ],
         schemas: { notes: SCHEMA },
-      }, () => {}, db, "published");
+      }, () => {}, db, "published", { alive: () => true /* no owner here: nothing disposes this mount */ });
       const one = binds.length;
       // A LIST over the same domain is a different read — the newest end, not
       // the first — so it must NOT share the table's binding (builder#51).
       await mountApp(document.createElement("div"), {}, {
         components: [{ type: "table", domain: "notes", mode: "owned" }, { type: "list", domain: "notes", mode: "owned" }],
         schemas: { notes: SCHEMA },
-      }, () => {}, db, "published");
+      }, () => {}, db, "published", { alive: () => true /* no owner here: nothing disposes this mount */ });
       return { binds: one, limits: binds.map(b => b.opts.limit), PAGE,
         directions: binds.slice(one).map(b => b.opts.reverse) };
     `);
@@ -419,7 +419,7 @@ try {
       const { db } = await mountApp(root, sdk, {
         components: [{ type: "list", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
         schemas: { notes: SCHEMA }, seed,
-      }, () => {}, null, "idle");
+      }, () => {}, null, "idle", { alive: () => true /* no owner here: nothing disposes this mount */ });
       const [listC, tableC] = root.querySelectorAll(".rt-comp");
       const items = () => [...listC.querySelectorAll("li > span:first-child")].map(e => e.textContent);
       const more = c => c.querySelector(".rt-more")?.textContent ?? "";
@@ -479,7 +479,7 @@ try {
         liveMode: () => ({ mode: "Polled" }),
       });
       const app = { components: [{ type: "list", domain: "notes", mode: "owned" }], schemas: { notes: SCHEMA } };
-      const tryMount = async honest => { try { await mountApp(document.createElement("div"), {}, app, () => {}, make(honest), "published"); return ""; } catch (e) { return e.message; } };
+      const tryMount = async honest => { try { await mountApp(document.createElement("div"), {}, app, () => {}, make(honest), "published", { alive: () => true /* no owner here: nothing disposes this mount */ }); return ""; } catch (e) { return e.message; } };
       return { old: await tryMount(false), current: await tryMount(true) };
     `);
     assert.match(refused.old, /SDK_REV/, `an SDK that ignored \`reverse\` mounted anyway ("${refused.old}") — the oldest page would be drawn as the newest`);
@@ -557,7 +557,7 @@ try {
       await mountApp(root, {}, {
         components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
         schemas: { notes: SCHEMA },
-      }, () => {}, db, "published");
+      }, () => {}, db, "published", { alive: () => true /* no owner here: nothing disposes this mount */ });
       return { inputs: root.querySelectorAll("input[name=title]").length };`);
     assert.strictEqual(mounted.inputs, 1, "the synchronous backend stopped working");
     console.log("ok e2e CONTROL: and over one whose reads answer at once");
