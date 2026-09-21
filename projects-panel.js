@@ -7,7 +7,7 @@
 
 import {
   defineProjectDomains, createProject, listProjects, openProject,
-  addComponent, componentsOf, removeComponent, setComponentProps,
+  addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
   recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
@@ -184,8 +184,8 @@ const newKey = () => globalThis.crypto.randomUUID();
  */
 export function serialSaves(save) {
   let tail = Promise.resolve();
-  return (pid, canvas) => {
-    const run = tail.then(() => save(pid, canvas));
+  return (...args) => {
+    const run = tail.then(() => save(...args));
     tail = run.catch(() => {});
     return run;
   };
@@ -194,13 +194,20 @@ export function serialSaves(save) {
 export async function mountProjects(host, {
   db,
   getCanvas,          // () => the builder's current components
-  setCanvas,          // (components, project) => load them into the builder
+  // () => the rest of what the open project is MADE OF: schemas, seed, tree
+  // binding, version stamp (builder#53). Saved beside the components; without
+  // it they lived only on the builder's one shared app object.
+  getDefinition = () => ({}),
+  setCanvas,          // (components, project) => load them, and project's definition, into the builder
   storage = globalThis.localStorage,
   onChange = () => {},
 }) {
   await defineProjectDomains(db);
   // Every save of this panel goes through here, one at a time (builder#49).
-  const save = serialSaves((pid, canvas) => saveCanvas(db, pid, canvas));
+  const save = serialSaves(async (pid, canvas, definition) => {
+    await saveCanvas(db, pid, canvas);
+    await saveDefinition(db, pid, definition);
+  });
   let open = false;
   // True while a project is being loaded INTO the builder; see `choose`.
   let loading = false;
@@ -282,8 +289,16 @@ export async function mountProjects(host, {
     const p = await createProject(db, { title });
     writeDeviceSettings(storage, { lastOpened: p.id });
     loading = true;
-    try { setCanvas([], { ...p, title, components: [] }); }
+    // A new project inherits NOTHING from the one that was open: no schemas,
+    // no seed, the default binding, and no version stamp — it is stamped with
+    // what it is made with now, not with what another project was made with.
+    try { setCanvas([], { ...p, title, components: [], schemas: {}, seed: {}, tree: null, versions: null }); }
     finally { loading = false; }
+    // STORED NOW, not at the first edit. The handover stamps the new project
+    // with the versions it is made with, inside `loading`, which suppresses the
+    // save — so without this a reload before any edit re-stamped it with
+    // whatever the builder was by then, and "stamped once" would not hold.
+    await persist();
     await paint();
     onChange();
   }
@@ -298,7 +313,10 @@ export async function mountProjects(host, {
       forked_from: { project: from },
     });
     // Through the same one-at-a-time chain as `persist`, or the two overlap.
-    await save(p.id, getCanvas());
+    // A duplicate is a copy of the definition too — the same schemas, seed and
+    // stamp — or "copy" would mean "the components, over whatever is lying
+    // around".
+    await save(p.id, getCanvas(), getDefinition());
     writeDeviceSettings(storage, { lastOpened: p.id });
     await paint();
     onChange();
@@ -337,9 +355,11 @@ export async function mountProjects(host, {
     if (loading) return;   // see `choose`
     const pid = current();
     if (!pid) return;
-    // Project and canvas NAMED now, before waiting on any earlier save (the
-    // canvas by reference — see `serialSaves`).
-    await save(pid, getCanvas());
+    // Project, canvas AND definition NAMED now, before waiting on any earlier
+    // save (see `serialSaves`). The definition rides the SAME chain: it is a
+    // diff like the canvas, and two overlapping runs of it would duplicate
+    // domain records exactly as overlapping canvas saves duplicated components.
+    await save(pid, getCanvas(), getDefinition());
     await paint();
   }
 

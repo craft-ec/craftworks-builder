@@ -93,6 +93,7 @@
 export const PROJECT = "project";
 export const COMPONENT = "project.component";
 export const PUBLICATION = "project.publication";
+export const DOMAIN = "project.domain";
 
 /** Every domain a project lives in, with its schema. */
 export const SCHEMAS = {
@@ -111,6 +112,12 @@ export const SCHEMAS = {
       { name: "visibility", kind: "text" },
       // Recorded whenever a project is duplicated from another.
       { name: "forked_from", kind: "text" },
+      // WHAT A PROJECT IS MADE OF, beyond its components (builder#53). These
+      // lived on one shared `app` object, so reopening Project 1 showed
+      // whatever Project 2 last set. Appended, and optional: a project stored
+      // before them opens as it did.
+      { name: "tree", kind: "text" },       // the tree binding (realm, identity)
+      { name: "versions", kind: "text" },   // the version stamp it was made with
     ],
   },
   [COMPONENT]: {
@@ -140,6 +147,22 @@ export const SCHEMAS = {
       { name: "schema_block_ids", kind: "text" },
       { name: "published_at", kind: "time" },
       { name: "source_root", kind: "text" },
+    ],
+  },
+  // ONE RECORD PER (PROJECT, DOMAIN): that domain's schema and seed rows, for
+  // this project. Two projects may use the same domain name with different
+  // schemas — each has its own record, keyed under its own project, so neither
+  // can read the other's (builder#53). A record per domain rather than one
+  // field on the project, because a project's domains grow and a value that
+  // grows is many records (ARCHITECTURE §5).
+  [DOMAIN]: {
+    type: "ProjectDomain",
+    parent: "pid",
+    fields: [
+      { name: "pid", kind: "text", required: true },
+      { name: "domain", kind: "text", required: true },
+      { name: "schema", kind: "text" },
+      { name: "seed", kind: "text" },
     ],
   },
 };
@@ -290,6 +313,13 @@ export async function openProject(db, pid) {
     binding: dec(r.fields.binding),
     props: dec(r.fields.props),
   }));
+  const schemas = {}, seed = {};
+  for (const r of await domainRecordsOf(db, pid)) {
+    const d = r.fields.domain;
+    const sc = dec(r.fields.schema), sd = dec(r.fields.seed);
+    if (sc) schemas[d] = sc;
+    if (sd) seed[d] = sd;
+  }
   return {
     id: project.id,
     title: project.fields.title,
@@ -299,7 +329,58 @@ export async function openProject(db, pid) {
     visibility: project.fields.visibility,
     forked_from: dec(project.fields.forked_from),
     components,
+    // The definition, as THIS project stored it. `null`/`{}` where it stored
+    // nothing — never another project's.
+    schemas,
+    seed,
+    tree: dec(project.fields.tree),
+    versions: dec(project.fields.versions),
   };
+}
+
+/** A project's per-domain definition records (schema and seed per domain). */
+export async function domainRecordsOf(db, pid) {
+  return db.children(DOMAIN, pid);
+}
+
+/**
+ * Save what a project is made of beyond its components: each domain's schema
+ * and seed as its own record, the tree binding and version stamp on the project.
+ *
+ * A DIFF, like `saveCanvas`: a domain whose schema and seed are unchanged is
+ * not written, a domain no longer defined loses its record, and the project
+ * record is updated only if its binding or stamp moved. Returns what it did.
+ */
+export async function saveDefinition(db, pid, { schemas = {}, seed = {}, tree = null, versions = null } = {}) {
+  const did = { added: 0, updated: 0, removed: 0, untouched: 0, project: false };
+  const existing = new Map((await domainRecordsOf(db, pid)).map(r => [r.fields.domain, r]));
+  const domains = new Set([...Object.keys(schemas), ...Object.keys(seed)]);
+  for (const d of domains) {
+    const want = { schema: enc(schemas[d] ?? null), seed: enc(seed[d] ?? null) };
+    const rec = existing.get(d);
+    if (!rec) {
+      await db.put(DOMAIN, { pid, domain: d, ...want });
+      did.added += 1;
+    // `?? null` on the stored side: a field saved as null reads back ABSENT on
+    // the SDK's Db (null removes it), and undefined !== null would rewrite an
+    // unchanged record on every save.
+    } else if ((rec.fields.schema ?? null) !== want.schema || (rec.fields.seed ?? null) !== want.seed) {
+      await db.update(DOMAIN, rec.id, want);
+      did.updated += 1;
+    } else {
+      did.untouched += 1;
+    }
+  }
+  for (const [d, rec] of existing) {
+    if (!domains.has(d)) { await db.delete(DOMAIN, rec.id); did.removed += 1; }
+  }
+  const p = await db.get(PROJECT, pid);
+  const wantTree = enc(tree), wantVersions = enc(versions);
+  if (p && ((p.fields.tree ?? null) !== wantTree || (p.fields.versions ?? null) !== wantVersions)) {
+    await db.update(PROJECT, pid, { tree: wantTree, versions: wantVersions });
+    did.project = true;
+  }
+  return did;
 }
 
 /** Record a publication of a project. History is these records (builder#26). */
