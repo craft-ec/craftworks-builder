@@ -32,7 +32,7 @@ const slotFrom = (ms, ns, id) => `${String(ms).padStart(12, "0")}${ns}${id}`.rep
  * node confirms one every `confirmMs` of the clock, oldest first, or never
  * once `stopAt` writes are confirmed.
  */
-function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0 } = {}) {
+function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0, lose = null } = {}) {
   let clock = 0;
   // Writes that are NOT the handoff's, made before it starts and holding room.
   const order = Array.from({ length: foreign }, (_, i) => `foreign/${i}`);
@@ -41,7 +41,9 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
   let refusals = 0;
   const confirmedCount = () => Math.min(order.length, Math.floor(clock / confirmMs), stopAt);
   const unconfirmed = () => order.length - confirmedCount();
-  const stateOf = key => (order.indexOf(key) < confirmedCount() ? "CLEAN" : "PENDING");
+  // `lose`: the n-th row the handoff makes is ROLLED BACK by the node.
+  let made = 0, lost = null;
+  const stateOf = key => (key === lost ? "ROLLED_BACK" : order.indexOf(key) < confirmedCount() ? "CLEAN" : "PENDING");
   const noRoom = () => {
     refusals += 1;
     // EXACTLY the shape the SDK's session throws (web/src/session.rs `db_err`).
@@ -66,6 +68,8 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
       const key = `${d}/${slot}`;
       if (rows.has(key)) return JSON.stringify({ outcome: "exists", record: record(d, slot) });
       write(key);
+      made += 1;
+      if (lose !== null && made === lose) lost = key;
       rows.set(key, { fields: JSON.parse(fields) });
       return JSON.stringify({ outcome: "created", record: record(d, slot) });
     },
@@ -79,6 +83,8 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
     clock: () => clock,
     refusals: () => refusals,
     stored: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`)).length,
+    /** Rows of `d` that read CLEAN right now — what "confirmed" must equal. */
+    clean: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`) && stateOf(k) === "CLEAN").length,
   };
 }
 
@@ -156,6 +162,22 @@ await t("**progress is reported WHILE the rows are made, not only after: a targe
   const during = madeAtReport.filter(([made]) => made < 300).length;
   assert.ok(madeAtReport.every(([, , total]) => total === 300), "a report carried a total other than 300");
   process.stdout.write(`  ${during} reports while rows were still being made; first at ${first[0]} rows made, ${first[1]} confirmed\n`);
+});
+
+await t("**while the handoff is going WRONG the count says so: a row the node lost is never counted confirmed**", async () => {
+  // Reported during the make loop, before the loss is judged (at the end):
+  // what the person reads while a publish is failing must not show a
+  // rolled-back row as confirmed.
+  const node = roomySession({ cap: 100_000, confirmMs: 10, lose: 2 });
+  const reports = [];
+  const { go } = run(node, 60, { onProgress: p => reports.push({ ...p, made: node.stored("notes"), clean: node.clean("notes") }) });
+  await assert.rejects(go, /did not reach the node/, "a lost row must still fail the handoff");
+  const during = reports.filter(r => r.made >= 2 && r.made < 60);
+  assert.ok(during.length > 0, "no report was taken while rows were being made, after the loss — this tested nothing");
+  for (const r of during) {
+    // Exactly the rows the node has CONFIRMED — the lost one is not among them.
+    assert.strictEqual(r.confirmed, r.clean, `a report counted the LOST row as confirmed: ${JSON.stringify(r)}`);
+  }
 });
 
 await t("THE CONTROL: a refusal that is NOT retryable is thrown at once, not waited on", async () => {
