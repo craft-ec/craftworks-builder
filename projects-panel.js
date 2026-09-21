@@ -9,6 +9,7 @@ import {
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
+  recordPublication, publicationsOf, nextSeq,
 } from "./projects.js";
 
 const el = (tag, props = {}, ...kids) => {
@@ -81,6 +82,8 @@ export async function mountProjects(host, {
       ),
       items.length ? el("div", { className: "proj-list" }, items)
         : el("p", { className: "proj-empty", textContent: "No projects yet. A new project starts empty; Duplicate copies the one you have open." }),
+      // History of the OPEN project: the publication records, newest first.
+      ...(openId ? await historySection(openId) : []),
       // Development mode is stated where a person can see it, not only in a doc.
       el("p", { className: "proj-note" },
         `Every project is ${PUBLIC_UNTIL_PHASE_7}ly readable until private domains exist.`),
@@ -97,6 +100,25 @@ export async function mountProjects(host, {
    * get a copy of the last one, with no way to tell from the list. Duplicating
    * is a separate act and records `forked_from` — see `duplicate`.
    */
+  /** What this project has published, and what a publication can say yet. */
+  async function historySection(pid) {
+    const hist = await publicationsOf(db, pid);
+    if (!hist.length) return [];
+    return [
+      el("div", { className: "proj-hist" },
+        el("b", { textContent: "Published" }),
+        ...hist.map(h => el("div", { className: "proj-pub" },
+          el("span", { textContent: `v${h.seq}` }),
+          el("small", { textContent: `${when(h.published_at)}${h.source_root ? ` · root ${String(h.source_root).slice(0, 8)}` : ""}` }),
+        )),
+        // Honest about what a publication cannot say yet, rather than showing
+        // a blank where a bundle hash will one day be.
+        el("small", { className: "proj-note", textContent:
+          "No bundle yet — publishing switches this builder onto a node; it does not package the app. Rollback needs that (builder#47)." }),
+      ),
+    ];
+  }
+
   async function create() {
     const title = `Project ${(await listProjects(db)).length + 1}`;
     const p = await createProject(db, { title });
@@ -160,6 +182,25 @@ export async function mountProjects(host, {
     await paint();
   }
 
+  /**
+   * Record that the open project was published, with what is TRUE at the time.
+   *
+   * No bundle hash and no app address: publishing does not package the app yet
+   * (builder#47, blocked on craftworks-sdk#108). What IS true is the tree root
+   * it published FROM, the SDK it was built against, and when.
+   */
+  async function published({ sourceRoot = null, sdkVersion = null } = {}) {
+    const pid = current();
+    if (!pid) return null;
+    const rec = await recordPublication(db, pid, {
+      seq: await nextSeq(db, pid),
+      source_root: sourceRoot,
+      sdk_version: sdkVersion,
+    });
+    await paint();
+    return rec;
+  }
+
   chip.onclick = async () => { open = !open; await paint(); };
   document.addEventListener("click", e => {
     if (open && !pop.contains(e.target) && e.target !== chip) { open = false; pop.hidden = true; }
@@ -173,5 +214,5 @@ export async function mountProjects(host, {
     const project = await openProject(db, last);
     if (project) setCanvas(project.components.map(fromRecord), project);
   }
-  return { persist, refresh: paint, openProjectId: current };
+  return { persist, refresh: paint, openProjectId: current, published };
 }

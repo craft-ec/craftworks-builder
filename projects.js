@@ -128,10 +128,8 @@ export const SCHEMAS = {
     fields: [
       { name: "pid", kind: "text", required: true },
       { name: "seq", kind: "int", required: true },
-      { name: "app_contract_id", kind: "text" },
       { name: "sdk_version", kind: "text" },
       { name: "schema_block_ids", kind: "text" },
-      { name: "bundle_hash", kind: "text" },
       { name: "published_at", kind: "time" },
       { name: "source_root", kind: "text" },
     ],
@@ -256,12 +254,33 @@ export async function openInto(db, pid, { setLastOpened, handOver }) {
   return project;
 }
 
-export async function recordPublication(db, pid, { seq, app_contract_id, sdk_version, schema_block_ids = [], bundle_hash, source_root, published_at = Date.now() }) {
+export async function recordPublication(db, pid, { seq, sdk_version = null, schema_block_ids = [], source_root = null, published_at = Date.now(), ...rest }) {
+  // `bundle_hash` and `app_contract_id` are deliberately NOT recorded.
+  // Publishing today connects to a node, provisions it and switches the
+  // backend; it does not package the app, so there is no bundle and no app
+  // address to record. They arrive with the builder half of
+  // craftworks-sdk#108, and this record gains a FIELD then rather than being
+  // rewritten.
+  //
+  // Writing them empty would be worse than leaving them out: an empty field
+  // that later means something reads as "this publication had no bundle"
+  // instead of "bundles did not exist yet", and every reader afterwards would
+  // need to know which era a row came from to interpret it. So a caller that
+  // tries is REFUSED rather than quietly storing a placeholder.
+  for (const k of ["bundle_hash", "app_contract_id"]) {
+    if (k in rest) throw new Error(`${k} cannot be recorded yet: apps carry no bundle until craftworks-sdk#108`);
+  }
   return db.put(PUBLICATION, {
-    pid, seq, app_contract_id, sdk_version,
+    pid, seq, sdk_version,
     schema_block_ids: enc(schema_block_ids),
-    bundle_hash, source_root, published_at,
+    source_root, published_at,
   });
+}
+
+/** The next sequence number for a project's publications. */
+export async function nextSeq(db, pid) {
+  const hist = await publicationsOf(db, pid);
+  return hist.length ? Math.max(...hist.map(h => h.seq ?? 0)) + 1 : 1;
 }
 
 /** A project's publications, newest first. */
@@ -272,10 +291,8 @@ export async function publicationsOf(db, pid) {
     .map(r => ({
       id: r.id,
       seq: r.fields.seq,
-      app_contract_id: r.fields.app_contract_id,
       sdk_version: r.fields.sdk_version,
       schema_block_ids: dec(r.fields.schema_block_ids) ?? [],
-      bundle_hash: r.fields.bundle_hash,
       source_root: r.fields.source_root,
       published_at: r.fields.published_at,
     }));

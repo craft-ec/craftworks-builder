@@ -25,20 +25,29 @@
 //
 // # THE RESULT — the direction holds, the constant does not
 //
-//     item size    predicted count   measured count   crossover value size
-//        ~30 B                 250              150                5,331 B
-//       ~300 B                   —              ~25              ~7,500 B
-//        ~3 KB                   3               <=1              <=3,004 B
+//     item size    predicted count   measured (3 runs)   crossover value size
+//        ~30 B                 250           100-150 items        3,481-5,331 B
+//       ~300 B                   —                ~25 items             ~7,500 B
+//        ~3 KB                   3                 <=1 item             <=3,004 B
+//
+// THE NUMBERS ARE BANDS, and the first version of this file reported points.
+// Five repeats of the SAME arm land anywhere from 100 to 150 items (1.5x),
+// because record ids are time-derived: the keys differ between runs and the
+// content-defined chunk boundaries move with them. A single run reports a
+// point where there is a band, which is how a crossover of "150" got quoted.
 //
 // 1. THE DIRECTION IS CONFIRMED, and strongly: the crossover count moved
 //    150-fold across a 100-fold change in item size. The falsifier — "the
 //    count comes back the same at both sizes" — did not fire, and it is
 //    asserted below so it fires if it ever becomes true.
 //
-// 2. THE CONSTANT TOTAL SIZE IS NOT CONFIRMED. The predicted ~7,500 B is not
-//    what came back: 5,331 B at 30 B items against ~7,500 B at 300 B items.
-//    That is a BAND of roughly one to two leaves, not a constant, and §5
-//    should say so rather than quote a number to four figures.
+// 2. THE CONSTANT TOTAL SIZE IS NOT CONFIRMED — and cannot be settled here.
+//    The predicted ~7,500 B did not come back (3.5-5.3 KB at 30 B items), but
+//    one arm's own repeat spread is 1.5x, so two arms cannot decide whether
+//    the underlying quantity is constant. What the data supports is a BAND of
+//    roughly one to two leaves, which is what §5 says. The earlier version of
+//    this file ASSERTED "not constant" on a difference smaller than the noise;
+//    that assertion is gone.
 //
 // 3. THE 3 KB ARM IS AN UPPER BOUND, NOT A MEASUREMENT. Its crossover landed
 //    on the FIRST point of the sweep (n=1), so the sweep never bracketed it —
@@ -77,15 +86,30 @@ async function sizes(n, itemBytes) {
   return { perItem: perItem.stats().bytes, oneValue: oneValue.stats().bytes, valueSize: JSON.stringify(all).length };
 }
 
+// REPEATS, because a single run of one arm cannot say where a crossover is.
+// Measured: the same arm lands anywhere from 100 to 150 items across five runs
+// (1.5x), because record ids are time-derived, so the keys differ between runs
+// and the content-defined chunk boundaries move with them. A single run of this
+// sweep reports a point where there is a band.
+const REPEATS = 3;
+
 const found = [];
 for (const p of PREDICTIONS) {
-  let crossover = null, crossoverBytes = null;
-  const rows = [];
-  for (const n of p.sweep) {
-    const s = await sizes(n, p.itemBytes);
-    rows.push({ n, ...s });
-    if (crossover === null && s.oneValue > s.perItem) { crossover = n; crossoverBytes = s.valueSize; }
+  const crossings = [], byteses = [];
+  let rows = [];
+  for (let run = 0; run < REPEATS; run++) {
+    let crossover = null, crossoverBytes = null;
+    const theseRows = [];
+    for (const n of p.sweep) {
+      const s = await sizes(n, p.itemBytes);
+      theseRows.push({ n, ...s });
+      if (crossover === null && s.oneValue > s.perItem) { crossover = n; crossoverBytes = s.valueSize; break; }
+    }
+    crossings.push(crossover); byteses.push(crossoverBytes);
+    if (run === 0) rows = theseRows;
   }
+  const crossover = Math.min(...crossings), crossoverHigh = Math.max(...crossings);
+  const crossoverBytes = Math.min(...byteses), crossoverBytesHigh = Math.max(...byteses);
   process.stdout.write(`\n${p.label} (predicted crossover ≈ ${p.predictedCount} items)\n`);
   for (const r of rows) {
     process.stdout.write(
@@ -94,15 +118,18 @@ for (const p of PREDICTIONS) {
       `${r.oneValue > r.perItem ? "per-item wins" : "one-value wins"}\n`,
     );
   }
-  process.stdout.write(`   => crossover at ${crossover} items, value size ${crossoverBytes} B\n`);
-  found.push({ ...p, crossover, crossoverBytes });
+  process.stdout.write(
+    `   => crossover ${crossover}-${crossoverHigh} items over ${REPEATS} runs, ` +
+    `value ${crossoverBytes}-${crossoverBytesHigh} B\n`,
+  );
+  found.push({ ...p, crossover, crossoverHigh, crossoverBytes, crossoverBytesHigh });
 }
 
 process.stdout.write("\nPREDICTION vs MEASURED\n");
 for (const f of found) {
   process.stdout.write(
-    `   ${f.label}: predicted ${f.predictedCount} items, measured ${f.crossover}; ` +
-    `crossover value size ${f.crossoverBytes} B (predicted ≈ ${PREDICTED_TOTAL_BYTES} B)\n`,
+    `   ${f.label}: predicted ${f.predictedCount} items, measured ${f.crossover}-${f.crossoverHigh}; ` +
+    `crossover value ${f.crossoverBytes}-${f.crossoverBytesHigh} B (predicted ≈ ${PREDICTED_TOTAL_BYTES} B)\n`,
   );
 }
 
@@ -112,21 +139,18 @@ for (const f of found) {
 const counts = found.map(f => f.crossover).filter(n => n !== null);
 assert.equal(counts.length, found.length, "every arm must have found a crossover inside its sweep");
 assert.ok(
-  Math.max(...counts) / Math.min(...counts) > 3,
+  Math.max(...counts) / Math.min(...counts) > 10,
   `the crossover COUNT barely moved across a 100x change in item size (${JSON.stringify(counts)}) — ` +
   "the model that makes it inversely proportional to item size is WRONG, and " +
   "ARCHITECTURE §5 must stop offering a crossover number",
 );
 
-// The constant-total-size half of the model, pinned as NOT holding. If the
-// crossover sizes ever do converge, this fails and §5 may quote a number.
-const sizesAtCrossover = found.map(f => f.crossoverBytes);
-assert.ok(
-  Math.max(...sizesAtCrossover) / Math.min(...sizesAtCrossover) > 1.5,
-  "the crossover total size is now near-constant across item sizes " +
-  `(${JSON.stringify(sizesAtCrossover)}) — the model's stronger claim holds ` +
-  "after all, and ARCHITECTURE §5 may quote a size instead of a band",
-);
+// The constant-total-size half is REPORTED, NOT ASSERTED, and that is the
+// honest call: the same arm's crossover value ranges 3,481-5,331 B across
+// repeats, so two arms cannot settle whether the underlying quantity is
+// constant. What the data does support is a BAND of roughly one to two leaves,
+// which is what §5 says. Asserting "not constant" here would be asserting a
+// difference smaller than the noise — the error this file exists to avoid.
 
 // The small-item arm must be BRACKETED — its crossover must not sit on the
 // first point of the sweep, or it is a bound rather than a measurement.

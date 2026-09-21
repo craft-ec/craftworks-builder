@@ -228,6 +228,16 @@ async function doPublish() {
     // A preload that fails is not a failed publish. The data is all still
     // reachable; the first read simply pays for it. So it is recorded and
     // the publish goes on.
+    // The publication is RECORDED before the preload, because the publish has
+    // already succeeded by this point: a failed preload is not a failed
+    // publish, and history that omitted it would be wrong about what happened.
+    try {
+      await projects?.published?.({
+        sourceRoot: db.root?.() ?? null,
+        sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+      });
+    } catch (e) { publishError = `history: ${e.message}`; }
+
     try { await db.preload(preloadManifest(app)); }
     catch (e) { publishError = `preload: ${e.message}`; }
 

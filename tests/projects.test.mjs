@@ -12,7 +12,7 @@ import {
   openInto,
   PROJECT, COMPONENT, PUBLICATION, PUBLIC_UNTIL_PHASE_7, SCHEMAS,
   defineProjectDomains, createProject, listProjects, addComponent,
-  componentsOf, setComponentProps, openProject, recordPublication,
+  componentsOf, setComponentProps, openProject, recordPublication, nextSeq,
   publicationsOf, readDeviceSettings, writeDeviceSettings, DEVICE_SETTINGS_KEY,
 } from "../projects.js";
 
@@ -241,15 +241,30 @@ await t("a project is publicly readable until phase 7, and says so in a stored f
 await t("publications are history, newest first (builder#26 reads these)", async () => {
   const db = await fresh();
   const p = await createProject(db, { title: "Shipped" });
-  await recordPublication(db, p.id, { seq: 1, app_contract_id: "c1", bundle_hash: "h1", source_root: "r1", published_at: 1 });
-  await recordPublication(db, p.id, { seq: 2, app_contract_id: "c2", bundle_hash: "h2", source_root: "r2", published_at: 2 });
+  await recordPublication(db, p.id, { seq: 1, source_root: "r1", sdk_version: "aaa1111", published_at: 1 });
+  await recordPublication(db, p.id, { seq: 2, source_root: "r2", sdk_version: "aaa1111", published_at: 2 });
   const other = await createProject(db, { title: "Elsewhere" });
-  await recordPublication(db, other.id, { seq: 1, app_contract_id: "x", bundle_hash: "hx", source_root: "rx", published_at: 3 });
+  await recordPublication(db, other.id, { seq: 1, source_root: "rx", published_at: 3 });
 
   const hist = await publicationsOf(db, p.id);
   assert.equal(hist.length, 2, "one project's history is its own");
   assert.deepEqual(hist.map(h => h.seq), [2, 1], "newest first");
-  assert.equal(hist[0].bundle_hash, "h2");
+  assert.equal(hist[0].source_root, "r2", "it records the tree root it published FROM");
+  assert.equal(hist[0].sdk_version, "aaa1111");
+
+  // A bundle hash cannot be recorded yet, and the refusal is the point: an
+  // empty field that later means something reads as "this publication had no
+  // bundle" instead of "bundles did not exist yet".
+  await assert.rejects(
+    () => recordPublication(db, p.id, { seq: 3, bundle_hash: "h3" }),
+    /apps carry no bundle until craftworks-sdk#108/,
+  );
+  await assert.rejects(
+    () => recordPublication(db, p.id, { seq: 3, app_contract_id: "c3" }),
+    /apps carry no bundle until craftworks-sdk#108/,
+  );
+  assert.equal((await publicationsOf(db, p.id)).length, 2, "and nothing was written");
+  assert.equal(await nextSeq(db, p.id), 3, "the next publication follows the highest recorded seq");
 });
 
 await t("device settings stay on the device, never in the tree", async () => {
