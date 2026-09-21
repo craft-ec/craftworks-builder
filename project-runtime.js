@@ -122,7 +122,26 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
      * its session and records nothing: history written by a late publish of A
      * would land in whichever project was open by then.
      */
-    async publish(app, deps, { onPhase = () => {}, after = async () => {}, handoff = async () => {} } = {}) {
+    async publish(app, deps, { onPhase = () => {}, after, handoff } = {}) {
+      // NO DEFAULTS for these two (builder#73). Each was `async () => {}`,
+      // which made a safety step look DONE: without a handoff the publish
+      // copied nothing, adopted the new backend and said Published while
+      // Preview's records vanished; without `after` the publication was never
+      // recorded. A caller that wants either to do nothing says so.
+      // And the refusal is SHOWN, not only thrown: the phase becomes `failed`
+      // with the reason, so the page says why rather than leaving the button
+      // at Publish as if nothing had been pressed. Nothing else is started.
+      const missing = typeof handoff !== "function"
+        ? "publish: no `handoff` — publishing without one would adopt the new backend with none of Preview's records on it"
+        : typeof after !== "function"
+          ? "publish: no `after` — the publication would never be recorded in the project's history"
+          : null;
+      if (missing) {
+        phase = "failed"; error = missing;
+        onPhase("failed", missing);
+        onChange();
+        throw new Error(missing);
+      }
       if (disposed) throw new Error("this project is no longer open");
       const report = (p, e = "") => {
         if (disposed) return;

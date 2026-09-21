@@ -173,7 +173,11 @@ export async function waitFor(session, {
   now = () => Date.now(),
   // "The socket has never opened, and has been refused more than once."
   // Default false so `waitFor` behaves as before for a caller that cannot
-  // observe the socket.
+  // observe the socket. Traced for builder#73: `publish` always passes its own,
+  // so this default only reaches a direct caller of `waitFor`, and `false`
+  // means "do not fail fast" — the wait runs its whole budget and then fails
+  // LOUDLY. A default that makes a feature absent or loud is the safe kind; it
+  // cannot make anything look done.
   neverConnected = () => false,
 } = {}) {
   const started = now();

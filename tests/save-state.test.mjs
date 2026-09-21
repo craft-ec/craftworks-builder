@@ -26,7 +26,15 @@ try {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
   let seq = 0; const waiting = new Map();
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
+  // Uncaught PAGE exceptions are kept, and a timed-out wait names the last one:
+  // a page whose module threw at load shows nothing in the DOM, so without this
+  // the failure says only what never appeared, not why.
+  const pageErrors = [];
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.method === "Runtime.exceptionThrown") pageErrors.push(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? "an exception");
+    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+  };
   const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
   const within = (p, ms, what) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(`no answer in ${ms} ms: ${what}`)), ms))]);
   const evaluate = async expr => {
@@ -47,13 +55,15 @@ try {
       catch (e) { lastError = e; }
       await sleep(100);
     }
-    throw new Error(`timed out after ${ms} ms: ${what}${lastError ? ` — last error: ${lastError.message}` : ""}`);
+    const thrown = pageErrors.length ? ` — the page threw: ${pageErrors.at(-1).split("\n")[0]}` : "";
+    throw new Error(`timed out after ${ms} ms: ${what}${lastError ? ` — last error: ${lastError.message}` : ""}${thrown}`);
   };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", { format: "png" });
     writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(r.result.data, "base64"));
   };
 
+  await send("Runtime.enable");
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
   // THE PAGE PROVES IT IS THIS TREE: it fetches this run's nonce through

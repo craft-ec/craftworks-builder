@@ -41,12 +41,19 @@ function fakeSession({ provisioned = true, refused = null, exhausted = false, cl
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 
+// `publish` has NO default handoff or after (builder#73): each used to be a
+// no-op that made a safety step look done. These tests drive the OWNER —
+// sessions, generations, disposal — not the handoff, so they pass explicit
+// no-ops and say so here. The handoff has its own tests (handoff.test.mjs),
+// and the throw when one is missing is tested in no-unsafe-defaults.
+const NO_HANDOFF = { handoff: async () => {}, after: async () => {} };
+
 // ---- builder#54: nothing of A survives into B -----------------------------
 
 await t("**after A publishes, a new project B is not Published and gets no backend**", async () => {
   const s = fakeSession();
   const A = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => ({ session: s, db: s.db }) });
-  await A.publish({}, {});
+  await A.publish({}, {}, NO_HANDOFF);
   assert.strictEqual(A.phase, "published");
   assert.strictEqual(A.publishedDb, s.db);
 
@@ -69,7 +76,7 @@ await t("THE CONTROL: without a dispose, the old globals' behaviour is what you 
   const s = fakeSession();
   const m = fakeMounts();
   const shared = createProjectRuntime({ mount: m.mount, publish: async () => ({ session: s, db: s.db }) });
-  await shared.publish({}, {});
+  await shared.publish({}, {}, NO_HANDOFF);
   shared.ensureMounted();
   await tick();
   assert.strictEqual(shared.phase, "published");
@@ -95,7 +102,7 @@ await t("**a publish of A finishing after the switch closes its session and reco
   const d = later();
   let afterRan = 0;
   const A = createProjectRuntime({ mount: fakeMounts().mount, publish: () => d.p.then(() => ({ session: s, db: s.db })) });
-  const pending = A.publish({}, {}, { after: async () => { afterRan += 1; } });
+  const pending = A.publish({}, {}, { ...NO_HANDOFF, after: async () => { afterRan += 1; } });
   A.dispose();
   d.resolve();
   assert.strictEqual(await pending, null);
@@ -161,7 +168,7 @@ await t("publishing remounts on the new backend", async () => {
   const m = fakeMounts();
   const rt = createProjectRuntime({ mount: m.mount, publish: async () => ({ session: s, db: s.db }) });
   rt.ensureMounted(); await tick(); m.calls[0].d.resolve(); await tick();
-  await rt.publish({}, {});
+  await rt.publish({}, {}, NO_HANDOFF);
   assert.strictEqual(m.calls[0].stopped, 1, "the preview mount is stopped");
   rt.ensureMounted(); await tick();
   assert.strictEqual(m.calls[1].args.backend, s.db);
@@ -216,7 +223,7 @@ await t("**retrying after failures leaves exactly one session open**", async () 
     return s;
   };
   const rt = createProjectRuntime({ mount: fakeMounts().mount, publish });
-  for (let i = 0; i < 3; i += 1) await rt.publish({}, { port: 18080, open }).catch(() => {});
+  for (let i = 0; i < 3; i += 1) await rt.publish({}, { port: 18080, open }, NO_HANDOFF).catch(() => {});
   assert.strictEqual(rt.phase, "published");
   assert.deepStrictEqual(sessions.map(s => s.closed), [1, 1, 0],
     "the two failed attempts closed theirs; the one that succeeded is OWNED, not orphaned");
@@ -228,8 +235,8 @@ await t("a second successful publish closes the session it replaces", async () =
   const a = fakeSession(), b = fakeSession();
   const queue = [a, b];
   const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => { const s = queue.shift(); return { session: s, db: s.db }; } });
-  await rt.publish({}, {});
-  await rt.publish({}, {});
+  await rt.publish({}, {}, NO_HANDOFF);
+  await rt.publish({}, {}, NO_HANDOFF);
   assert.strictEqual(a.closed, 1);
   assert.strictEqual(b.closed, 0);
   assert.strictEqual(rt.session, b);

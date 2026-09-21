@@ -70,7 +70,7 @@ export class LocalDb {
    */
   notices = [];
 
-  constructor(storage = globalThis.localStorage, key = "craftec.builder.db.v1", { onNotice = () => {} } = {}) {
+  constructor(storage = globalThis.localStorage, key = "craftec.builder.db.v1", { onNotice } = {}) {
     this.#storage = storage;
     // The old single-blob key doubles as the namespace, so two LocalDbs over
     // different keys stay apart exactly as they did.
@@ -93,6 +93,14 @@ export class LocalDb {
     if (this.notices.some(n => n.kind === kind)) return;
     const n = { kind, message };
     this.notices.push(n);
+    // NO DEFAULT (builder#73). `() => {}` swallowed exactly the things a person
+    // must hear — another tab on an older builder, a store that cannot be read
+    // — so a store built with no one to tell FAILS at the notice, naming it,
+    // rather than keeping it to itself. Most stores never raise one, so most
+    // callers never need to pass it.
+    if (typeof this.#onNotice !== "function") {
+      throw new Error(`LocalDb: a notice with no \`onNotice\` to tell the person — ${kind}: ${message}`);
+    }
     try { this.#onNotice(n); } catch { /* a listener's failure is not the store's */ }
   }
 

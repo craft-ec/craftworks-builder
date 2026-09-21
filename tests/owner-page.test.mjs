@@ -115,7 +115,7 @@ try {
   // ---- builder#57: the auditor's exact sequence --------------------------
   if (!only || only === "57") {
   await fresh("preview=1&");
-  await until(`${inputs} > 0`, "the first preview's inputs");
+  await until(`${inputs} > 0`, "the first preview's inputs", { show: `document.getElementById("canvas").textContent.slice(0, 160)` });
   await shot("57-1-first-preview");
 
   await evaluate(`document.getElementById("preview").click();`);
@@ -148,7 +148,8 @@ try {
                close: () => { window.__closed += 1; } };
     };`);
   await evaluate(`document.getElementById("publish").click();`);
-  await until(`document.getElementById("publish").textContent === "Published"`, "A to publish");
+  await until(`document.getElementById("publish").textContent === "Published"`, "A to publish",
+    { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   await shot("54-1-A-published");
 
   await evaluate(`document.getElementById("projects-chip").click();`);
@@ -199,7 +200,7 @@ try {
       { type: "form", domain: "a", mode: "owned" },
       { type: "table", domain: "b", mode: "owned" } ], schemas: {} };
     const root = document.createElement("div");
-    const h = await mountApp(root, {}, app, () => {}, db, "published");
+    const h = await mountApp(root, {}, app, () => {}, db, "published", { alive: () => true /* no owner here: nothing disposes this mount */ });
     const afterMount = live;
     h.stop();
     const afterStop = live;
