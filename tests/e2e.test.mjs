@@ -278,7 +278,11 @@ try {
         // been full, which is the two-screens-one-component failure.
         seed: { notes: [{ title: "seeded" }] },
       };
-      await mountApp(root, {}, app, () => {}, db, "published");
+      // seed: true EXPLICITLY. A mount over a real backend no longer seeds
+      // it (builder#52: seeding every mount re-added rows and resurrected
+      // deleted ones); this check only uses the seed as a way to put a row on
+      // an async backend, and its claim — render after reload — is unchanged.
+      await mountApp(root, {}, app, () => {}, db, "published", { seed: true });
       return {
         inputs: root.querySelectorAll("input[name=title]").length,
         comps: root.querySelectorAll(".rt-comp").length,

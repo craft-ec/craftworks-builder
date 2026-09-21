@@ -61,6 +61,18 @@ try {
     const r = await send("Page.captureScreenshot", { format: "png" });
     writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(r.result.data, "base64"));
   };
+  // EACH SCENARIO STARTS FROM EMPTY STORAGE. Projects persist in this origin's
+  // storage, and the last-opened one is restored over the `#app=` definition
+  // on load — so a scenario that ran after another opened the previous one's
+  // project instead of its own. Cleared, then reloaded.
+  const fresh = async extra => {
+    await send("Page.navigate", { url: url(extra) });
+    await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+    await evaluate(`localStorage.clear(); sessionStorage.clear();`);
+    await send("Page.reload", { ignoreCache: true });
+    await sleep(300);
+    await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after reset");
+  };
   const inputs = `document.querySelectorAll(".rt-comp input").length`;
   const cards = `document.querySelectorAll("#canvas .comp").length`;
 
@@ -73,8 +85,7 @@ try {
   const only = process.env.ONLY;
   // ---- builder#57: the auditor's exact sequence --------------------------
   if (!only || only === "57") {
-  await send("Page.navigate", { url: url("preview=1&") });
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await fresh("preview=1&");
   await until(`${inputs} > 0`, "the first preview's inputs");
   await shot("57-1-first-preview");
 
@@ -96,9 +107,7 @@ try {
   // Design mode, with a node port that is not reserved, and the SDK's `open`
   // replaced by a provisioned fake over a SECOND real Db — the auditor's
   // setup. No node is involved.
-  await send("Page.navigate", { url: "about:blank" });
-  await send("Page.navigate", { url: url("node=18080&") });
-  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
+  await fresh("node=18080&");
   await until(`!!document.getElementById("projects-chip")`, "the projects chip");
   await evaluate(`
     window.__closed = 0;
@@ -168,6 +177,43 @@ try {
   assert.strictEqual(r.stale, null);
   assert.strictEqual(r.staleMade, 0, "a disowned mount must not subscribe");
   console.log("ok page: stop releases every subscription the mount made; a disowned mount makes none", JSON.stringify(r));
+  }
+
+  // ---- builder#52: publish carries the preview's records --------------------
+  // The auditor's sequence: Preview a form and table with NO seed, enter a
+  // task, publish to a provisioned fake over a second real Db. Before: old
+  // count 1, new count 0, button Published.
+  if (!only || only === "52") {
+  await fresh("node=18080&preview=1&");
+  await until(`!!document.querySelector(".rt-comp input[name=title]")`, "the form");
+  await evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = "entered in preview";
+    document.querySelector(".rt-comp button.pri").click();`);
+  await until(`document.querySelectorAll(".rt-comp tbody tr").length === 1`, "the entered row in the preview table");
+  await evaluate(`
+    window.__target = null;
+    window.craftec.open = async () => {
+      const db = new window.craftec.Db();
+      db.preload = async () => {};
+      db.trace = () => null;
+      window.__target = db;
+      return { db, provisioned: () => true, refused: () => null, exhausted: () => false, close() {} };
+    };`);
+  await evaluate(`document.getElementById("publish").click();`);
+  await until(`["Published", "Try publishing again"].includes(document.getElementById("publish").textContent)`, "publish to settle");
+  // Given time to show the row, but NOT fatal: when the row was dropped the
+  // table never shows it, and the assertion below is what should report that,
+  // with the numbers — not a timeout that says only "it did not happen".
+  await until(`document.querySelectorAll(".rt-comp tbody tr").length === 1`, "the remounted table").catch(() => {});
+  await shot("52-1-published-with-the-row");
+  const p = await evaluate(`
+    return { label: document.getElementById("publish").textContent,
+             target: (await window.__target.scan("tasks")).map(r => r.fields.title),
+             shown: [...document.querySelectorAll(".rt-comp tbody tr")].map(tr => tr.cells[0].textContent) };`);
+  assert.deepStrictEqual(p.target, ["entered in preview"],
+    `the row entered in Preview must be on the published backend (builder#52): ${JSON.stringify(p)}`);
+  assert.strictEqual(p.label, "Published");
+  assert.deepStrictEqual(p.shown, ["entered in preview"], "and the remounted app shows it");
+  console.log("ok page: a row entered in Preview is on the published backend and on screen (builder#52)", JSON.stringify(p));
   }
 
   console.log(`\nowner page: all ok  (screenshots: ${SHOTS})`);
