@@ -240,6 +240,34 @@ export class LocalDb {
 
   async get(domain, id) { return this.#get(this.#recordKey(domain, id)); }
 
+  /**
+   * Create a record AT an id the caller names, or answer the one already
+   * there: `{ outcome: "created" | "exists", record }` — the SDK's `createAt`,
+   * so code over either backend makes the same call (craftworks-sdk#149).
+   *
+   * What it is for here: putting a record back under ITS OWN id after the
+   * store was lost under an open tab (builder#82). `put` mints, so a restore
+   * through it made a different project than the one the person had open.
+   *
+   * A create, never an overwrite; and never a RESURRECTION. An id with a
+   * tombstone was deleted on purpose, and a create does not bring it back —
+   * the check the day project deletion ships will rely on.
+   */
+  async createAt(domain, id, fields) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+      throw new Error(`createAt: \`${id}\` is not a record id`);
+    }
+    const key = this.#recordKey(domain, id);
+    const held = this.#get(key);
+    if (held) return { outcome: "exists", record: structuredClone(held) };
+    if (this.#get(this.#tombKey(domain, id)) != null) {
+      throw new Error(`createAt: ${domain}/${id} was deleted; a create does not bring it back`);
+    }
+    const rec = { id, created: now(), updated: now(), fields: { ...fields } };
+    this.#set(key, rec, `${domain} record ${id}`);
+    return { outcome: "created", record: structuredClone(rec) };
+  }
+
   async delete(domain, id) {
     const key = this.#recordKey(domain, id);
     if (this.#get(key) == null) return false;
