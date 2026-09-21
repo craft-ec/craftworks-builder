@@ -11,9 +11,11 @@
 // so a refusal arrives exactly as a page sees it (a `DbError` with `code`,
 // `retryable`, `cap`) — over a session that behaves as the copy does: a cap
 // of unconfirmed writes, and a node confirming them in order, one per 300 ms
-// of a fake clock: every call to the node costs 5 ms, and every time the
-// handoff reads the clock costs 1 ms — so time passes however the handoff
-// waits, and a loop that never gives up shows up as a stall, never as a hang.
+// of a FAKE clock the handoff is handed as its `now` and `sleep`: it waits
+// `everyMs` (250) between polls exactly as a page does, in fake time. A WRITE
+// costs 5 ms; reading the page's own copy costs nothing, as in a page; every
+// read of the clock costs 1 ms — so time passes however the handoff waits,
+// and a loop that never gives up shows up as a stall, never as a hang.
 import assert from "node:assert";
 import { engineDb } from "../sdk/engine-db.js";
 import { handoff } from "../handoff.js";
@@ -30,7 +32,7 @@ const slotFrom = (ms, ns, id) => `${String(ms).padStart(12, "0")}${ns}${id}`.rep
  * node confirms one every `confirmMs` of the clock, oldest first, or never
  * once `stopAt` writes are confirmed.
  */
-function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0 } = {}) {
+function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0, lose = null } = {}) {
   let clock = 0;
   // Writes that are NOT the handoff's, made before it starts and holding room.
   const order = Array.from({ length: foreign }, (_, i) => `foreign/${i}`);
@@ -39,7 +41,9 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
   let refusals = 0;
   const confirmedCount = () => Math.min(order.length, Math.floor(clock / confirmMs), stopAt);
   const unconfirmed = () => order.length - confirmedCount();
-  const stateOf = key => (order.indexOf(key) < confirmedCount() ? "CLEAN" : "PENDING");
+  // `lose`: the n-th row the handoff makes is ROLLED BACK by the node.
+  let made = 0, lost = null;
+  const stateOf = key => (key === lost ? "ROLLED_BACK" : order.indexOf(key) < confirmedCount() ? "CLEAN" : "PENDING");
   const noRoom = () => {
     refusals += 1;
     // EXACTLY the shape the SDK's session throws (web/src/session.rs `db_err`).
@@ -58,13 +62,14 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
     define(d, schema) { write(`schema/${d}`); schemas.set(d, JSON.parse(schema)); },
     schema: d => JSON.stringify(schemas.get(d) ?? null),
     get(d, id) {
-      clock += 5;
       return JSON.stringify(rows.has(`${d}/${id}`) ? record(d, id) : null);
     },
     create_at(d, slot, fields) {
       const key = `${d}/${slot}`;
       if (rows.has(key)) return JSON.stringify({ outcome: "exists", record: record(d, slot) });
       write(key);
+      made += 1;
+      if (lose !== null && made === lose) lost = key;
       rows.set(key, { fields: JSON.parse(fields) });
       return JSON.stringify({ outcome: "created", record: record(d, slot) });
     },
@@ -74,9 +79,12 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
   return {
     session,
     now: () => (clock += 1),
+    sleep: async ms => { clock += ms; },
     clock: () => clock,
     refusals: () => refusals,
     stored: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`)).length,
+    /** Rows of `d` that read CLEAN right now — what "confirmed" must equal. */
+    clean: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`) && stateOf(k) === "CLEAN").length,
   };
 }
 
@@ -95,7 +103,7 @@ const run = (node, n, over = {}) => {
   const go = within(handoff({
     source: source(n), target: engineDb({ session: node.session }), app, schemas: { notes: SCHEMA },
     slotFrom, namespace: PID, seedMs: SEED_MS, onNotice: () => {},
-    onProgress: p => heard.push(p), confirm: { everyMs: 0, now: node.now }, ...over,
+    onProgress: p => heard.push(p), confirm: { now: node.now, sleep: node.sleep }, ...over,
   }), `${n} rows`);
   return { go, heard };
 };
@@ -137,6 +145,39 @@ await t("**the room is held by writes that are NOT the handoff's: once they conf
   assert.ok(node.refusals() > 0, "the foreign writes held no room, so this tested nothing");
   assert.strictEqual(node.stored("notes"), 20, `only ${node.stored("notes")} of 20 rows reached the target`);
   assert.deepStrictEqual(heard.at(-1), { confirmed: 20, total: 20 });
+});
+
+await t("**progress is reported WHILE the rows are made, not only after: a target that never refuses shows a number before the last row exists**", async () => {
+  // Live (builder#94): the make loop IS the publish — ~2 minutes at 300 rows
+  // — and with no NO_ROOM nothing polled during it: "Moving your records…"
+  // with no number for 111–125 s, then 298 of 300. Room for everything here,
+  // so only the make loop's own polling can report.
+  const node = roomySession({ cap: 100_000 });
+  const madeAtReport = [];
+  const { go } = run(node, 300, { onProgress: p => madeAtReport.push([node.stored("notes"), p.confirmed, p.total]) });
+  await go;
+  assert.strictEqual(node.refusals(), 0, "the target refused, so this is the room test again");
+  const first = madeAtReport[0];
+  assert.ok(first && first[0] < 300, `the first numbered report came only after all 300 rows were made: ${JSON.stringify(first)}`);
+  const during = madeAtReport.filter(([made]) => made < 300).length;
+  assert.ok(madeAtReport.every(([, , total]) => total === 300), "a report carried a total other than 300");
+  process.stdout.write(`  ${during} reports while rows were still being made; first at ${first[0]} rows made, ${first[1]} confirmed\n`);
+});
+
+await t("**while the handoff is going WRONG the count says so: a row the node lost is never counted confirmed**", async () => {
+  // Reported during the make loop, before the loss is judged (at the end):
+  // what the person reads while a publish is failing must not show a
+  // rolled-back row as confirmed.
+  const node = roomySession({ cap: 100_000, confirmMs: 10, lose: 2 });
+  const reports = [];
+  const { go } = run(node, 60, { onProgress: p => reports.push({ ...p, made: node.stored("notes"), clean: node.clean("notes") }) });
+  await assert.rejects(go, /did not reach the node/, "a lost row must still fail the handoff");
+  const during = reports.filter(r => r.made >= 2 && r.made < 60);
+  assert.ok(during.length > 0, "no report was taken while rows were being made, after the loss — this tested nothing");
+  for (const r of during) {
+    // Exactly the rows the node has CONFIRMED — the lost one is not among them.
+    assert.strictEqual(r.confirmed, r.clean, `a report counted the LOST row as confirmed: ${JSON.stringify(r)}`);
+  }
 });
 
 await t("THE CONTROL: a refusal that is NOT retryable is thrown at once, not waited on", async () => {
