@@ -21,7 +21,7 @@ const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`)
 const SCHEMA = { type: "Task", fields: [{ name: "title", kind: "text", required: true }] };
 const app = { components: [{ type: "table", domain: "tasks", mode: "owned" }], schemas: { tasks: SCHEMA }, seed: { tasks: [{ title: "seed" }] } };
 const titles = async db => (await db.scan("tasks")).map(r => r.fields.title).sort();
-const confirm = { everyMs: 0, budgetMs: 1000 };
+const confirm = { everyMs: 0, stallMs: 1000 };
 
 const PID = "r0projectid0000";
 const SEED_MS = Date.now() - 86_400_000;
@@ -63,7 +63,7 @@ const attempted = async () => {
     if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: "PENDING" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  await assert.rejects(run(src, unconfirmed, { confirm: { everyMs: 0, budgetMs: 10 } }), /not confirmed/);
+  await assert.rejects(run(src, unconfirmed, { confirm: { everyMs: 0, stallMs: 10 } }), /not confirmed/);
   return { src, dst };
 };
 
