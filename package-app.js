@@ -35,6 +35,33 @@ export const CARRIED = /\.(js|html|json)$/;
 /** The artefacts an app NAMES rather than carries. */
 export const NAMED = ["sdk", "delegate", "block", "register"];
 
+/**
+ * Manifest entries that are the SDK's PUBLISHING tools, not an app's
+ * artefacts (builder#104): the artefacts CONTAINER (the one web container
+ * holding the four, with the address the node serves it under) and the
+ * `webapp` contract's CODE a builder PUTs containers with. The node runs
+ * them; an app never fetches them, so an app never names them.
+ *
+ * Kept apart from NAMED on purpose, and each by its SHAPE: an entry that
+ * reads as an artefact here would be fetched by every app from an address
+ * that holds no such file.
+ */
+export const PLATFORM = {
+  container: e => typeof e?.address === "string" && e.address.length > 0 && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
+  webapp: e => e?.file === "webapp.wasm" && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
+};
+
+/**
+ * Artefacts the SDK ships that an app does NOT name YET, each with why. The
+ * signer: page mode provisions it instead of the engine delegate, and an app
+ * names it at the switch-over, when "delegate" leaves NAMED — not before
+ * (core dev's ruling on builder#104). Listed, so the day it becomes NAMED is
+ * a one-line move here rather than a manifest this build refuses.
+ */
+export const NOT_YET_NAMED = {
+  signer: "named at the page-mode switch-over, when `delegate` leaves NAMED",
+};
+
 const enc = new TextEncoder();
 
 const hex = bytes =>
@@ -72,7 +99,25 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
   // one of them announces itself.
   const named = Object.keys(manifest ?? {}).filter(k => k !== "note");
   const missing = NAMED.filter(n => !manifest?.[n]?.sha256);
-  const extra = named.filter(k => !NAMED.includes(k));
+  const extra = named.filter(k => !NAMED.includes(k) && !(k in PLATFORM) && !(k in NOT_YET_NAMED));
+  const misshapen = named.filter(k => k in PLATFORM && !PLATFORM[k](manifest[k]));
+  if (misshapen.length) {
+    throw new Error(
+      `the SDK manifest's ${misshapen.join(", ")} entry is not the shape of a publishing ` +
+        "tool (a container names its address; the webapp entry is webapp.wasm), so " +
+        "this build cannot tell it from an app artefact — refused rather than guessed.",
+    );
+  }
+  // THE ARTEFACTS KEY IS THE CONTAINER'S ADDRESS when the SDK names one: an
+  // app naming any other key would fetch its artefacts from somewhere this
+  // SDK build never published them.
+  if (manifest?.container && artefactsKey !== manifest.container.address) {
+    throw new Error(
+      `artefacts key ${artefactsKey} is not this SDK build's artefacts container ` +
+        `(${manifest.container.address}): the app would fetch its artefacts from an ` +
+        "address this build never published.",
+    );
+  }
   if (missing.length) {
     throw new Error(
       `the SDK manifest has no hash for: ${missing.join(", ")}. ` +
