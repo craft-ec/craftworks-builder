@@ -7,7 +7,7 @@ import { mountApp } from "./runtime.js";
 import { defaultSchema, KINDS, preloadManifest, schemasOf } from "./runtime-logic.js";
 import { handoff } from "./handoff.js";
 import { LIVE_NOTE, isLive } from "./publish-state.js";
-import { buttonFor, publish } from "./publish.js";
+import { appIdOf, buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
 import { LocalDb } from "./local-db.js";
@@ -349,6 +349,9 @@ async function doPublish() {
   // none of `after` — so a late publish of A cannot record its history into B.
   try {
     await rt.publish(app, {
+      // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's
+      // tree this project's data lives in.
+      appId: appIdOf(openedProject?.id),
       open: sdkReady.open,
       artefacts: sdkReady.SHIPPED_ARTEFACTS,
       // NAMED, never defaulted. The node to publish to is a decision: it
@@ -395,7 +398,7 @@ async function doPublish() {
         let put = null;
         try {
           put = await publishApp(app, {
-            sdk: sdkReady, session: res.session.session, headId: res.session.headId(),
+            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id),
             manifest: await (await fetch("./sdk/artefacts.json")).json(),
             read: readBuilderFile, subtle: crypto.subtle,
           });

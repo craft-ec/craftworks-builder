@@ -89,8 +89,32 @@ export const rowStateFor = phase => (phase === "published" ? null : UNPUBLISHED)
  */
 export const RESERVED_PORTS = [7509, 7609];
 
+/**
+ * THE APP ID A PROJECT PUBLISHES UNDER (craftworks-sdk#267).
+ *
+ * A person's tree is divided by app, and `open()` refuses to start without
+ * one: every domain an app names is stored as `<app>.<name>`, so an app has
+ * no name for another app's data and cannot write it. In the builder a
+ * PROJECT is an app, so its id comes from the project's own id — stable for
+ * the project's life, the same at every publish, and the same one the
+ * published app is opened under by anybody who visits it (`app.json`'s
+ * `publisher.app`). Derived, never typed, so two projects cannot share a
+ * space by being given the same name.
+ *
+ * The SDK's rule: 1–32 of a-z 0-9 _ -. A project id is lowercase hex; what
+ * does not fit is REFUSED by name rather than bent into something that fits,
+ * because a bent id could be another project's.
+ */
+export const appIdOf = projectId => {
+  const id = String(projectId ?? "").slice(0, 32);
+  if (!/^[a-z0-9_-]{1,32}$/.test(id)) {
+    throw new Error(`publish: project id \`${projectId}\` gives no app id (1–32 of a-z 0-9 _ -)`);
+  }
+  return id;
+};
+
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 0, onSaving } = deps;
+  const { open, artefacts, port = 0, onSaving, appId } = deps;
   const phase = p => { onPhase(p); return p; };
 
   // NO DEFAULT (builder#73). Without a listener the session's "saving N"
@@ -99,6 +123,15 @@ export async function publish(app, deps, onPhase = () => {}) {
   // that shows no saving line says so with an explicit `() => {}`.
   if (typeof onSaving !== "function") {
     const why = "publish: no `onSaving` — without it the page would look saved while writes are still unpublished";
+    onPhase("failed", why);
+    throw new Error(why);
+  }
+
+  // WHICH APP (craftworks-sdk#267): `open()` refuses without one, and a
+  // refusal from inside the SDK would arrive as "could not connect". Said
+  // here, by name, before anything is opened.
+  if (typeof appId !== "string" || !/^[a-z0-9_-]{1,32}$/.test(appId)) {
+    const why = `publish: no app id for this project (${JSON.stringify(appId)}) — its data would have no place in the person's tree`;
     onPhase("failed", why);
     throw new Error(why);
   }
@@ -131,6 +164,7 @@ export async function publish(app, deps, onPhase = () => {}) {
     // those exist. A page that wired them by hand would have a screen that
     // never fills the first time it forgot one.
     handle = await open({
+      app: appId,
       port,
       artefacts,
       onEvent: e => {

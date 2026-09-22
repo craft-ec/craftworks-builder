@@ -47,6 +47,7 @@ await t("publish hands every count the session reports to onSaving, in order", a
   let emit;
   const seen = [];
   await publish({}, {
+    appId: "proj1",
     port: 18080,
     onSaving: n => seen.push(n),
     open: async ({ onEvent }) => { emit = onEvent; onEvent({ kind: "open" }); return { provisioned: () => true, db: {}, close() {} }; },

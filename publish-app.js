@@ -42,7 +42,7 @@ const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
  * the node's words), or went unanswered.
  */
 export async function publishApp(app, {
-  sdk, session, headId, manifest, read, subtle,
+  sdk, session, headId, appId, manifest, read, subtle,
   budgetMs = 60_000, everyMs = 200, now = () => Date.now(),
   sleep = ms => new Promise(r => setTimeout(r, ms)),
 }) {
@@ -64,7 +64,13 @@ export async function publishApp(app, {
   // address and READS it (published data is readable by default).
   const sdkFiles = {};
   for (const [at, from] of Object.entries(APP_FILES)) sdkFiles[at] = await read(from);
-  const published = { ...app, publisher: { head: headId } };
+  // AND THE APP ID it was written under (craftworks-sdk#267): a visitor's
+  // session must open the SAME app's space in the publisher's tree, or it
+  // reads an empty one.
+  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) {
+    throw new Error("publish: no app id, so a visitor could not find this app's data in the publisher's tree");
+  }
+  const published = { ...app, publisher: { head: headId, app: appId } };
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 
   // 3. Its container, built by the SDK (deterministic: the same app is the

@@ -33,12 +33,12 @@
 export const CARRIED = /\.(js|html|json)$/;
 
 /** The artefacts an app NAMES rather than carries. */
-export const NAMED = ["sdk", "delegate", "block", "register"];
+export const NAMED = ["sdk", "signer", "block", "register"];
 
 /**
  * Manifest entries that are the SDK's PUBLISHING tools, not an app's
  * artefacts (builder#104): the artefacts CONTAINER (the one web container
- * holding the four, with the address the node serves it under) and the
+ * holding the app artefacts, with the address the node serves it under) and the
  * `webapp` contract's CODE a builder PUTs containers with. The node runs
  * them; an app never fetches them, so an app never names them.
  *
@@ -52,15 +52,13 @@ export const PLATFORM = {
 };
 
 /**
- * Artefacts the SDK ships that an app does NOT name YET, each with why. The
- * signer: page mode provisions it instead of the engine delegate, and an app
- * names it at the switch-over, when "delegate" leaves NAMED — not before
- * (core dev's ruling on builder#104). Listed, so the day it becomes NAMED is
- * a one-line move here rather than a manifest this build refuses.
+ * Artefacts the SDK ships that an app does NOT name yet, each with why.
+ * EMPTY since the switch-over: the signer, listed here until then, is NAMED,
+ * and the engine delegate it replaces is gone from the SDK. Kept, so the next
+ * artefact that ships before an app names it is a one-line entry here rather
+ * than a manifest this build refuses.
  */
-export const NOT_YET_NAMED = {
-  signer: "named at the page-mode switch-over, when `delegate` leaves NAMED",
-};
+export const NOT_YET_NAMED = {};
 
 const enc = new TextEncoder();
 

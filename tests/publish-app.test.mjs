@@ -57,7 +57,7 @@ const unpack = state => {
 
 await t("**both containers are PUT: the SDK's artefacts container at its manifest address, and the app's — whose key IS the app's address**", async () => {
   const s = node();
-  const r = await publishApp(APP, { sdk, session: s, headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
+  const r = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(r.artefactsKey, manifest.container.address);
   assert.deepStrictEqual(s.puts.map(p => p.key), [manifest.container.address, r.address]);
   assert.strictEqual(r.address, sdk.webapp.address(readFileSync(at("sdk/webapp.wasm")), s.puts[1].state));
@@ -66,13 +66,16 @@ await t("**both containers are PUT: the SDK's artefacts container at its manifes
 
 await t("**the app container holds the loader, the runtime, the SDK's JavaScript, app.json naming the publisher's head, artefacts.json naming the artefacts — and NO wasm**", async () => {
   const s = node();
-  await publishApp(APP, { sdk, session: s, headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   const u = unpack(s.puts[1].state);
   try {
     assert.deepStrictEqual(u.list, [...Object.keys(APP_FILES), "app.json", "artefacts.json"].sort());
     assert.ok(!u.list.some(f => /\.wasm$/.test(f)), "the app carries wasm");
     const app = JSON.parse(u.text("app.json"));
-    assert.deepStrictEqual(app.publisher, { head: HEAD }, "app.json does not name the publisher's head");
+    // AND the app id its data was written under (craftworks-sdk#267): a
+    // visitor opens that app's space in the publisher's tree, or reads an
+    // empty one.
+    assert.deepStrictEqual(app.publisher, { head: HEAD, app: "proj1" }, "app.json does not name the publisher's head and app");
     const art = JSON.parse(u.text("artefacts.json"));
     assert.strictEqual(art.contract, manifest.container.address);
     for (const n of NAMED) assert.strictEqual(art[n].sha256, manifest[n].sha256, `${n} named with another hash`);
@@ -81,25 +84,25 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
 });
 
 await t("DETERMINISTIC: the same app publishes to the same address; another app to another", async () => {
-  const a = await publishApp(APP, { sdk, session: node(), headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
-  const b = await publishApp(APP, { sdk, session: node(), headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
-  const c = await publishApp({ ...APP, name: "Other" }, { sdk, session: node(), headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
+  const a = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const b = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const c = await publishApp({ ...APP, name: "Other" }, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(a.address, b.address);
   assert.notStrictEqual(a.address, c.address, "THE CONTROL: a different app got the same address");
 });
 
 await t("**a refused PUT fails in the node's words, naming WHICH container**", async () => {
   const s = node(key => (key === manifest.container.address ? "put" : { state: "refused", said: "invalid contract update" }));
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast }),
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }),
     /the node refused the app's container: invalid contract update/);
 });
 
 await t("an UNANSWERED PUT (the socket dropped) is PUT again once and settles; twice is a failure", async () => {
   let s = node((key, poll, sent) => (sent < 2 ? "unanswered" : "put"));
-  await publishApp(APP, { sdk, session: s, headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast });
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(s.puts.length, 4, "each container was PUT again exactly once");
   s = node(() => "unanswered");
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, manifest, read, subtle: crypto.subtle, ...fast }), /unanswered twice/);
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }), /unanswered twice/);
 });
 
 await t("silence past the budget fails saying so — never 'published' short of the ack", async () => {
@@ -111,10 +114,19 @@ await t("silence past the budget fails saying so — never 'published' short of 
 
 await t("refused before anything is sent: no head, and an artefacts container that is not the manifest's", async () => {
   const s = node();
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: "", manifest, read, subtle: crypto.subtle, ...fast }), /no head yet/);
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, manifest: { ...manifest, container: { ...manifest.container, address: "elsewhere" } }, read, subtle: crypto.subtle, ...fast }),
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: "", appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }), /no head yet/);
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest: { ...manifest, container: { ...manifest.container, address: "elsewhere" } }, read, subtle: crypto.subtle, ...fast }),
     /not the elsewhere its manifest names/);
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok publish app\n");
 process.exit(failures ? 1 : 0);
+
+await t("**no app id, no publication** — a visitor would read an empty space (craftworks-sdk#267)", async () => {
+  const s = node();
+  for (const appId of [undefined, "", "Has.Dot", "x".repeat(33)]) {
+    await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId, manifest, read, subtle: crypto.subtle, ...fast }), /no app id/,
+      `app id ${JSON.stringify(appId)} was published`);
+  }
+  assert.strictEqual(s.puts.length, 0, "something was PUT for an app that names no space");
+});
