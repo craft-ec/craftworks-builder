@@ -357,7 +357,13 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // the `stop` returned here. This used to be a page global that each mount
   // called on the one before — so a stale mount finishing late stopped the
   // CURRENT mount's listeners and took its place (builder#54).
-  globalThis.__craftworks = { db, app, phase };
+  // `refresh` is the app's own "read now". A binding that is not LIVE shows
+  // what it last read — the owner's rule is "not live = read when needed" —
+  // so something has to be able to say NEEDED: a screen the person opens
+  // again, a pull-to-refresh, a tool checking the rule. Without it the only
+  // way to re-read was to reload the tab, which is a different thing and
+  // hides what is being tested.
+  globalThis.__craftworks = { db, app, phase, refresh: changed };
 
   // The saving line's input. Re-renders only a mount that is still wanted.
   const setSaving = n => {
