@@ -93,7 +93,7 @@ await t("THE CONTROL: the budget does not fire on a node that answers", async ()
 await t("publish reports each phase, in order, and hands back the engine db", async () => {
   const seen = [];
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
-  const { db } = await publish({}, {
+  const { db } = await publish({}, { onSaving: () => {},
     port: 17509,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   }, p => seen.push(p));
@@ -103,7 +103,7 @@ await t("publish reports each phase, in order, and hands back the engine db", as
 
 await t("a node that is not there fails with advice, not a stack trace", async () => {
   const seen = [];
-  await assert.rejects(() => publish({}, {
+  await assert.rejects(() => publish({}, { onSaving: () => {},
     port: 17509,
     open: async () => { throw new Error("ECONNREFUSED"); },
   }, (p, e) => seen.push([p, e])));
@@ -153,7 +153,7 @@ await t("**the OWNER'S node ports are REFUSED**, not published to", async () => 
   // owner's, and began provisioning it.
   for (const port of RESERVED_PORTS) {
     let opened = false;
-    await assert.rejects(() => publish({}, {
+    await assert.rejects(() => publish({}, { onSaving: () => {},
       port,
       open: async () => { opened = true; return {}; },
     }), e => {
@@ -166,7 +166,7 @@ await t("**the OWNER'S node ports are REFUSED**, not published to", async () => 
 
 await t("no port at all is refused too — there is no safe default", async () => {
   let opened = false;
-  await assert.rejects(() => publish({}, { open: async () => { opened = true; return {}; } }),
+  await assert.rejects(() => publish({}, { onSaving: () => {}, open: async () => { opened = true; return {}; } }),
     e => { assert.match(e.message, /no safe default|no node port/); return true; });
   assert.equal(opened, false);
 });
@@ -175,7 +175,7 @@ await t("THE CONTROL: an ordinary port is NOT refused", async () => {
   // Without this, a `publish` that refused every port would pass the two
   // tests above and nothing could ever be published.
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
-  const { db } = await publish({}, {
+  const { db } = await publish({}, { onSaving: () => {},
     port: 17509,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   });

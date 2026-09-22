@@ -46,6 +46,11 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
   let session = null;          // the publish handle, OWNED once handed over
   let publishedDb = null;
   let phase = "idle", error = "";
+  // Writes not yet PUBLISHED, as the session last said (craftworks-sdk#163).
+  // Kept HERE, not only in the mount: the session starts reporting as soon as
+  // it opens, before the published app is mounted, and a remount must show
+  // the count as it stands rather than start from nothing.
+  let saving = 0;
 
   const stopMounted = () => {
     const m = mounted;
@@ -62,6 +67,8 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
     /** The database the canvas is mounted on, or null. */
     get db() { return mounted?.db ?? reported; },
     get mountState() { return mountState; },
+    /** Writes not yet published, as the session last reported. */
+    get saving() { return saving; },
     get disposed() { return disposed; },
 
     /**
@@ -84,6 +91,8 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
           if (!alive() || !h) { try { h?.stop?.(); } catch (_) {} return null; }
           mounted = h;
           mountState = "mounted";
+          // A mount starts at 0; tell it where the count stands NOW.
+          if (saving) h.setSaving?.(saving);
           onChange();
           return h.db;
         }, e => {
@@ -144,9 +153,16 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
         onPhase(p, e);
       };
       error = "";
+      // The session's saving count, to this runtime and whatever is mounted.
+      const onSaving = n => {
+        if (disposed) return;
+        saving = n;
+        try { mounted?.setSaving?.(n); } catch (e) { error = e.message; }
+        onChange();
+      };
       let res;
       try {
-        res = await publish(app, deps, report);
+        res = await publish(app, { ...deps, onSaving }, report);
       } catch (e) {
         if (!disposed) { phase = "failed"; if (!error) error = e.message; onChange(); }
         throw e;
@@ -196,6 +212,7 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
       closeQuietly(session);
       session = null;
       publishedDb = null;
+      saving = 0;
     },
   };
   return rt;

@@ -1,7 +1,7 @@
 // Runs an app definition as live UI over the SDK. Used by the builder's Preview;
 // the published app will use the same module.
 import { byType } from "./catalogue.js";
-import { openApp, toFields, display, headline, inputType, readsNewestFirst, pageView } from "./runtime-logic.js";
+import { openApp, toFields, display, headline, inputType, readsNewestFirst, pageView, savingLabel } from "./runtime-logic.js";
 import { show, isLive, rowState } from "./publish-state.js";
 import { previewDb } from "./handoff.js";
 
@@ -278,8 +278,17 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
 
   const RENDER = { form, table, list };
 
+  // Writes not yet PUBLISHED, as the session last said (craftworks-sdk#163).
+  // Set through the returned `setSaving`; 0 until a session says otherwise.
+  let saving = 0;
+
   function render() {
+    const savingText = savingLabel(saving);
     root.replaceChildren(
+      ...(savingText ? [el("p", {
+        className: "rt-saving", role: "status", textContent: savingText,
+        title: "Not yet published to your node — closing this tab now would lose them",
+      })] : []),
       ...problems.map(p => el("p", { className: "rt-err", textContent: p })),
       ...app.components.map((inst, i) => {
         const schema = schemas[inst.domain];
@@ -337,5 +346,12 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // CURRENT mount's listeners and took its place (builder#54).
   globalThis.__craftworks = { db, app, phase };
 
-  return { db, stop };
+  // The saving line's input. Re-renders only a mount that is still wanted.
+  const setSaving = n => {
+    savingLabel(n); // refuses anything that is not a count, before it is shown
+    saving = n;
+    if (alive()) render();
+  };
+
+  return { db, stop, setSaving };
 }
