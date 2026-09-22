@@ -66,14 +66,28 @@ await t("the command line: isolated, loopback, three explicit dirs, no auto-upda
   }
 });
 
-await t("7509 and 7609 are refused BEFORE anything runs", async () => {
+/** The owner's nodes on this machine, named HERE rather than read from the
+ * helper: a test that iterated `RESERVED` passed vacuously when `RESERVED`
+ * was emptied (core dev's mutant on builder#101). */
+const OWNERS = [7509, 7609];
+
+await t("7509 and 7609 are refused FOR BEING RESERVED, before anything runs", async () => {
+  assert.deepStrictEqual([...RESERVED], OWNERS, "the helper's reserved list is not the owner's two ports");
   const net = await freePort();
-  for (const p of RESERVED) {
+  let tried = 0;
+  for (const p of OWNERS) {
     clearMarker();
-    await refused({ ws: p, net }, /belongs to somebody else/);
-    await refused({ ws: await freePort(), net: p }, /belongs to somebody else/);
+    // The REASON is asserted, not only a refusal: while the owner's node is
+    // up its port is also BUSY, and a busy-port refusal would pass a test that
+    // asked only for "refused". So this also pins the ORDER — the reserved
+    // check runs before any probe of the port — whether or not that node is
+    // running (7509 is held by it now; 7609 is free).
+    await refused({ ws: p, net }, /belongs to somebody else's node/);
+    await refused({ ws: await freePort(), net: p }, /belongs to somebody else's node/);
     assert.ok(!stubRan(), `a node was started for reserved port ${p}`);
+    tried += 1;
   }
+  assert.strictEqual(tried, OWNERS.length, "not every owner port was tried");
 });
 
 await t("unnamed ports are refused: a live run SAYS which", async () => {
