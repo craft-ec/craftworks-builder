@@ -18,49 +18,27 @@
 //   * its own port, never 7509 or 7609 — those are nodes this machine runs
 //     for somebody else, and publishing installs a delegate and hands over a
 //     signing key;
-//   * both ports probed FREE before anything starts ("I assumed nothing was
-//     listening" is how a screenshot run once connected to a real node);
+//   * both ports proved FREE before anything starts, TCP and UDP ("I assumed
+//     nothing was listening" is how a screenshot run once connected to a real
+//     node) — by the shared helper, tests/page-host.mjs `spawnNode`;
 //   * `--is-gateway --skip-load-from-network`, loopback on the listen AND
 //     advertised address, so it dials nothing and nothing it does leaves
 //     this machine. Flags follow craftworks-sdk `probe/src/node.rs`, which
 //     is where that recipe is worked out;
 //   * its PID is recorded at launch and it is killed BY THAT PID, never by
-//     a name pattern — three sessions share this Mac;
+//     a name pattern — three sessions share this Mac — and verified GONE;
 //   * network MODE, not local: a delegate-originated PUT is silently dropped
 //     in local mode (F35), and publishing is entirely delegate-originated.
 
 import assert from "node:assert";
-import { spawn } from "node:child_process";
-import { connect } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PAGE_PORT = 8095, DEBUG = 9337;
-const NODE_PORT = 17509, NET_PORT = 37509;
-const RESERVED = [7509, 7609];
-const BUDGET_MS = Number(process.env.BUDGET_MS ?? 180_000);
+import { now, openPageHost } from "../tests/page-host.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const now = () => Number(process.hrtime.bigint() / 1_000_000n);
 
-const free = port => new Promise(ok => {
-  const s = connect({ port, host: "127.0.0.1" });
-  const done = v => { s.destroy(); ok(v); };
-  s.setTimeout(500);
-  s.once("connect", () => done(false));
-  s.once("error", () => done(true));
-  s.once("timeout", () => done(false));
-});
-
-// ---- guards, before anything is started -----------------------------------
-for (const p of [NODE_PORT, NET_PORT]) {
-  assert.ok(!RESERVED.includes(p), `${p} is a node this machine runs for somebody else`);
-}
-for (const [p, what] of [[PAGE_PORT, "page server"], [DEBUG, "chrome"], [NODE_PORT, "node ws"], [NET_PORT, "node network"]]) {
-  assert.ok(await free(p), `something is already listening on ${p} (${what}); refusing to start`);
-}
+const NODE_PORT = 17509, NET_PORT = 37509;
+const BUDGET_MS = Number(process.env.BUDGET_MS ?? 600_000);
 
 // THE REVISION THESE NUMBERS ARE ABOUT.
 //
@@ -71,150 +49,34 @@ const SDK_REV = readFileSync(new URL("../SDK_REV", import.meta.url), "utf8").tri
 const SHOTS = join(new URL("..", import.meta.url).pathname, "shots", SDK_REV);
 mkdirSync(SHOTS, { recursive: true });
 
-const dir = mkdtempSync(join(tmpdir(), "cw-twotab-"));
-for (const d of ["data", "config", "log"]) mkdirSync(join(dir, d), { recursive: true });
+// THE NODE, THE PAGE SERVER, CHROME AND EVERY TAB come from the one helper
+// (tests/page-host.mjs, builder#98): the node on NAMED ports, refusing
+// 7509/7609 and any busy TCP or UDP port before anything starts, three
+// explicit dirs, `--disable-auto-update`, killed by its recorded PID and
+// VERIFIED gone (and what is still held is said); the page server and Chrome
+// on ports the OS picks. The run has a budget: BUDGET_MS, default 10 min.
+const host = await openPageHost("two-tab", { node: { ws: NODE_PORT, net: NET_PORT }, budgetMs: BUDGET_MS });
+const { port: PAGE_PORT, node } = host;
+console.log(`node: isolated NETWORK mode on 127.0.0.1:${NODE_PORT} (net ${NET_PORT}), pid ${node.pid}, tree ${node.dir}`);
 
-const procs = [];
-const kill = () => {
-  // BY RECORDED PID, never by a name pattern: three sessions share this Mac
-  // and a pattern has taken down somebody else's runs before.
-  for (const { name, child } of procs.reverse()) {
-    try { process.kill(child.pid, "SIGTERM"); console.log(`  killed ${name} (pid ${child.pid})`); } catch (_) {}
-  }
-  // AND SAY WHAT IS STILL HELD.
-  //
-  // Verifying cleanup by grepping for a name pattern is how an orphan
-  // survives: the page server's command line is `python3 -m http.server`
-  // and carries no marker this run put there, so a `cw-twotab` grep reported
-  // "clean" while it held 8095 — and the next run then failed at the port
-  // guard, which reads as "port in use" rather than "the last run left
-  // something". The PORTS are the thing to check, because they are what the
-  // next run actually needs.
-  const held = [PAGE_PORT, DEBUG, NODE_PORT, NET_PORT].filter(p => {
-    try { return require("node:child_process").execSync(
-      `lsof -nP -iTCP:${p} -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1`).toString().trim().length > 0; }
-    catch (_) { return false; }
-  });
-  if (held.length) console.log(`  STILL HELD after cleanup: ${held.join(", ")} — kill these by PID before the next run`);
-};
-process.on("exit", kill);
-process.on("SIGINT", () => { kill(); process.exit(130); });
-// SIGTERM TOO. It was missing, and that is how a run stopped from outside
-// left its node and its Chrome behind: `exit` does not fire for a signal
-// nobody handles, so the PIDs this file carefully recorded were never used.
-// An orphaned node holding 17509 then refuses the next run at the port
-// guard, which reads like the port being in use rather than like the last
-// run not having cleaned up.
-process.on("SIGTERM", () => { kill(); process.exit(143); });
-process.on("SIGHUP", () => { kill(); process.exit(129); });
-
-const node = spawn("freenet", [
-  "network", "--is-gateway", "--skip-load-from-network",
-  "--network-address", "127.0.0.1", "--network-port", String(NET_PORT),
-  "--public-network-address", "127.0.0.1", "--public-network-port", String(NET_PORT),
-  "--ws-api-address", "127.0.0.1", "--ws-api-port", String(NODE_PORT),
-  "--data-dir", join(dir, "data"), "--config-dir", join(dir, "config"), "--log-dir", join(dir, "log"),
-], { stdio: ["ignore", "pipe", "pipe"] });
-procs.push({ name: "freenet", child: node });
-writeFileSync(join(dir, "node.pid"), String(node.pid));
-console.log(`node: isolated NETWORK mode on 127.0.0.1:${NODE_PORT} (net ${NET_PORT}), pid ${node.pid}, tree ${dir}`);
-
-// The node's own account lives on the CONSOLE, not in its file log.
-const consoleOut = [];
-node.stdout.on("data", d => consoleOut.push(String(d)));
-node.stderr.on("data", d => consoleOut.push(String(d)));
-
-// ---- wait for it, on PROGRESS and not on a fixed sleep ---------------------
-{
-  const deadline = now() + 45_000;
-  let up = false;
-  while (now() < deadline && !up) {
-    await sleep(250);
-    up = !(await free(NODE_PORT));
-    if (node.exitCode !== null) {
-      console.error(consoleOut.join("").slice(-2000));
-      assert.fail(`the node exited before it was ready (${node.exitCode})`);
-    }
-  }
-  assert.ok(up, "the node did not open its ws port within 45s");
-  console.log(`node: ready after ${45_000 - (deadline - now())} ms`);
-}
-
-// ---- the page, and two tabs on it ----------------------------------------
-const page = spawn("python3", ["-m", "http.server", String(PAGE_PORT), "--bind", "127.0.0.1"],
-  { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
-procs.push({ name: "page server", child: page });
-
-const chrome = spawn(CHROME, [
-  "--headless=new", "--disable-gpu", `--remote-debugging-port=${DEBUG}`,
-  `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-twotab-chrome-"))}`, "about:blank",
-], { stdio: "ignore" });
-procs.push({ name: "chrome", child: chrome });
-
-/** One CDP-driven tab. */
-async function openTab(label) {
-  const t = await (await fetch(`http://127.0.0.1:${DEBUG}/json/new?about:blank`, { method: "PUT" })).json();
-  const ws = new WebSocket(t.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  };
-  const send = (method, params = {}) =>
-    new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
-  const evaluate = async expr => {
-    const r = await send("Runtime.evaluate", {
-      expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true,
-    });
-    if (r.result?.exceptionDetails || r.result?.result?.subtype === "error") {
-      throw new Error(`${label}: ${JSON.stringify(r.result).slice(0, 300)}`);
-    }
-    return r.result?.result?.value;
-  };
-  /**
-   * Wait for a condition IN THE PAGE, on progress, with a short deadline.
-   *
-   * A timeout DUMPS THE PAGE. Two runs of this acceptance were spent on
-   * failures that said only "timed out waiting for X" — which names the
-   * condition and says nothing about why it was not met, so the next step is
-   * always a guess. What the page was showing at that moment is the answer
-   * nearly every time, and it costs one evaluate.
-   */
-  const until = async (expr, what, ms = 30_000) => {
-    const deadline = now() + ms;
-    while (now() < deadline) {
-      if (await evaluate(`return !!(${expr});`)) return now();
-      await sleep(POLL_MS);
-    }
-    let page = "(the page could not be read)";
-    try {
-      page = JSON.stringify(await evaluate(`
-        const el = document.getElementById("canvas");
-        return {
-          publishButton: document.getElementById("publish")?.textContent,
-          phase: window.__craftworks?.phase,
-          seam: !!window.__craftworks,
-          comps: document.querySelectorAll(".rt-comp").length,
-          errors: [...document.querySelectorAll(".rt-err, .empty")].map(e => e.textContent).filter(Boolean),
-          canvas: el?.innerHTML?.slice(0, 400),
-        };`));
-    } catch (_) {}
-    throw new Error(`${label}: timed out waiting for ${what}\n      page: ${page}`);
-  };
-  return { label, send, evaluate, until, close: () => ws.close() };
-}
-
-// Wait for Chrome itself, on progress.
-{
-  const deadline = now() + 20_000;
-  let ready = false;
-  while (now() < deadline && !ready) {
-    await sleep(200);
-    try { await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json(); ready = true; } catch (_) {}
-  }
-  assert.ok(ready, "chrome did not start");
-}
+/**
+ * One CDP-driven tab. A timeout DUMPS THE PAGE: two runs of this acceptance
+ * were spent on failures that said only "timed out waiting for X", and what
+ * the page was showing at that moment is the answer nearly every time.
+ */
+const openTab = label => host.tab(label, {
+  pollMs: POLL_MS,
+  dump: `
+    const el = document.getElementById("canvas");
+    return {
+      publishButton: document.getElementById("publish")?.textContent,
+      phase: window.__craftworks?.phase,
+      seam: !!window.__craftworks,
+      comps: document.querySelectorAll(".rt-comp").length,
+      errors: [...document.querySelectorAll(".rt-err, .empty")].map(e => e.textContent).filter(Boolean),
+      canvas: el?.innerHTML?.slice(0, 400),
+    };`,
+});
 
 const APP = {
   name: "Two tabs",
@@ -744,9 +606,9 @@ if (report.parity) console.log(`  parity: ${report.parity.reached} backed up, ${
 if (report.failures.length) {
   console.log(`\n${report.failures.length} FAILING:`);
   for (const f of report.failures) console.log(`  - ${f}`);
-  console.log(`\ntree kept at ${dir} for inspection`);
-  process.exit(1);
+  console.log(`\ntree kept at ${node.dir} for inspection`);
+  await host.done(1);
 }
 console.log("\nall six items pass.");
-rmSync(dir, { recursive: true, force: true });
-process.exit(0);
+rmSync(node.dir, { recursive: true, force: true });
+await host.done(0);
