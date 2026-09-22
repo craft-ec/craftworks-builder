@@ -1,4 +1,5 @@
 import { loadSdk } from "./sdk-loader.js";
+import { publishApp } from "./publish-app.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
@@ -148,6 +149,8 @@ mountProjects($("projects"), {
     rt.dispose();
     openedProject = { id: project.id, created: project.created };
     rt = newRuntime();
+    // The address belonged to the project being left.
+    appAddress = null;
     app.components = components;
     app.name = project.title;
     // THE PROJECT'S OWN DEFINITION, not the shared one's leftovers (builder#53).
@@ -257,6 +260,16 @@ loadSdk().then(
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
 );
 
+/** A file the builder serves, for the app container: text, or bytes for wasm and containers. */
+async function readBuilderFile(path) {
+  const r = await fetch(`./${path}`);
+  if (!r.ok) throw new Error(`the builder could not read ${path} (${r.status})`);
+  return /\.(js|html|json)$/.test(path) ? r.text() : new Uint8Array(await r.arrayBuffer());
+}
+
+/** The published app's address, once its container is on the network. */
+let appAddress = null;
+
 function renderAddr() {
   const { realm, identity } = app.tree;
   // The address bar stops saying "in-memory, not published" when the project
@@ -267,6 +280,12 @@ function renderAddr() {
   $("tree-addr").replaceChildren(
     "craftec://", el("b", { textContent: realm }), "/", el("b", { textContent: identity ?? "‹you›" }), "/",
     el("span", { textContent: note }),
+    // WHERE IT OPENS: this node's own web path for the app's container. Any
+    // node serves the same address.
+    ...(rt.phase === "published" && appAddress ? ["  · ", el("a", {
+      id: "app-address", href: `http://127.0.0.1:${nodePort()}/v1/contract/web/${appAddress}/`, target: "_blank",
+      textContent: `app ${appAddress.slice(0, 10)}…`, title: appAddress,
+    })] : []),
   );
 }
 
@@ -367,14 +386,30 @@ async function doPublish() {
       // open. Naming DOMAINS and not key ranges is deliberate — what a range
       // is, is the SDK's business (craftworks-sdk#66). A preload that fails is
       // not a failed publish; the first read simply pays for it.
-      after: async db => {
+      after: async (db, res) => {
         let warn = "";
+        // THE APP ON THE NETWORK (builder#104): its web container, opened by
+        // address from any node as a VIEW of this project's data. A failure
+        // here is not a failed publish — the data is on the node — so it is
+        // reported, and the publication is recorded without an address.
+        let put = null;
+        try {
+          put = await publishApp(app, {
+            sdk: sdkReady, session: res.session.session, headId: res.session.headId(),
+            manifest: await (await fetch("./sdk/artefacts.json")).json(),
+            read: readBuilderFile, subtle: crypto.subtle,
+          });
+          appAddress = put.address;
+          // The acceptance seam: what was PUT, for the tools that open it elsewhere.
+          if (globalThis.__craftworks) globalThis.__craftworks.published = { ...put, head: res.session.headId() };
+        } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
           await projects?.published?.({
             sourceRoot: db.root?.() ?? null,
             sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+            ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId() } : {}),
           });
-        } catch (e) { warn = `history: ${e.message}`; }
+        } catch (e) { warn = warn || `history: ${e.message}`; }
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }
         if (warn) throw new Error(warn);

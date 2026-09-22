@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Craftworks app</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; max-width: 960px; margin-inline: auto; }
+  #status { color: #666; }
+  #status.bad { color: #b3261e; white-space: pre-wrap; }
+  .rt-view { font-size: .9em; color: #666; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #8884; }
+</style>
+</head>
+<body>
+<p id="status" role="status">Loading…</p>
+<main id="app"></main>
+<script type="module" src="./loader.js"></script>
+</body>
+</html>
