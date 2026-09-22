@@ -20,7 +20,13 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive, seed = !backend } = {}) {
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive, seed = !backend, readOnly = false } = {}) {
+  // A VIEW (builder#104, sdk#239): somebody else's published data, which this
+  // person may read and not write. A view renders NO write controls at all —
+  // no Form, no Edit or Delete — rather than controls that fail: a visitor
+  // with view access sees a view. (The SDK refuses a write anyway; that is
+  // the safety net under this, never something the UI reaches.)
+  if (readOnly && seed) throw new Error("mountApp: a view seeds nothing — it shows the publisher's data");
   // NO DEFAULT (builder#73). `() => true` made the guard fail OPEN: a mount
   // whose runtime was disposed, switched or edited away was never refused, and
   // nothing said the guard was missing. A caller with no owner to ask says so
@@ -221,6 +227,8 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const actions = (inst, r) => el("span", { className: "rt-actions" },
     el("button", { textContent: "Edit", onclick: () => { editing[inst.domain] = r; render(); } }),
     el("button", { textContent: "Delete", onclick: async () => { await db.delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
+  // A view's rows carry no actions: nothing in a view writes.
+  const rowActions = (inst, r) => (readOnly ? "" : actions(inst, r));
 
   // WHAT THE VIEW SAYS ABOUT ITS OWN EXTENT.
   //
@@ -260,7 +268,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
     if (!view.rows.length) return el("p", { className: "rt-empty", textContent: "No records yet." });
     return [el("div", { className: "rt-scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, schema.fields.map(f => el("th", { textContent: f.name })), el("th", { textContent: "state" }), el("th"))),
-      el("tbody", {}, view.rows.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip(r)), el("td", {}, actions(inst, r))))))),
+      el("tbody", {}, view.rows.map(r => el("tr", {}, schema.fields.map(f => el("td", { textContent: display(f.kind, r.fields[f.name]) })), el("td", {}, stateChip(r)), el("td", {}, rowActions(inst, r))))))),
       footer(inst, i, view)];
   }
 
@@ -290,7 +298,12 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
         title: "Not yet published to your node — closing this tab now would lose them",
       })] : []),
       ...problems.map(p => el("p", { className: "rt-err", textContent: p })),
-      ...app.components.map((inst, i) => {
+      ...(readOnly ? [el("p", { className: "rt-view", role: "note", textContent: "View only — somebody else's published data." })] : []),
+      // A FORM IS A WRITE: a view does not render one at all. Skipped in
+      // place (flatMap), so `i` stays the component's index — the bindings
+      // are indexed by it.
+      ...app.components.flatMap((inst, i) => {
+        if (readOnly && inst.type === "form") return [];
         const schema = schemas[inst.domain];
         const body = !schema ? el("p", { className: "rt-err", textContent: `No schema for “${inst.domain}”.` })
           : RENDER[inst.type] ? RENDER[inst.type](inst, schema, i)
