@@ -46,10 +46,13 @@ fi
 # copy is a glob rather than a list — a list is correct on the day it is
 # written and silently wrong afterwards. One list up here, both loops read
 # it, and they cannot drift.
-WASM_ARTEFACTS="craftworks_sdk_bg.wasm engine_delegate.wasm block.wasm register.wasm"
+# builder#104: publishing PUTs the SDK's artefacts container (artefacts.webapp)
+# and the app's under the `webapp` contract (webapp.wasm); the signer ships
+# for page mode. All three are checked and copied like the rest.
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm engine_delegate.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
-COPIED_ARTEFACTS="engine_delegate.wasm block.wasm register.wasm"
+COPIED_ARTEFACTS="engine_delegate.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
 
 out=.sdk-build/$rev
 

@@ -33,7 +33,23 @@ assert.strictEqual(info.builder.version, JSON.parse(readFileSync(at("../package.
 assert.strictEqual(info.sdkRev, readFileSync(at("../SDK_REV"), "utf8").trim());
 
 // ---- contracts: COPIED from freenet-contracts, never recomputed --------------
-const contractsRepo = process.env.CRAFTWORKS_CONTRACTS ?? at("../../freenet-contracts");
+// WHERE THE CONTRACTS ARE, or a LOUD failure. A path that silently falls back
+// to a guess reads "no hashes.toml" off a directory that is not the contracts
+// repo at all — a could-not-check that reports like a check (it did: a run
+// without CRAFTWORKS_CONTRACTS failed on the honest-absence assertion, naming
+// neither the variable nor the path it had guessed).
+export function contractsRepoOf(env, exists, fallback) {
+  if (env.CRAFTWORKS_CONTRACTS) return env.CRAFTWORKS_CONTRACTS;
+  if (exists(fallback)) return fallback;
+  throw new Error(
+    `CRAFTWORKS_CONTRACTS is not set and ${fallback} does not exist: set it to the ` +
+    "freenet-contracts checkout whose hashes build-info.json was made from");
+}
+// THE CONTROLS for the resolver itself, both ways, before it is used.
+assert.throws(() => contractsRepoOf({}, () => false, "/nowhere/freenet-contracts"), /CRAFTWORKS_CONTRACTS is not set and \/nowhere\/freenet-contracts does not exist/);
+assert.strictEqual(contractsRepoOf({}, () => true, "/here"), "/here");
+assert.strictEqual(contractsRepoOf({ CRAFTWORKS_CONTRACTS: "/set" }, () => false, "/here"), "/set");
+const contractsRepo = contractsRepoOf(process.env, existsSync, at("../../freenet-contracts"));
 const hashesToml = `${contractsRepo}/build/hashes.toml`;
 if (existsSync(hashesToml)) {
   const toml = readFileSync(hashesToml, "utf8");

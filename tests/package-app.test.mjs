@@ -7,7 +7,7 @@
 import assert from "node:assert";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { packageApp, weightCarrying, NAMED } from "../package-app.js";
+import { packageApp, weightCarrying, NAMED, PLATFORM, NOT_YET_NAMED } from "../package-app.js";
 
 const at = p => fileURLToPath(new URL(p, import.meta.url));
 const subtle = crypto.subtle;
@@ -31,7 +31,10 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
 const APP = { name: "Notes", components: [{ type: "table", domain: "notes", mode: "owned" }] };
 const SDK_JS = { "sdk/index.js": "export const a = 1;\n", "index.html": "<!doctype html>\n" };
-const KEY = "ARTEFACTSCONTRACT";
+// The SDK's own artefacts container: the only key an app of this build may
+// name (packageApp refuses any other when the manifest names a container).
+const KEY = manifest.container?.address;
+if (!KEY) { process.stdout.write("  FAIL sdk/artefacts.json names no container — SDK_REV is older than builder#104's SDK half\n"); process.exit(1); }
 
 await t("**a packaged app carries NONE of the four artefacts**", async () => {
   const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
@@ -150,12 +153,52 @@ await t("**an EXTRA artefact is a mismatch too**", async () => {
   );
 });
 
-await t("THE CONTROL: this build's real manifest is exactly the four", async () => {
-  // Without this the two refusals above could both be satisfied by a manifest
+// A manifest as the SDK ships it from builder#104 on: the four, plus the two
+// publishing tools. Built from the real one, so the four hashes are real.
+const CONTAINER = { address: "BimQYzQWHZLEiffGJHfVXCXHqk4mGiyVzuk1cgBKpxb", sha256: "e".repeat(64), bytes: 510922 };
+const WEBAPP = { file: "webapp.wasm", sha256: "4".repeat(64), bytes: 30476 };
+const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP };
+
+await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
+  assert.deepStrictEqual(NAMED, ["sdk", "delegate", "block", "register"], "NAMED changed: it is an exact set");
+  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "webapp"]);
+  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: CONTAINER.address, subtle });
+  const named = JSON.parse(files["artefacts.json"]);
+  assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort(),
+    `the app's artefacts.json names ${Object.keys(named).join(", ")}`);
+  assert.strictEqual(named.contract, CONTAINER.address);
+});
+
+await t("**a container or webapp entry shaped like an APP artefact is refused, not fetched**", async () => {
+  for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }]]) {
+    await assert.rejects(
+      () => packageApp(APP, { sdkFiles: SDK_JS, manifest: { ...withTools, [k]: bad }, artefactsKey: CONTAINER.address, subtle }),
+      new RegExp(`${k} entry is not the shape of a publishing tool`),
+    );
+  }
+});
+
+await t("**THE REAL MANIFEST packages: the app names the four and the SDK's own container, and never the signer yet**", async () => {
+  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: manifest.container.address, subtle });
+  const named = JSON.parse(files["artefacts.json"]);
+  assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort());
+  assert.strictEqual(named.contract, manifest.container.address);
+  assert.ok(!("signer" in named), "the app names the signer before the switch-over");
+});
+
+await t("**an artefacts key that is not the SDK's container address is refused**", async () => {
+  await assert.rejects(
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: KEY, subtle }),
+    /is not this SDK build's artefacts container/,
+  );
+});
+
+await t("THE CONTROL: this build's real manifest is exactly the four, the two publishing tools, and what is not named yet", async () => {
+  // Without this the refusals above could all be satisfied by a manifest
   // nobody actually ships. This asserts the shipped one matches, so the pin
   // being too old fails HERE rather than in a packaging call later.
   const keys = Object.keys(manifest).filter(k => k !== "note").sort();
-  assert.deepStrictEqual(keys, [...NAMED].sort(),
+  assert.deepStrictEqual(keys, [...NAMED, ...Object.keys(PLATFORM), ...Object.keys(NOT_YET_NAMED)].sort(),
     `sdk/artefacts.json carries ${keys.join(", ")}. If entries are MISSING the pinned SDK ` +
     "revision is too old to name what an app needs; if there are extra ones the SDK has " +
     "grown an artefact this build would never fetch.");
