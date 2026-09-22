@@ -90,8 +90,18 @@ export const rowStateFor = phase => (phase === "published" ? null : UNPUBLISHED)
 export const RESERVED_PORTS = [7509, 7609];
 
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 0 } = deps;
+  const { open, artefacts, port = 0, onSaving } = deps;
   const phase = p => { onPhase(p); return p; };
+
+  // NO DEFAULT (builder#73). Without a listener the session's "saving N"
+  // would go nowhere and the page would look saved while writes that are not
+  // yet published are still in this tab only (craftworks-sdk#163). A caller
+  // that shows no saving line says so with an explicit `() => {}`.
+  if (typeof onSaving !== "function") {
+    const why = "publish: no `onSaving` — without it the page would look saved while writes are still unpublished";
+    onPhase("failed", why);
+    throw new Error(why);
+  }
 
   if (!port || RESERVED_PORTS.includes(port)) {
     const why = port
@@ -126,6 +136,8 @@ export async function publish(app, deps, onPhase = () => {}) {
       onEvent: e => {
         if (e.kind === "open") { connected = true; refusals = 0; }
         if (e.kind === "closed" || e.kind === "error") refusals += 1;
+        // Every write not yet PUBLISHED, held ones included (sdk#188).
+        if (e.kind === "saving") onSaving(e.count);
       },
     });
   } catch (e) {

@@ -136,6 +136,18 @@ export const preloadManifest = app => domainsOf(app);
 export const readsNewestFirst = type => type === "list";
 
 /**
+ * THE SAVING LINE (craftworks-sdk#163): what the page says while writes are
+ * unsaved, from the session's `{ kind: "saving", count }`. `count` is every
+ * write not yet PUBLISHED — sent, Accepted and held alike — so the line stays
+ * until the LAST one publishes, never at `Accepted` (a tab closed after it can
+ * still lose the edit). `null` means say nothing: only 0 clears it.
+ */
+export function savingLabel(count) {
+  if (!Number.isInteger(count) || count < 0) throw new Error(`savingLabel: a count of unsaved writes, not ${count}`);
+  return count === 0 ? null : `saving ${count}…`;
+}
+
+/**
  * What a paged view holds, and what it is allowed to SAY about itself.
  *
  * `page` is the binding's snapshot — at most `size` rows. `more` is what the
