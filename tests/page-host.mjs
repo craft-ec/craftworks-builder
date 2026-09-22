@@ -38,7 +38,7 @@
 //   * `openPageHost({ node, budgetMs })` — a LIVE run names its budget: the
 //     90 s default killed a 300-row run, so a run with a node has no default.
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
@@ -92,9 +92,15 @@ function answers(port) {
 
 /** The command line of a private test node. A function, so a test reads it
  * without starting anything. Flags follow craftworks-sdk `probe/src/node.rs`. */
-export function nodeArgs({ ws, net }, dir) {
+export function nodeArgs({ ws, net, transportKey = null, gateway = null }, dir) {
+  // LINKED nodes (builder#104's two-node acceptance): a gateway with a known
+  // transport key, and a node that joins it by address and public key. The
+  // default stays an isolated gateway that dials nothing.
+  const link = gateway
+    ? ["--gateway", gateway]
+    : ["--is-gateway", ...(transportKey ? ["--transport-keypair", transportKey] : [])];
   return [
-    "network", "--is-gateway", "--skip-load-from-network",
+    "network", ...link, "--skip-load-from-network",
     "--network-address", "127.0.0.1", "--network-port", String(net),
     "--public-network-address", "127.0.0.1", "--public-network-port", String(net),
     "--ws-api-address", "127.0.0.1", "--ws-api-port", String(ws),
@@ -123,7 +129,7 @@ async function killVerified(child, graceMs = 5_000) {
  * `{ ws, net, pid, dir, console(), stop() }`; `stop()` resolves to
  * `{ gone, held }` — the PID verified gone, and any port still bound.
  */
-export async function spawnNode(label, { ws, net, readyMs = 45_000 } = {}) {
+export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey = false, joins = null } = {}) {
   for (const [p, what] of [[ws, "ws"], [net, "network"]]) {
     if (!Number.isInteger(p) || p <= 0) throw new Error(`${label}: the node's ${what} port must be NAMED (got ${p})`);
     if (RESERVED.includes(p)) throw new Error(`${label}: ${p} belongs to somebody else's node; refusing to use it`);
@@ -133,7 +139,19 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000 } = {}) {
 
   const dir = mkdtempSync(join(tmpdir(), "cw-node-"));
   for (const d of ["data", "config", "log"]) mkdirSync(join(dir, d), { recursive: true });
-  const child = spawn("freenet", nodeArgs({ ws, net }, dir), { stdio: ["ignore", "pipe", "pipe"] });
+  // A gateway others can JOIN needs a transport key they can name: an X25519
+  // pair, the secret in a file for the node, the public half for the joiner.
+  let transportKey = null, publicKey = null;
+  if (gatewayKey) {
+    const { privateKey, publicKey: pub } = generateKeyPairSync("x25519");
+    const raw = k => Buffer.from(k, "base64url").toString("hex");
+    transportKey = join(dir, "transport.key");
+    writeFileSync(transportKey, raw(privateKey.export({ format: "jwk" }).d));
+    publicKey = raw(pub.export({ format: "jwk" }).x);
+  }
+  const gateway = joins ? `127.0.0.1:${joins.net},${joins.publicKey}` : null;
+  if (joins && !joins.publicKey) throw new Error(`${label}: the node to join was not started with gatewayKey`);
+  const child = spawn("freenet", nodeArgs({ ws, net, transportKey, gateway }, dir), { stdio: ["ignore", "pipe", "pipe"] });
   writeFileSync(join(dir, "node.pid"), String(child.pid ?? ""));
   // The node's own account is on its CONSOLE, not in its file log.
   const out = [];
@@ -141,7 +159,7 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000 } = {}) {
   child.stderr.on("data", d => out.push(String(d)));
   const spawnError = new Promise(ok => child.once("error", e => ok(e)));
   const node = {
-    ws, net, dir, pid: child.pid,
+    ws, net, dir, pid: child.pid, publicKey,
     console: () => out.join(""),
     async stop() {
       const gone = await killVerified(child);
@@ -173,6 +191,22 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000 } = {}) {
  * says nothing about WHY, and what the page showed is the answer nearly every
  * time.
  */
+/** Evaluate `expr` in the out-of-process iframe target whose URL contains `urlPart`; undefined if there is none. */
+async function evaluateInTarget(debug, urlPart, expr, label) {
+  const t = (await (await fetch(`http://127.0.0.1:${debug}/json/list`)).json()).find(x => x.type === "iframe" && (x.url ?? "").includes(urlPart));
+  if (!t) return undefined;
+  const ws = new WebSocket(t.webSocketDebuggerUrl);
+  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
+  try {
+    const r = await new Promise(ok => {
+      ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id === 1) ok(m); };
+      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true } }));
+    });
+    if (r.result?.exceptionDetails) throw new Error(`${label} (iframe target): ${JSON.stringify(r.result).slice(0, 300)}`);
+    return r.result?.result?.value;
+  } finally { ws.close(); }
+}
+
 export async function openTab(debug, label, { dump = `return document.body?.innerText?.slice(0, 400);`, pollMs = 25 } = {}) {
   const t = await (await fetch(`http://127.0.0.1:${debug}/json/new?about:blank`, { method: "PUT" })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl);
@@ -203,7 +237,29 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
     try { page = JSON.stringify(await evaluate(dump)); } catch (_) {}
     throw new Error(`${label}: timed out waiting for ${what}\n      page: ${page}`);
   };
-  return { label, send, evaluate, until, close: () => ws.close() };
+  // EVALUATE IN A CHILD FRAME, found by a part of its URL. A node serves a
+  // web app inside a SANDBOXED iframe (opaque origin), so the page's own
+  // `document` is the node's shell and never the app; this reads the app's
+  // DOM through an isolated world in that frame.
+  const evaluateIn = async (urlPart, expr) => {
+    const tree = (await send("Page.getFrameTree")).result?.frameTree;
+    const frames = [];
+    const walk = n => { if (!n) return; frames.push(n.frame); (n.childFrames ?? []).forEach(walk); };
+    walk(tree);
+    const f = frames.find(x => (x.url ?? "").includes(urlPart));
+    // OUT OF PROCESS: Chrome isolates a sandboxed iframe into its own process,
+    // and then it is not in this page's frame tree but a TARGET of its own.
+    if (!f) return evaluateInTarget(debug, urlPart, expr, label);
+    const w = await send("Page.createIsolatedWorld", { frameId: f.id, worldName: "page-host-probe" });
+    const contextId = w.result?.executionContextId;
+    if (!contextId) throw new Error(`${label}: no context in frame ${f.url}: ${JSON.stringify(w).slice(0, 200)}`);
+    const r = await send("Runtime.evaluate", {
+      expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true, contextId,
+    });
+    if (r.result?.exceptionDetails) throw new Error(`${label} (frame): ${JSON.stringify(r.result).slice(0, 300)}`);
+    return r.result?.result?.value;
+  };
+  return { label, send, evaluate, evaluateIn, until, close: () => ws.close() };
 }
 
 /** Resolve with the first match of `re` in a child's output, or fail naming the child. */
@@ -288,4 +344,15 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     console.error(`${label} FAILED: ${e.message}`);
     done(1);
   }
+}
+
+/**
+ * A SECOND browser with its own FRESH profile (empty cache, no storage): what
+ * a stranger opening an app by address has. Returns `{ tab(label), stop() }`.
+ */
+export async function openFreshBrowser(label, { windowSize = "1280,800" } = {}) {
+  const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0",
+    `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-fresh-"))}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
+  const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
+  return { debug, pid: chrome.pid, tab: (tabLabel, opts) => openTab(debug, tabLabel, opts), stop: () => killVerified(chrome) };
 }

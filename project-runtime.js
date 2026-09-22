@@ -193,7 +193,7 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
       }
       if (disposed) return null;
       publishedDb = res.db;
-      try { await after(res.db); } catch (e) { if (!disposed) error = e.message; }
+      try { await after(res.db, res); } catch (e) { if (!disposed) error = e.message; }
       if (disposed) return null;
       phase = "published";
       // REMOUNT on the new backend. The old mount is on the preview db.

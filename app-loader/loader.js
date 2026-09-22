@@ -1,0 +1,51 @@
+// THE PUBLISHED APP'S LOADER (builder#104).
+//
+// Served by a node at /v1/contract/web/<app address>/ from the app's web
+// container. It carries NONE of the SDK's wasm: `artefacts.json` names each by
+// hash and the SDK's artefacts container that holds them, on THIS node. So:
+//
+//   1. the SDK's wasm is fetched from the artefacts container and VERIFIED by
+//      its hash before it runs — a mismatch is refused and the app does not
+//      load; an artefact nobody serves fails naming which one and its hash;
+//   2. a session opens on this node and PROVISIONS NOTHING: a visitor who only
+//      reads leaves no trace on the node they read from;
+//   3. the publisher's tree (`app.json`'s `publisher.head`) is opened by
+//      address — the same read path as a person's own — and mounted as a VIEW:
+//      published data is readable by default, and writing is access control.
+import { load } from "./sdk/index.js";
+import { artefactBytes } from "./sdk/artefacts.js";
+import { mountApp } from "./runtime.js";
+
+const status = document.getElementById("status");
+const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+
+try {
+  const json = async f => {
+    const r = await fetch(`./${f}`);
+    if (!r.ok) throw new Error(`this app's ${f} could not be read (${r.status})`);
+    return r.json();
+  };
+  const [art, app] = await Promise.all([json("artefacts.json"), json("app.json")]);
+  const head = app?.publisher?.head;
+  if (!/^[0-9a-f]{64}$/.test(head ?? "")) throw new Error("app.json names no publisher head, so there is nothing to show");
+  // Every artefact from the SDK's artefacts container on THIS node, by hash.
+  // From `location.href`, never `location.origin`: a node serves an app in a
+  // SANDBOXED iframe, whose origin is opaque — "null" — while its URL is the
+  // node's own.
+  const from = e => ({ urls: [new URL(`/v1/contract/web/${art.contract}/${e.file}`, location.href).href], sha256: e.sha256 });
+  say("Loading the SDK…");
+  const sdk = await load(await artefactBytes(from(art.sdk)));
+  say("Connecting…");
+  const handle = await sdk.open({
+    port: Number(location.port),
+    artefacts: { delegate: from(art.delegate), block: from(art.block), register: from(art.register) },
+    provision: false,
+  });
+  say("Reading…");
+  const tree = await handle.tree(head);
+  await mountApp(document.getElementById("app"), sdk, app, () => {}, tree.db, "published", { alive: () => true, seed: false, readOnly: true });
+  say(app.name ?? "");
+} catch (e) {
+  // THE FIRST THING A PERSON CAN SEND: which artefact, which hash, what failed.
+  say(`This app could not open: ${e.message}`, true);
+}

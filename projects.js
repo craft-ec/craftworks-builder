@@ -147,6 +147,12 @@ export const SCHEMAS = {
       { name: "schema_block_ids", kind: "text" },
       { name: "published_at", kind: "time" },
       { name: "source_root", kind: "text" },
+      // What was PUT (builder#104): the bundle's hash, the app's address (its
+      // web container's key, served at /v1/contract/web/<address>/), and the
+      // head its data is read from. All three or none.
+      { name: "bundle_hash", kind: "text" },
+      { name: "app_contract_id", kind: "text" },
+      { name: "head", kind: "text" },
     ],
   },
   // ONE RECORD PER (PROJECT, DOMAIN): that domain's schema and seed rows, for
@@ -443,26 +449,21 @@ export async function openInto(db, pid, { setLastOpened, handOver }) {
   return project;
 }
 
-export async function recordPublication(db, pid, { seq, sdk_version = null, schema_block_ids = [], source_root = null, published_at = Date.now(), ...rest }) {
-  // `bundle_hash` and `app_contract_id` are deliberately NOT recorded.
-  // Publishing today connects to a node, provisions it and switches the
-  // backend; it does not package the app, so there is no bundle and no app
-  // address to record. They arrive with the builder half of
-  // craftworks-sdk#108, and this record gains a FIELD then rather than being
-  // rewritten.
-  //
-  // Writing them empty would be worse than leaving them out: an empty field
-  // that later means something reads as "this publication had no bundle"
-  // instead of "bundles did not exist yet", and every reader afterwards would
-  // need to know which era a row came from to interpret it. So a caller that
-  // tries is REFUSED rather than quietly storing a placeholder.
-  for (const k of ["bundle_hash", "app_contract_id"]) {
-    if (k in rest) throw new Error(`${k} cannot be recorded yet: apps carry no bundle until craftworks-sdk#108`);
+export async function recordPublication(db, pid, { seq, sdk_version = null, schema_block_ids = [], source_root = null, published_at = Date.now(), bundle_hash = null, app_contract_id = null, head = null, ...rest }) {
+  // WHAT WAS PUT, all three or none (builder#104). A bundle hash with no
+  // address is a publication nobody can open, and an address with no head
+  // opens onto no data; recording half would read as a complete one. A row
+  // from before apps were packaged simply has none of them.
+  const put = [bundle_hash, app_contract_id, head];
+  if (put.some(v => v !== null) && put.some(v => v === null)) {
+    throw new Error("a publication records its bundle_hash, app_contract_id and head together, or none of them");
   }
+  for (const k of Object.keys(rest)) throw new Error(`${k} is not a field a publication records`);
   return db.put(PUBLICATION, {
     pid, seq, sdk_version,
     schema_block_ids: enc(schema_block_ids),
     source_root, published_at,
+    ...(bundle_hash === null ? {} : { bundle_hash, app_contract_id, head }),
   });
 }
 
@@ -483,6 +484,9 @@ export async function publicationsOf(db, pid) {
       schema_block_ids: dec(r.fields.schema_block_ids) ?? [],
       source_root: r.fields.source_root,
       published_at: r.fields.published_at,
+      bundle_hash: r.fields.bundle_hash ?? null,
+      app_contract_id: r.fields.app_contract_id ?? null,
+      head: r.fields.head ?? null,
     }));
 }
 

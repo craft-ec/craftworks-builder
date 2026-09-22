@@ -716,17 +716,20 @@ export async function mountProjects(host, {
   /**
    * Record that the open project was published, with what is TRUE at the time.
    *
-   * No bundle hash and no app address: publishing does not package the app yet
-   * (builder#47, blocked on craftworks-sdk#108). What IS true is the tree root
-   * it published FROM, the SDK it was built against, and when.
+   * The tree root it published FROM, the SDK it was built against, when, and
+   * — once the app is on the network (builder#104) — its bundle hash, its
+   * address and the head its data is read from.
    */
-  async function published({ sourceRoot = null, sdkVersion = null } = {}) {
+  async function published({ sourceRoot = null, sdkVersion = null, bundleHash = null, appContractId = null, head = null } = {}) {
     const pid = current();
     if (!pid) return null;
     const rec = await recordPublication(db, pid, {
       seq: await nextSeq(db, pid),
       source_root: sourceRoot,
       sdk_version: sdkVersion,
+      bundle_hash: bundleHash,
+      app_contract_id: appContractId,
+      head,
     });
     await paint();
     return rec;

@@ -264,19 +264,19 @@ await t("publications are history, newest first (builder#26 reads these)", async
   assert.equal(hist[0].source_root, "r2", "it records the tree root it published FROM");
   assert.equal(hist[0].sdk_version, "aaa1111");
 
-  // A bundle hash cannot be recorded yet, and the refusal is the point: an
-  // empty field that later means something reads as "this publication had no
-  // bundle" instead of "bundles did not exist yet".
-  await assert.rejects(
-    () => recordPublication(db, p.id, { seq: 3, bundle_hash: "h3" }),
-    /apps carry no bundle until craftworks-sdk#108/,
-  );
-  await assert.rejects(
-    () => recordPublication(db, p.id, { seq: 3, app_contract_id: "c3" }),
-    /apps carry no bundle until craftworks-sdk#108/,
-  );
+  // Rows from before apps were packaged carry none of what was PUT.
+  assert.deepEqual([hist[1].bundle_hash, hist[1].app_contract_id, hist[1].head], [null, null, null]);
+  // WHAT WAS PUT (builder#104) is recorded all together, or not at all: half
+  // of it would read as a publication somebody could open.
+  for (const half of [{ bundle_hash: "h3" }, { app_contract_id: "c3" }, { bundle_hash: "h3", app_contract_id: "c3" }]) {
+    await assert.rejects(() => recordPublication(db, p.id, { seq: 3, ...half }), /together, or none of them/);
+  }
+  await assert.rejects(() => recordPublication(db, p.id, { seq: 3, bundel_hash: "typo" }), /is not a field a publication records/);
   assert.equal((await publicationsOf(db, p.id)).length, 2, "and nothing was written");
   assert.equal(await nextSeq(db, p.id), 3, "the next publication follows the highest recorded seq");
+  await recordPublication(db, p.id, { seq: 3, bundle_hash: "h3", app_contract_id: "c3", head: "ab".repeat(32) });
+  const top = (await publicationsOf(db, p.id))[0];
+  assert.deepEqual([top.seq, top.bundle_hash, top.app_contract_id, top.head], [3, "h3", "c3", "ab".repeat(32)], "what was PUT is read back");
 });
 
 await t("device settings stay on the device, never in the tree", async () => {
