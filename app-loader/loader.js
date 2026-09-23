@@ -7,16 +7,16 @@
 //   1. the SDK's wasm is fetched from the artefacts container and VERIFIED by
 //      its hash before it runs — a mismatch is refused and the app does not
 //      load; an artefact nobody serves fails naming which one and its hash;
-//   2. this node's signer is ASKED whose it is, registering nothing: on the
-//      PUBLISHER's node the app opens EDITABLE, through the same session the
-//      builder uses (`openPublished`); anywhere else nothing is provisioned —
-//      a visitor who only reads leaves no trace on the node they read from —
-//   3. and the publisher's tree (`app.json`'s `publisher.head`) is opened by
-//      address — the same read path as a person's own — and mounted as a VIEW:
-//      published data is readable by default, and writing is access control.
+//   2. this node's signer is ASKED whose it is (`openPublished`), and the
+//      app opens as a NORMAL WEBSITE: each component shows its SOURCE -- the
+//      publisher's tree (`app.json`'s `publisher.head`, editable only on the
+//      publisher's own node, a read-only view anywhere else) or the VISITOR's
+//      own tree, which every visitor writes (their key and tree are made on
+//      their first entry, through the SDK's existing provision path);
+//   3. which components show inputs is the SDK's one `canWrite` decision.
 import { load } from "./sdk/index.js";
 import { artefactBytes } from "./sdk/artefacts.js";
-import { mountApp } from "./runtime.js";
+import { mountApp, sourceOf } from "./runtime.js";
 import { openPublished } from "./runtime-logic.js";
 
 const status = document.getElementById("status");
@@ -49,13 +49,14 @@ try {
     app: appId,
     port: Number(location.port),
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
+    viewer: (app.components ?? []).some(c => sourceOf(c) === "viewer"),
   });
   // "Reading…" is never SILENT: it says how long, and a read that ENDS is
   // shown on its component by the runtime, by name.
   const t0 = Date.now();
   say("Reading…");
   const counting = setInterval(() => say(`Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
-  const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.db, "published", { alive: () => true, seed: false, readOnly: opened.readOnly });
+  const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }
   // Mounted: a component whose read ENDED says so on the page (the runtime);
   // the status names it too, so the page is never quietly half-empty.
