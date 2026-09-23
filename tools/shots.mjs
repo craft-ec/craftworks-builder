@@ -149,6 +149,12 @@ try {
     // app never re-runs, and the second shot photographs the first one's page.
     // Running a shot alone passed and running the pair failed, which is the
     // signature — and a flaky gate is one people learn to re-run.
+    // FRESH STORAGE, every shot. The builder keeps projects and its local db
+    // in the origin's storage, so a shot opened after another opened ITS
+    // project, not the one in its own hash: the live-binding shot passed
+    // alone and timed out after publish-no-node, on main as well as here.
+    // A shot is a picture of one state, so each starts from none.
+    await send("Storage.clearDataForOrigin", { origin: `http://127.0.0.1:${PORT}`, storageTypes: "all" });
     await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?shot=${shot.name}${shot.hash()}` });
     await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "the SDK badge");
     if (shot.setup) await evaluate(shot.setup);
