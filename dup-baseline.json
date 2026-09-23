@@ -1,0 +1,24 @@
+{
+ "tool": "jscpd@4.0.9",
+ "note": "known duplicates, to be worked DOWN (craftworks-sdk#320)",
+ "clones": [
+  {
+   "key": "88a65872618b5b8d",
+   "a": "projects-panel.js:15-23",
+   "b": "versions-panel.js:7-15",
+   "lines": 9
+  },
+  {
+   "key": "9b9b53b2bd1b2fee",
+   "a": "runtime.js:15-22",
+   "b": "versions-panel.js:7-15",
+   "lines": 8
+  },
+  {
+   "key": "2c86b4ab586745aa",
+   "a": "tools/shots.mjs:39-44",
+   "b": "tools/two-tab.mjs:98-103",
+   "lines": 6
+  }
+ ]
+}
