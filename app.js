@@ -142,6 +142,7 @@ mountProjects($("projects"), {
   // and a person can act on each, so each is shown.
   db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
   getCanvas: () => app.components,
+  getIds: () => sdkReady?.ids ?? null,
   getDefinition: () => ({ schemas: app.schemas, seed: app.seed, tree: app.tree, versions: app.versions ?? null }),
   setCanvas: (components, project) => {
     // A DIFFERENT PROJECT, so a different runtime. The old one is disposed

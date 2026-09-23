@@ -221,16 +221,21 @@ export async function listProjects(db) {
  * re-derived from the fields — so the slot is the last half. A LocalDb id is
  * its own slot.
  */
-const slotOfId = id => (/^[0-9a-f]{64}$/.test(id) ? id.slice(32) : id);
+const slotOfId = (id, ids) => {
+  // By the SDK's one parse (`sdk.ids.slot`); an id it does not read as a
+  // record id (a LocalDb one) is its own slot.
+  if (!ids?.slot) throw new Error("restore: the SDK is not loaded yet, so the record's slot cannot be read");
+  return ids.slot(id) ?? id;
+};
 
 /** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreProject(db, pid, fields) {
-  return db.createAt(PROJECT, slotOfId(pid), fields);
+export async function restoreProject(db, pid, fields, ids) {
+  return db.createAt(PROJECT, slotOfId(pid, ids), fields);
 }
 
 /** Put one component back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }) {
-  return db.createAt(COMPONENT, slotOfId(rid), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
+export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }, ids) {
+  return db.createAt(COMPONENT, slotOfId(rid, ids), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
 }
 
 /** Add one component to a project. ONE record. */

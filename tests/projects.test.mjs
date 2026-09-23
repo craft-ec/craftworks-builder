@@ -328,14 +328,14 @@ await t("**over the SDK's Db, a project and a component are restored under THEIR
   const c = await addComponent(had, p.id, { kind: "table", props: { domain: "notes" } });
   assert.strictEqual(c.id.length, 64, "a component is keyed under its project: 64 hex");
   const lost = await fresh();                        // the store, gone
-  const rp = await restoreProject(lost, p.id, (await openProject(had, p.id)).record);
-  const rc = await restoreComponent(lost, p.id, c.id, { kind: "table", props: { domain: "notes" } });
+  const rp = await restoreProject(lost, p.id, (await openProject(had, p.id)).record, sdk.ids);
+  const rc = await restoreComponent(lost, p.id, c.id, { kind: "table", props: { domain: "notes" } }, sdk.ids);
   assert.deepStrictEqual([rp.outcome, rp.record.id], ["created", p.id]);
   assert.deepStrictEqual([rc.outcome, rc.record.id], ["created", c.id]);
   const back = await openProject(lost, p.id);
   assert.strictEqual(back.title, "Kept");
   assert.deepStrictEqual(back.components.map(x => x.id), [c.id]);
-  assert.strictEqual((await restoreProject(lost, p.id, { title: "other" })).outcome, "exists", "and never overwrites");
+  assert.strictEqual((await restoreProject(lost, p.id, { title: "other" }, sdk.ids)).outcome, "exists", "and never overwrites");
 });
 
 process.stdout.write("\nprojects: all ok\n");

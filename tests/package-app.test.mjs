@@ -8,6 +8,9 @@ import assert from "node:assert";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { packageApp, weightCarrying, NAMED, PLATFORM, NOT_YET_NAMED } from "../package-app.js";
+import { loadSdk } from "../sdk-loader.js";
+// The REAL SDK's id rules: the manifest's shapes are checked by them.
+const { ids } = await loadSdk(readFileSync(fileURLToPath(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url))));
 
 const at = p => fileURLToPath(new URL(p, import.meta.url));
 const subtle = crypto.subtle;
@@ -37,7 +40,7 @@ const KEY = manifest.container?.address;
 if (!KEY) { process.stdout.write("  FAIL sdk/artefacts.json names no container — SDK_REV is older than builder#104's SDK half\n"); process.exit(1); }
 
 await t("**a packaged app carries NONE of the four artefacts**", async () => {
-  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
+  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids });
   const carried = Object.keys(files).filter(p => /\.wasm$/.test(p));
   assert.deepStrictEqual(carried, [],
     `the bundle carries ${carried.join(", ")} — every app would ship its own copy of bytes ` +
@@ -63,7 +66,7 @@ await t("**the measurement: naming instead of carrying**", async () => {
   }
   assert.ok(Object.keys(real).length >= 5,
     `only ${Object.keys(real).length} SDK js files found — this is measuring a fixture again`);
-  const { bytes } = await packageApp(APP, { sdkFiles: real, manifest, artefactsKey: KEY, subtle });
+  const { bytes } = await packageApp(APP, { sdkFiles: real, manifest, artefactsKey: KEY, subtle, ids });
   const carrying = weightCarrying(bytes, manifest);
   const saved = carrying - bytes;
   process.stdout.write(
@@ -80,8 +83,8 @@ await t("**the measurement: naming instead of carrying**", async () => {
 await t("**the bundle hash is DETERMINISTIC** — rollback depends on it", async () => {
   // builder#47 is blocked on this: a publication can only be rolled back to
   // if it is a thing that can be named again.
-  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
-  const b = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
+  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids });
+  const b = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids });
   assert.strictEqual(a.bundleHash, b.bundleHash, "the same app packaged twice gave two hashes");
   assert.match(a.bundleHash, /^[0-9a-f]{64}$/, "that is not a sha256");
 });
@@ -89,10 +92,10 @@ await t("**the bundle hash is DETERMINISTIC** — rollback depends on it", async
 await t("THE CONTROL: a DIFFERENT app hashes differently", async () => {
   // Without this, a hash that was a constant would satisfy determinism
   // perfectly and make every publication look like every other.
-  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
+  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids });
   const b = await packageApp(
     { ...APP, name: "Notes 2" },
-    { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle },
+    { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids },
   );
   assert.notStrictEqual(a.bundleHash, b.bundleHash,
     "two different apps package to the same hash, so a rollback could not tell them apart");
@@ -101,10 +104,10 @@ await t("THE CONTROL: a DIFFERENT app hashes differently", async () => {
 await t("THE CONTROL: a different FILE hashes differently too", async () => {
   // The app definition is not the only thing in a bundle. A hash covering
   // only `app.json` would pass the control above while ignoring the code.
-  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle });
+  const a = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: KEY, subtle, ids });
   const b = await packageApp(APP, {
     sdkFiles: { ...SDK_JS, "sdk/index.js": "export const a = 2;\n" },
-    manifest, artefactsKey: KEY, subtle,
+    manifest, artefactsKey: KEY, subtle, ids,
   });
   assert.notStrictEqual(a.bundleHash, b.bundleHash, "the bundle hash does not cover the app's code");
 });
@@ -115,7 +118,7 @@ await t("a wasm handed in is REFUSED, not silently dropped", async () => {
   await assert.rejects(
     () => packageApp(APP, {
       sdkFiles: { ...SDK_JS, "sdk/block.wasm": new Uint8Array([0]) },
-      manifest, artefactsKey: KEY, subtle,
+      manifest, artefactsKey: KEY, subtle, ids,
     }),
     /block\.wasm is not a file an app carries/,
   );
@@ -123,7 +126,7 @@ await t("a wasm handed in is REFUSED, not silently dropped", async () => {
 
 await t("no artefacts key is a refusal", async () => {
   await assert.rejects(
-    () => packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: null, subtle }),
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: null, subtle, ids }),
     /must name the contract/,
   );
 });
@@ -131,7 +134,7 @@ await t("no artefacts key is a refusal", async () => {
 await t("a manifest missing a hash is a refusal, naming which AND why", async () => {
   const broken = { ...manifest, signer: { file: "signer.wasm" } };
   await assert.rejects(
-    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: broken, artefactsKey: KEY, subtle }),
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: broken, artefactsKey: KEY, subtle, ids }),
     e => {
       assert.match(e.message, /no hash for: signer/, "it does not name the missing entry");
       assert.match(e.message, /too old/,
@@ -148,7 +151,7 @@ await t("**an EXTRA artefact is a mismatch too**", async () => {
   // fetched with nothing anywhere saying so.
   const grown = { ...manifest, keeper: { file: "keeper.wasm", sha256: "a".repeat(64), bytes: 1 } };
   await assert.rejects(
-    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: grown, artefactsKey: KEY, subtle }),
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: grown, artefactsKey: KEY, subtle, ids }),
     /does not name: keeper|not name: keeper|artefacts this build does not name: keeper/,
   );
 });
@@ -162,7 +165,7 @@ const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), con
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
   assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
   assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "modules", "webapp"]);
-  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: CONTAINER.address, subtle });
+  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: CONTAINER.address, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort(),
     `the app's artefacts.json names ${Object.keys(named).join(", ")}`);
@@ -173,14 +176,14 @@ await t("**a container or webapp entry shaped like an APP artefact is refused, n
   for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }],
     ["modules", { file: "modules.wasm", sha256: "e".repeat(64), bytes: 1 }], ["modules", ["index.js", "../app.js"]], ["modules", []]]) {
     await assert.rejects(
-      () => packageApp(APP, { sdkFiles: SDK_JS, manifest: { ...withTools, [k]: bad }, artefactsKey: CONTAINER.address, subtle }),
+      () => packageApp(APP, { sdkFiles: SDK_JS, manifest: { ...withTools, [k]: bad }, artefactsKey: CONTAINER.address, subtle, ids }),
       new RegExp(`${k} entry is not the shape of a publishing tool`),
     );
   }
 });
 
 await t("**THE REAL MANIFEST packages: the app names the four (the signer among them) and the SDK's own container, and never the engine delegate**", async () => {
-  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: manifest.container.address, subtle });
+  const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: manifest.container.address, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort());
   assert.strictEqual(named.contract, manifest.container.address);
@@ -190,7 +193,7 @@ await t("**THE REAL MANIFEST packages: the app names the four (the signer among 
 
 await t("**an artefacts key that is not the SDK's container address is refused**", async () => {
   await assert.rejects(
-    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: KEY, subtle }),
+    () => packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: KEY, subtle, ids }),
     /is not this SDK build's artefacts container/,
   );
 });

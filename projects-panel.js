@@ -154,7 +154,7 @@ const adopt = (c, rec) => {
  *
  * Returns what it did, so a caller can assert on it rather than infer it.
  */
-export async function saveCanvas(db, pid, components, { by = TAB, onConflict } = {}) {
+export async function saveCanvas(db, pid, components, { by = TAB, onConflict, ids = null } = {}) {
   // A STABLE KEY PER CANVAS COMPONENT, assigned before the first `await`,
   // kept under `_builder` beside the component's generation.
   //
@@ -239,7 +239,7 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
   let unrestorable = false;
   if (!projectStored) {
     if (held) {
-      await restoreProject(db, pid, held);
+      await restoreProject(db, pid, held, ids);
       did.restoredProject = true;
     } else {
       unrestorable = true;
@@ -261,7 +261,7 @@ export async function saveCanvas(db, pid, components, { by = TAB, onConflict } =
     const bump = () => { c[BUILDER] = { key, gen: Math.max(c[BUILDER].gen ?? 0, topGen.get(key) ?? 0) + 1, by }; };
     if (!rec && c.rid && members?.has(c.rid) && !projectStored) {
       bump();
-      const again = await restoreComponent(db, pid, c.rid, toRecord(c));
+      const again = await restoreComponent(db, pid, c.rid, toRecord(c), ids);
       c.rid = again.record.id;
       setBase(c);
       kept.add(again.record.id);
@@ -512,11 +512,14 @@ export async function mountProjects(host, {
   // version was kept). No default: with nobody to tell, `saveCanvas` fails
   // at the conflict rather than being quiet about it (builder#74, #73).
   onConflict,
+  // () => the SDK's id rules (`sdk.ids`) once it has loaded: a restore reads
+  // a record's slot by them.
+  getIds = () => null,
 }) {
   await defineProjectDomains(db);
   // Every save of this panel goes through here, one at a time (builder#49).
   const save = serialSaves(async (pid, canvas, definition) => {
-    const did = await saveCanvas(db, pid, canvas, { onConflict });
+    const did = await saveCanvas(db, pid, canvas, { onConflict, ids: getIds() });
     if (definition) await saveDefinition(db, pid, definition);
     // A save that ADOPTED another tab's version changed the canvas under the
     // person, so what is on screen must be drawn again from it.

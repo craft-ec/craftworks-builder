@@ -15,7 +15,7 @@
 // No DOM. `session` is the SDK's (`put_contract`/`put_status`), `sdk` the
 // entry (`sdk.webapp`), `read` returns a file's bytes or text — injected, so
 // this is tested without a node.
-import { packageApp, isModuleName } from "./package-app.js";
+import { packageApp } from "./package-app.js";
 
 /**
  * The BUILDER's files an app container carries, by their path IN the
@@ -45,14 +45,14 @@ export const APP_FILES = {
  * "Loading…" importing a file its container did not have. No `modules`, no
  * publication: said by name, never a guess.
  */
-export function appFiles(manifest) {
+export function appFiles(manifest, ids) {
   const modules = manifest?.modules;
   if (!Array.isArray(modules) || modules.length === 0) {
     throw new Error("publish: the SDK's artefacts.json names no `modules` — which of its files an app needs is the SDK's to say; rebuild against an SDK that says it");
   }
   for (const m of modules) {
     // A module is a file beside index.js: a path out of sdk/ is not one.
-    if (!isModuleName(m)) {
+    if (typeof m !== "string" || !ids.module(m)) {
       throw new Error(`publish: the SDK's artefacts.json names ${JSON.stringify(m)} as a module, which is not a file beside its index.js`);
     }
   }
@@ -102,9 +102,9 @@ export async function publishApp(app, {
   // user opens it by address and READS it (published data is readable by
   // default).
   const sdkFiles = {};
-  for (const [at, from] of Object.entries(appFiles(manifest))) sdkFiles[at] = await read(from);
+  for (const [at, from] of Object.entries(appFiles(manifest, sdk.ids))) sdkFiles[at] = await read(from);
   const published = { ...app, publisher: { head: headId, app: appId } };
-  const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
+  const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle, ids: sdk.ids });
 
   // 3. Its container, built by the SDK (deterministic: the same app is the
   // same address).

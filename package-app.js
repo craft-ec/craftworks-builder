@@ -47,17 +47,13 @@ export const NAMED = ["sdk", "signer", "block", "register"];
  * that holds no such file.
  */
 export const PLATFORM = {
-  container: e => typeof e?.address === "string" && e.address.length > 0 && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
-  webapp: e => e?.file === "webapp.wasm" && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
+  container: (e, ids) => typeof e?.address === "string" && e.address.length > 0 && ids.hex32(e?.sha256 ?? ""),
+  webapp: (e, ids) => e?.file === "webapp.wasm" && ids.hex32(e?.sha256 ?? ""),
   // The SDK's JavaScript an app CARRIES (its build's reachable set from
-  // index.js): what goes into the container, never fetched by hash.
-  modules: e => Array.isArray(e) && e.length > 0 && e.every(isModuleName),
+  // index.js): what goes into the container, never fetched by hash. Each a
+  // file beside index.js by the SDK's one rule (`sdk.ids.module`).
+  modules: (e, ids) => Array.isArray(e) && e.length > 0 && e.every(m => typeof m === "string" && ids.module(m)),
 };
-
-/** A name `modules` may hold: one JavaScript file beside the SDK's index.js. */
-export function isModuleName(m) {
-  return typeof m === "string" && /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.js$/.test(m);
-}
 
 /**
  * Artefacts the SDK ships that an app does NOT name yet, each with why.
@@ -84,7 +80,9 @@ const hex = bytes =>
  *
  * Returns the files, their total size, and the bundle hash.
  */
-export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle }) {
+export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle, ids }) {
+  // The SDK's id rules (`sdk.ids`): the manifest's shapes are checked by them.
+  if (!ids?.hex32 || !ids?.module) throw new Error("packageApp: no sdk.ids, so the SDK's manifest cannot be checked");
   if (!artefactsKey) {
     // An app that names no contract has nowhere to fetch its artefacts from
     // and carries none of them, so it would be a bundle that cannot open.
@@ -106,7 +104,7 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
   const named = Object.keys(manifest ?? {}).filter(k => k !== "note");
   const missing = NAMED.filter(n => !manifest?.[n]?.sha256);
   const extra = named.filter(k => !NAMED.includes(k) && !(k in PLATFORM) && !(k in NOT_YET_NAMED));
-  const misshapen = named.filter(k => k in PLATFORM && !PLATFORM[k](manifest[k]));
+  const misshapen = named.filter(k => k in PLATFORM && !PLATFORM[k](manifest[k], ids));
   if (misshapen.length) {
     throw new Error(
       `the SDK manifest's ${misshapen.join(", ")} entry is not the shape of a publishing ` +

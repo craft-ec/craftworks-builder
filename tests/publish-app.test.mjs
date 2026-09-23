@@ -69,7 +69,7 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
   await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   const u = unpack(s.puts[1].state);
   try {
-    assert.deepStrictEqual(u.list, [...Object.keys(appFiles(manifest)), "app.json", "artefacts.json"].sort());
+    assert.deepStrictEqual(u.list, [...Object.keys(appFiles(manifest, sdk.ids)), "app.json", "artefacts.json"].sort());
     assert.ok(!u.list.some(f => /\.wasm$/.test(f)), "the app carries wasm");
     const app = JSON.parse(u.text("app.json"));
     // AND the app id its data was written under (craftworks-sdk#267): a
