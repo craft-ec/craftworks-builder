@@ -15,16 +15,58 @@ import { openPageHost, openFreshBrowser, spawnNode } from "../tests/page-host.mj
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REAL = !!(process.env.RN_PUB && process.env.RN_VIS);
-const A = REAL ? { ws: Number(process.env.RN_PUB), label: process.env.RN_PUB_LABEL ?? "publisher" } : { ws: 17521, net: 37521, gatewayKey: true };
-const B = REAL ? { ws: Number(process.env.RN_VIS), label: process.env.RN_VIS_LABEL ?? "visitor" } : { ws: 17531, net: 37531 };
+const A = REAL ? { ws: Number(process.env.RN_PUB), label: process.env.RN_PUB_LABEL ?? "publisher" } : { ws: 17521, net: 37521, gatewayKey: true, label: "A" };
+const B = REAL ? { ws: Number(process.env.RN_VIS), label: process.env.RN_VIS_LABEL ?? "visitor" } : { ws: 17531, net: 37531, label: "B" };
+// THE OWNER'S NODES are refused HERE, not only by a wrapper that calls this:
+// a direct run cannot skip it. REALNET_OWNER_OK=1 only with the core dev's
+// approval for that run.
+if (REAL) {
+  for (const n of [A, B]) {
+    if ([7509, 7609].includes(n.ws) && process.env.REALNET_OWNER_OK !== "1") {
+      console.log(`refusing ${n.ws} (${n.label}): it is the owner's node; REALNET_OWNER_OK=1 only with the core dev's approval for this run`);
+      process.exit(2);
+    }
+  }
+}
+// EVERY publish this run makes, and how many retries each needed. First-try
+// reliability is what Phase 3 must prove, so a publish that needed a retry
+// fails the run — it is counted and said, never passed silently.
+const publishes = [];
 const BUDGET_MS = Number(process.env.BUDGET_MS ?? (REAL ? 1_100_000 : 600_000));
 const host = await openPageHost("open-by-address", { ...(REAL ? {} : { node: A }), budgetMs: BUDGET_MS });
 const nodeA = host.node;
-let nodeB = null, fresh = null, failed = 0;
+let nodeB = null, fresh = null, ownerBrowser = null, failed = 0;
 const check = (ok, what, evidence) => {
   if (!ok) failed += 1;
   console.log(`${ok ? "PASS" : "FAIL"}  ${what}${evidence === undefined ? "" : `  — ${typeof evidence === "string" ? evidence : JSON.stringify(evidence)}`}`);
 };
+/**
+ * Watch a publish the builder is running until it has put the app on the
+ * network (`__craftworksPublished`), printing its own words as they change.
+ * On the real network a stalled handoff is RETRIED as a person would (at most
+ * 3), each retry a FINDING, and every publish is recorded with its retries.
+ */
+async function watchPublish(what, t0) {
+  let pub = null, lastLine = "", retries = 0;
+  const end = Date.now() + (REAL ? 500_000 : 180_000);
+  while (Date.now() < end) {
+    pub = await builderTab.evaluate(`return window.__craftworksPublished ?? null;`).catch(() => null);
+    if (pub) break;
+    const line = JSON.stringify(await builderTab.evaluate(`const b = document.getElementById("publish"); return { label: b?.textContent, note: document.getElementById("publish-note")?.textContent?.slice(0, 300) || undefined, notice: document.getElementById("storage-note")?.textContent?.slice(0, 300) || undefined };`).catch(e => ({ error: e.message })));
+    if (line !== lastLine) { console.log(`  +${Date.now() - t0} ms ${what}: ${line}`); lastLine = line; }
+    if (REAL && line.includes("Try publishing again") && retries < 3) {
+      retries += 1;
+      console.log(`  FINDING  the ${what} stopped (above) and is retried by a click, ${retries} of 3`);
+      await builderTab.evaluate(`document.getElementById("publish").click(); return 1;`);
+      lastLine = "";
+    }
+    await sleep(500);
+  }
+  publishes.push({ what, retries, ok: !!pub });
+  return { pub, retries };
+}
+let builderTab = null;
+
 /** Poll `expr` in `tab` until it is truthy, or `ms` passes; the last value either way. */
 async function until(tab, expr, ms, everyMs = 1000) {
   const end = Date.now() + ms;
@@ -51,6 +93,7 @@ try {
 
   // ---- 1. PUBLISH ON A, from the builder ------------------------------------
   const builder = await host.tab("builder");
+  builderTab = builder;
   const APP = { name: "Notes", components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
     schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } } };
   await builder.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${host.port}/#node=${A.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)))}; return 1;`);
@@ -64,21 +107,7 @@ try {
   // The publish's own words while it runs, each change printed; on the real
   // network a record handoff that stalls is RETRIED as a person would (at most
   // 3), and each retry is printed as a finding, not hidden.
-  let pub = null, lastLine = "", retries = 0;
-  const pubEnd = Date.now() + (REAL ? 500_000 : 180_000);
-  while (Date.now() < pubEnd) {
-    pub = await builder.evaluate(`return window.__craftworksPublished ?? null;`).catch(() => null);
-    if (pub) break;
-    const line = JSON.stringify(await builder.evaluate(`const b = document.getElementById("publish"); return { label: b?.textContent, note: document.getElementById("publish-note")?.textContent?.slice(0, 300) || undefined, notice: document.getElementById("storage-note")?.textContent?.slice(0, 300) || undefined };`).catch(e => ({ error: e.message })));
-    if (line !== lastLine) { console.log(`  +${Date.now() - tPublish} ms publish: ${line}`); lastLine = line; }
-    if (REAL && line.includes("Try publishing again") && retries < 3) {
-      retries += 1;
-      console.log(`  FINDING  the publish stopped (above) and is retried by a click, ${retries} of 3`);
-      await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
-      lastLine = "";
-    }
-    await sleep(500);
-  }
+  const { pub, retries } = await watchPublish("publish", tPublish);
   const publishMs = Date.now() - tPublish;
   check(!!pub?.address, `Publish on A put the app on the network, in ${publishMs} ms (click → both containers acknowledged)`, pub?.address ? { address: pub.address, head: pub.head?.slice(0, 16) } : pub);
   if (!pub?.address) throw new Error("nothing to open");
@@ -128,6 +157,17 @@ try {
     try { unusable = window.__craftworks.session?.unusable?.() ?? null; } catch (_) {}
     return { stats: (() => { try { return db.stats(); } catch (e) { return String(e.message); } })(), trace: trace ? JSON.stringify(trace).slice(0, 3000) : null, unusable };`)));
   if (!savedOnA) console.log("A's rows:", JSON.stringify(await builder.evaluate(`return [...document.querySelectorAll("tbody tr")].map(tr => tr.textContent).slice(0, 5);`)));
+  // THE VIEW IS LIVE BY DEFAULT (builder#114): the app declares no `live`,
+  // and B's OPEN view shows A's new row with no reload.
+  const visFrame = `127.0.0.1:${B.ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  const visRows = () => visitor.evaluateIn(visFrame, `return [...document.querySelectorAll("tbody tr td:first-child")].map(td => td.textContent);`).catch(() => []);
+  async function seenOnVisitor(titles, ms) {
+    const t0 = Date.now(); let rows = [];
+    while (Date.now() - t0 < ms) { rows = await visRows(); if (titles.every(x => rows.includes(x))) return { ms: Date.now() - t0, rows: rows.length }; await sleep(500); }
+    return { ms: null, missing: titles.filter(x => !rows.includes(x)).length, rows: rows.length };
+  }
+  const live = await seenOnVisitor(["gamma"], 90_000);
+  check(live.ms !== null, `${B.label}'s OPEN view shows the new row with NO reload (a view is live by default): ${live.ms} ms after ${A.label}'s store had it published`, live);
   let onB = null, reloads = 0;
   const tSaved = Date.now();
   for (let i = 0; i < 8 && !onB; i += 1) {
@@ -136,6 +176,51 @@ try {
     onB = await untilIn(visitor, `return [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === "gamma") || null;`, 20_000, 250, `${pub.address}/?__sandbox=1`);
   }
   check(!!onB, `B sees A's new row after a reload: ${Date.now() - tSaved} ms after A's store had it published (${reloads} reload(s))`);
+
+  // ---- 3b. THE PUBLISHER'S OWN SITE, A BURST, AND A RELOADED BUILDER --------
+  // (builder#114) The publisher opening its published site on ITS OWN node
+  // gets it EDITABLE; another person's node keeps the VIEW. In its OWN
+  // browser, and every frame named by port: the two pages share a path, and
+  // a bare path once read the publisher's frame as the visitor's.
+  const addIn = (tab, fr, title) => {
+    const js = `const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; i.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector(".rt-comp button.pri").click(); return 1;`;
+    return fr ? tab.evaluateIn(fr, js) : tab.evaluate(js);
+  };
+  ownerBrowser = await openFreshBrowser("open-by-address: the publisher's own site");
+  const owner = await ownerBrowser.tab("owner");
+  const ownFrame = `127.0.0.1:${A.ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  const tOwner = Date.now();
+  await owner.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${A.ws}/v1/contract/web/${pub.address}/`)}; return 1;`);
+  const ownerUi = await untilIn(owner, `return document.querySelectorAll(".rt-comp input[name=title]").length > 0 ? { buttons: [...document.querySelectorAll("button")].map(b => b.textContent).filter(t => ["Add","Edit","Delete"].includes(t)), view: !!document.querySelector(".rt-view") } : null;`, 120_000, 500, ownFrame);
+  check(!!ownerUi && ownerUi.buttons.includes("Add") && !ownerUi.view, `the publisher's own site on ${A.label} opens EDITABLE (in ${Date.now() - tOwner} ms)`, ownerUi ?? await owner.evaluateIn(ownFrame, `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message));
+  const visUi = await visitor.evaluateIn(visFrame, `return { inputs: document.querySelectorAll("input").length, view: !!document.querySelector(".rt-view") };`);
+  check(visUi.inputs === 0 && visUi.view, `the same site on ${B.label} (another person's node) is still a VIEW`, visUi);
+  if (ownerUi) {
+    await addIn(owner, ownFrame, "from the publisher's site");
+    const seen = await seenOnVisitor(["from the publisher's site"], 90_000);
+    check(seen.ms !== null, `a row added on the publisher's own site shows on ${B.label}'s open view, no reload: ${seen.ms} ms`, seen);
+    const burst = Array.from({ length: 10 }, (_, i) => `burst ${i}`);
+    const tB = Date.now();
+    for (const b of burst) { await addIn(owner, ownFrame, b); await sleep(150); }
+    const ownerSaved = await untilIn(owner, `const r = [...document.querySelectorAll("tbody tr")].filter(tr => tr.textContent.startsWith("burst ")); return r.length === 10 && r.every(tr => tr.textContent.includes("saved")) ? Date.now() : null;`, 180_000, 500, ownFrame);
+    const burstSeen = await seenOnVisitor(burst, 180_000);
+    check(!!ownerSaved && burstSeen.ms !== null, `a burst of 10 rows from the publisher's site: all saved at ${ownerSaved ? ownerSaved - tB : null} ms; all on ${B.label}'s open view ${burstSeen.ms} ms after that`, { burstSeen });
+  }
+  // A published project REOPENS CONNECTED: reload the builder, no Publish
+  // click — and a row added there reaches B's open view. It is a publish too,
+  // counted with the rest.
+  const tReload = Date.now();
+  await builder.evaluate(`location.reload(); return 1;`);
+  await sleep(1500);
+  const again = await watchPublish("reopen", tReload);
+  const addrNow = await builder.evaluate(`return document.getElementById("tree-addr")?.textContent ?? "";`);
+  check(!!again.pub && !/not published|not connected/.test(addrNow), `after a reload the builder reopens CONNECTED, with no click, in ${Date.now() - tReload} ms`, addrNow);
+  if (again.pub) {
+    await until(builder, `return document.querySelectorAll(".rt-comp input[name=title]").length > 0 || null;`, 30_000, 500);
+    await addIn(builder, null, "after the builder reload");
+    const rl = await seenOnVisitor(["after the builder reload"], 90_000);
+    check(rl.ms !== null, `a row added in the reloaded builder shows on ${B.label}'s open view, no reload: ${rl.ms} ms`, rl);
+  }
 
   // ---- 4. A BYTE THAT DOES NOT MATCH ITS HASH IS REFUSED --------------------
   // The same app, but its artefacts.json names a WRONG hash for the SDK wasm.
@@ -168,6 +253,13 @@ try {
   console.log(`FAIL  the run stopped: ${e.message}`);
 } finally {
   if (fresh) await fresh.stop();
+  if (ownerBrowser) await ownerBrowser.stop();
+  const first = publishes.filter(p => p.ok && !p.retries).length;
+  console.log(`\npublish: ${first}/${publishes.length} first try, ${publishes.filter(p => p.retries).length} retried${publishes.some(p => !p.ok) ? `, ${publishes.filter(p => !p.ok).length} never published` : ""}`);
+  if (publishes.some(p => p.retries)) {
+    failed += 1;
+    console.log("FAIL  a publish needed a retry: first-try reliability is what this run proves");
+  }
   if (nodeB) { const r = await nodeB.stop(); if (!r.gone || r.held.length) failed += 1; }
   console.log(failed ? `\n${failed} check(s) FAILED` : "\nall checks passed");
   await host.done(failed ? 1 : 0);
