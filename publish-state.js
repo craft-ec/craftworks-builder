@@ -134,6 +134,25 @@ export const LIVE_NOTE =
 export const isLive = inst => inst?.live === true;
 
 /**
+ * Does this component's binding follow the data LIVE? What the app declares —
+ * except in a VIEW (a published app opened by address), which is always live:
+ * the owner's ruling, "update live". A visitor has no Live switch to turn,
+ * and a published page that never shows the publisher's next row is the bug
+ * a person sees (2026-09-23, real network: the head reached the visitor's
+ * node in a second, the page never re-read).
+ */
+export const bindsLive = (inst, readOnly) => readOnly === true || isLive(inst);
+
+/**
+ * Does opening this project CONNECT it to its published tree? Yes when it has
+ * been published (its newest publication names the app's address): the
+ * builder reopens it on the node through the same path Publish takes, so a
+ * row added after a reload lands in the published tree — never an in-memory
+ * preview that says "not published" about an app that is (the owner's report).
+ */
+export const reconnectsOnOpen = project => typeof project?.publication?.app_contract_id === "string" && project.publication.app_contract_id !== "";
+
+/**
  * The SDK's row-state code, as one of the states above.
  *
  * The SDK says what a write is DOING; this file says what a person reads.
@@ -155,6 +174,8 @@ export const FROM_ROW_STATE = {
   PENDING: "accepted",
   // Rolled back: it never landed, and making the change again is safe.
   ROLLED_BACK: "lost",
+  // Saved, and its redundancy is on the network too.
+  BACKED_UP: "parity-complete",
 };
 
 /**

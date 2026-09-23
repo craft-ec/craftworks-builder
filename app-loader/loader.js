@@ -7,14 +7,17 @@
 //   1. the SDK's wasm is fetched from the artefacts container and VERIFIED by
 //      its hash before it runs — a mismatch is refused and the app does not
 //      load; an artefact nobody serves fails naming which one and its hash;
-//   2. a session opens on this node and PROVISIONS NOTHING: a visitor who only
-//      reads leaves no trace on the node they read from;
-//   3. the publisher's tree (`app.json`'s `publisher.head`) is opened by
+//   2. this node's signer is ASKED whose it is, registering nothing: on the
+//      PUBLISHER's node the app opens EDITABLE, through the same session the
+//      builder uses (`openPublished`); anywhere else nothing is provisioned —
+//      a visitor who only reads leaves no trace on the node they read from —
+//   3. and the publisher's tree (`app.json`'s `publisher.head`) is opened by
 //      address — the same read path as a person's own — and mounted as a VIEW:
 //      published data is readable by default, and writing is access control.
 import { load } from "./sdk/index.js";
 import { artefactBytes } from "./sdk/artefacts.js";
 import { mountApp } from "./runtime.js";
+import { openPublished } from "./runtime-logic.js";
 
 const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
@@ -41,16 +44,23 @@ try {
   // nothing this SDK can open.
   const appId = app?.publisher?.app;
   if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) throw new Error("app.json names no publisher app, so there is no space to read");
-  const handle = await sdk.open({
+  const opened = await openPublished(sdk, {
+    head,
     app: appId,
     port: Number(location.port),
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
-    provision: false,
   });
+  // "Reading…" is never SILENT: it says how long, and a read that ENDS is
+  // shown on its component by the runtime, by name.
+  const t0 = Date.now();
   say("Reading…");
-  const tree = await handle.tree(head);
-  await mountApp(document.getElementById("app"), sdk, app, () => {}, tree.db, "published", { alive: () => true, seed: false, readOnly: true });
-  say(app.name ?? "");
+  const counting = setInterval(() => say(`Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
+  const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.db, "published", { alive: () => true, seed: false, readOnly: opened.readOnly });
+  try { await reading; } finally { clearInterval(counting); }
+  // Mounted: a component whose read ENDED says so on the page (the runtime);
+  // the status names it too, so the page is never quietly half-empty.
+  const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
+  say(ended.length ? ended.join(" · ") : (app.name ?? ""), ended.length > 0);
 } catch (e) {
   // THE FIRST THING A PERSON CAN SEND: which artefact, which hash, what failed.
   say(`This app could not open: ${e.message}`, true);

@@ -53,9 +53,15 @@ async function published() {
   return db;
 }
 
+/** `live` as each binding was ASKED for, in order. */
+let asked = [];
 async function canvas(readOnly) {
   const root = new Node("div");
-  await mountApp(root, sdk, APP, () => {}, await published(), "published", { alive: () => true, seed: false, readOnly });
+  const db = await published();
+  const bind = db.bind.bind(db);
+  asked = [];
+  db.bind = (domain, opts = {}) => { asked.push(opts.live === true); return bind(domain, opts); };
+  await mountApp(root, sdk, APP, () => {}, db, "published", { alive: () => true, seed: false, readOnly });
   return all(root);
 }
 const WRITES = ["Add", "Save changes", "Edit", "Delete", "Cancel"];
@@ -68,6 +74,34 @@ await t("**a VIEW paints no input and no button that writes — and still shows 
   const cells = nodes.filter(n => n.tag === "td").map(n => n.textContent);
   for (const text of ["one", "two", "three"]) assert.ok(cells.includes(text), `the view does not show “${text}”: ${cells}`);
   assert.ok(nodes.some(n => n.className === "rt-view"), "the view does not say it is one");
+});
+
+await t("**a VIEW binds every component LIVE though the app declares no `live` (the owner's ruling: update live)**", async () => {
+  assert.ok(APP.components.every(c => c.live === undefined), "the app under test declares live — the check would prove nothing");
+  await canvas(true);
+  assert.ok(asked.length > 0, "the view bound nothing — the spy saw no read");
+  assert.deepStrictEqual(asked, asked.map(() => true), `a view bound a component NOT live: ${JSON.stringify(asked)}`);
+});
+
+await t("THE CONTROL: the same app on a WRITABLE canvas binds as it DECLARES (not live) — the check above can fail", async () => {
+  await canvas(false);
+  assert.ok(asked.length > 0 && asked.every(l => l === false), `a writable canvas bound live without being asked: ${JSON.stringify(asked)}`);
+});
+
+await t("**a read that ENDED is said on its component, by name — never a silent empty table (the stalled \"Reading…\" on the real network)**", async () => {
+  const root = new Node("div");
+  const db = await published();
+  const bind = db.bind.bind(db);
+  const WHY = "the range this read needed could not be loaded: block 00ced61a could not be had";
+  db.bind = (domain, opts = {}) => { const b = bind(domain, opts); return new Proxy(b, { get: (o, k) => (k === "status" ? () => ({ state: "unreachable", why: WHY, code: "UNAVAILABLE" }) : typeof o[k] === "function" ? o[k].bind(o) : o[k]) }); };
+  await mountApp(root, sdk, APP, () => {}, db, "published", { alive: () => true, seed: false, readOnly: true });
+  const said = all(root).filter(n => n.className === "rt-err rt-read").map(n => n.textContent);
+  assert.ok(said.length > 0 && said.every(x => x.includes(WHY)), `the read's end was not said: ${JSON.stringify(said)}`);
+});
+
+await t("THE CONTROL: a read that did NOT end says nothing of the kind", async () => {
+  const nodes = await canvas(true);
+  assert.deepStrictEqual(nodes.filter(n => n.className === "rt-err rt-read").map(n => n.textContent), []);
 });
 
 await t("THE CONTROL: the same app on a WRITABLE session has every one of those controls", async () => {

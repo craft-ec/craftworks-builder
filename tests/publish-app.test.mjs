@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSdk } from "../sdk-loader.js";
-import { publishApp, settled, APP_FILES } from "../publish-app.js";
+import { publishApp, settled, APP_FILES, appFiles } from "../publish-app.js";
 import { NAMED } from "../package-app.js";
 
 let failures = 0;
@@ -44,7 +44,7 @@ function node(answer = () => "put") {
     },
   };
 }
-const fast = { budgetMs: 1000, everyMs: 0, sleep: async () => {} };
+const fast = { everyMs: 0, sleep: async () => {} };
 const unpack = state => {
   const dir = mkdtempSync(join(tmpdir(), "app-container-"));
   const web = Number(new DataView(state.buffer, state.byteOffset).getBigUint64(8));
@@ -69,7 +69,7 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
   await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   const u = unpack(s.puts[1].state);
   try {
-    assert.deepStrictEqual(u.list, [...Object.keys(APP_FILES), "app.json", "artefacts.json"].sort());
+    assert.deepStrictEqual(u.list, [...Object.keys(appFiles(manifest)), "app.json", "artefacts.json"].sort());
     assert.ok(!u.list.some(f => /\.wasm$/.test(f)), "the app carries wasm");
     const app = JSON.parse(u.text("app.json"));
     // AND the app id its data was written under (craftworks-sdk#267): a
@@ -97,19 +97,18 @@ await t("**a refused PUT fails in the node's words, naming WHICH container**", a
     /the node refused the app's container: invalid contract update/);
 });
 
-await t("an UNANSWERED PUT (the socket dropped) is PUT again once and settles; twice is a failure", async () => {
-  let s = node((key, poll, sent) => (sent < 2 ? "unanswered" : "put"));
-  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  assert.strictEqual(s.puts.length, 4, "each container was PUT again exactly once");
-  s = node(() => "unanswered");
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }), /unanswered twice/);
+await t("**the SDK ENDS the PUT: `failed` (given up, in its words) fails the publish naming the container — and the builder never PUTs again itself**", async () => {
+  const s = node(key => (key === manifest.container.address ? "put" : { state: "failed", said: "the node did not acknowledge the PUT in 120 s (7 attempts)" }));
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }),
+    /the app's container was not acknowledged: the node did not acknowledge the PUT in 120 s/);
+  assert.strictEqual(s.puts.length, 2, "the builder PUT again on its own — the re-send is the SDK's");
 });
 
-await t("silence past the budget fails saying so — never 'published' short of the ack", async () => {
-  let clock = 0;
-  await assert.rejects(
-    () => settled(node(() => "pending"), "k", "the app's container", () => {}, { budgetMs: 5000, everyMs: 1000, now: () => clock, sleep: async ms => { clock += ms; } }),
-    /did not acknowledge the app's container in 5 s/);
+await t("**pending is the SDK's to end: the builder waits it out, with no budget of its own (a slow node that acks late still publishes)**", async () => {
+  const s = node((key, poll) => (poll < 400 ? "pending" : "put"));
+  const r = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.ok(r.address, "a late ack did not publish");
+  assert.strictEqual(s.puts.length, 2, "the builder PUT again on its own");
 });
 
 await t("refused before anything is sent: no head, and an artefacts container that is not the manifest's", async () => {
@@ -119,6 +118,81 @@ await t("refused before anything is sent: no head, and an artefacts container th
     /not the elsewhere its manifest names/);
 });
 
+
+await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same address on the same SDK PUTs neither container** (re-PUTs made the node serve the artefacts 404 for a moment)", async () => {
+  const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.strictEqual(first.put, true);
+  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  const s = node();
+  const again = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion: "rev-1" });
+  assert.strictEqual(s.puts.length, 0, `an unchanged app was PUT again: ${s.puts.map(p => p.key)}`);
+  assert.strictEqual(again.put, false);
+  assert.strictEqual(again.address, first.address, "the unchanged app reports another address");
+  assert.strictEqual(again.artefactsKey, manifest.container.address);
+});
+
+await t("THE CONTROLS: a changed app, a changed SDK, or an SDK that cannot say its version PUTs both containers", async () => {
+  const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  for (const [what, app, sdkVersion] of [["a changed app", { ...APP, name: "Changed" }, "rev-1"], ["a changed SDK", APP, "rev-2"], ["no SDK version", APP, null]]) {
+    const s = node();
+    const r = await publishApp(app, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion });
+    assert.deepStrictEqual(s.puts.map(p => p.key), [manifest.container.address, r.address], `${what}: not both PUT`);
+    assert.strictEqual(r.put, true, what);
+  }
+});
+
+/**
+ * Every module the SDK's entry reaches, by following its imports: an oracle
+ * INDEPENDENT of the manifest (the manifest is what is under test).
+ */
+function reachableFrom(dir, entry = "index.js") {
+  const seen = new Set();
+  const walk = f => {
+    if (seen.has(f)) return;
+    seen.add(f);
+    const src = readFileSync(join(dir, f), "utf8");
+    for (const m of src.matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']\.\/([A-Za-z0-9_.-]+\.js)["']/g)) walk(m[1]);
+  };
+  walk(entry);
+  return [...seen].sort();
+}
+/** The reachable modules a published container is missing. */
+const missingFrom = (list, dir) => reachableFrom(dir).filter(m => !list.includes(`sdk/${m}`));
+
+await t("**the published app carries EVERY module the SDK's entry reaches — from the SDK's own `modules`, never a hand list** (a missing rto.js hung every published page on \"Loading…\")", async () => {
+  const sdkDir = at("sdk");
+  const reach = reachableFrom(sdkDir);
+  assert.ok(reach.length >= 5 && reach.includes("index.js"), `the oracle read nothing: ${reach}`);
+  assert.deepStrictEqual([...manifest.modules].sort(), reach, "the SDK's `modules` is not what its entry reaches");
+  const s = node();
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const u = unpack(s.puts[1].state);
+  try {
+    assert.deepStrictEqual(missingFrom(u.list, sdkDir), [], "the published app is missing modules its SDK imports");
+    for (const m of manifest.modules) assert.ok(u.list.includes(`sdk/${m}`), `sdk/${m} is not in the published app`);
+  } finally { u.done(); }
+});
+
+await t("THE CONTROL: a manifest that leaves out ONE module publishes an app the check names as missing it", async () => {
+  const dropped = manifest.modules.find(m => m !== "index.js");
+  const short = { ...manifest, modules: manifest.modules.filter(m => m !== dropped) };
+  const s = node();
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest: short, read, subtle: crypto.subtle, ...fast });
+  const u = unpack(s.puts[1].state);
+  try {
+    assert.deepStrictEqual(missingFrom(u.list, at("sdk")), [dropped], "the check did not name the module the manifest left out");
+  } finally { u.done(); }
+});
+
+await t("**no `modules`, no publication — refused by name before anything is PUT; and a module outside sdk/ is refused**", async () => {
+  for (const [bad, re] of [[{ ...manifest, modules: undefined }, /names no `modules`/], [{ ...manifest, modules: [] }, /names no `modules`/],
+    [{ ...manifest, modules: ["index.js", "../app.js"] }, /not a file beside its index\.js/], [{ ...manifest, modules: ["index.js", ".hidden.js"] }, /not a file beside/]]) {
+    const s = node();
+    await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest: bad, read, subtle: crypto.subtle, ...fast }), re);
+    assert.strictEqual(s.puts.length, 0, "something was PUT for a manifest that names no modules");
+  }
+});
 
 await t("**no app id, no publication** — a visitor would read an empty space (craftworks-sdk#267)", async () => {
   const s = node();

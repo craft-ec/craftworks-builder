@@ -109,6 +109,21 @@ export function nodeArgs({ ws, net, transportKey = null, gateway = null }, dir) 
   ];
 }
 
+/**
+ * The node's ENVIRONMENT: its own web-container cache, inside its dir.
+ *
+ * A node serves web containers from ONE per-user cache directory unless told
+ * otherwise (freenet-core 0.2.136, config.rs `default_webapp_cache_dir`), and
+ * that cache's locks and eviction guards are per-PROCESS. Every node spawned
+ * here without this shared the OWNER's node's web cache: a test node's unpack
+ * (`remove_dir_all` + `unpack`) of the SDK's artefacts container made the
+ * container 404 on two nodes at once, the same failure the owner hit on
+ * their node. So a spawned node gets its own, like its data, config and log.
+ */
+export function nodeEnv(dir, env = process.env) {
+  return { ...env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") };
+}
+
 /** Kill `child` by its recorded PID and wait until it is GONE; SIGKILL after `graceMs`. */
 async function killVerified(child, graceMs = 5_000) {
   const pid = child.pid;
@@ -138,7 +153,7 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
   if (!(await udpFree(net)) || !(await tcpFree(net))) throw new Error(`${label}: something already holds ${net} (node network); refusing to start`);
 
   const dir = mkdtempSync(join(tmpdir(), "cw-node-"));
-  for (const d of ["data", "config", "log"]) mkdirSync(join(dir, d), { recursive: true });
+  for (const d of ["data", "config", "log", "webapp_cache"]) mkdirSync(join(dir, d), { recursive: true });
   // A gateway others can JOIN needs a transport key they can name: an X25519
   // pair, the secret in a file for the node, the public half for the joiner.
   let transportKey = null, publicKey = null;
@@ -151,7 +166,7 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
   }
   const gateway = joins ? `127.0.0.1:${joins.net},${joins.publicKey}` : null;
   if (joins && !joins.publicKey) throw new Error(`${label}: the node to join was not started with gatewayKey`);
-  const child = spawn("freenet", nodeArgs({ ws, net, transportKey, gateway }, dir), { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("freenet", nodeArgs({ ws, net, transportKey, gateway }, dir), { stdio: ["ignore", "pipe", "pipe"], env: nodeEnv(dir) });
   writeFileSync(join(dir, "node.pid"), String(child.pid ?? ""));
   // The node's own account is on its CONSOLE, not in its file log.
   const out = [];

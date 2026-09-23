@@ -36,12 +36,14 @@ const preview = async () => (await openApp(sdk, app, previewDb(new sdk.Db()))).d
  * attempt still carries Preview's edits and deletes.
  */
 async function unconfirmedAttempt(src, dst) {
+  let reads = 0;
   const pending = new Proxy(dst, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: "PENDING" }; };
+    // Pending a while, then the node ANSWERS it lost (rolled back): the attempt fails, named.
+    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: ++reads > 20 ? "ROLLED_BACK" : "PENDING" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  await assert.rejects(handoff({ source: src, target: pending, ...ctx, confirm: { everyMs: 0, stallMs: 10 } }), /not confirmed/);
+  await assert.rejects(handoff({ source: src, target: pending, ...ctx, confirm: { everyMs: 0 } }), /did not reach the node/);
 }
 /** What the page supplies besides the two databases (builder#83). */
 const ctx = { app, schemas: schemasOf(app), slotFrom: sdk.slotFrom, namespace: PID, seedMs: SEED_MS, onNotice: () => {} };
@@ -162,14 +164,22 @@ function acking(states) {
     return typeof v === "function" ? v.bind(o) : v;
   } });
 }
-const fast = { everyMs: 0, stallMs: 50 };
+const fast = { everyMs: 0 };
 
 await t("**PENDING is not done: the handoff waits until the node says CLEAN**", async () => {
   const src = await preview();
   let clean = false;
   const dst = acking(n => (n > 4 ? (clean = true, "CLEAN") : "PENDING"));
-  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, stallMs: 5_000 } });
+  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0 } });
   assert.ok(clean, "it returned before any row read CLEAN");
+});
+
+await t("**BACKED_UP is saved: a row saved AND backed up confirms (the SDK's rowSaved, not a literal CLEAN)**", async () => {
+  const src = await preview();
+  let seen = false;
+  const dst = acking(n => (n > 4 ? (seen = true, "BACKED_UP") : "PENDING"));
+  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0 } });
+  assert.ok(seen, "it returned before any row read BACKED_UP");
 });
 
 await t("**a ROLLED_BACK write fails the handoff, and says the data is still here**", async () => {
@@ -179,11 +189,28 @@ await t("**a ROLLED_BACK write fails the handoff, and says the data is still her
     /did not reach the node; your data is still here/);
 });
 
-await t("**never confirmed fails at the deadline instead of waiting for ever**", async () => {
+await t("**a record the SDK ENDS unconfirmed fails the handoff, named — after waiting as long as the SDK took, with no deadline of the builder's own**", async () => {
   const src = await preview();
-  const dst = acking(() => "PENDING");
+  let reads = 0;
+  const dst = acking(n => { reads = n; return n > 400 ? "ROLLED_BACK" : "PENDING"; });
   await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: fast }),
-    /not confirmed by the node yet/);
+    /did not reach the node; your data is still here/);
+  assert.ok(reads > 400, `it gave up after ${reads} reads, before the SDK ended the write`);
+});
+
+await t("**a person CANCELS a publish that waits: it ends, named, and says the data is still here**", async () => {
+  const src = await preview();
+  const ac = new AbortController();
+  const dst = acking(n => { if (n === 30) ac.abort(); return "PENDING"; });
+  await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, signal: ac.signal } }),
+    /cancelled: the publish was stopped; your data is still here/);
+});
+
+await t("**a deadline passed by name is refused, never silently ignored (the builder has none)**", async () => {
+  const src = await preview();
+  for (const confirm of [{ stallMs: 30_000 }, { budgetMs: 60_000 }]) {
+    await assert.rejects(handoff({ source: src, target: acking(() => "CLEAN"), ...ctx, confirm }), /there is no deadline to pass/);
+  }
 });
 
 // ---- rollback, then retry (found in review of builder#61) -------------------
@@ -232,19 +259,19 @@ await t("**a copy the node ROLLED BACK is re-copied by the retry, and the retry 
   assert.deepStrictEqual(r.onNode, r.inPreview, "all three rows are on the node after the retry");
 });
 
-await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", async () => {
+await t("THE CONTROL: a copy still PENDING when another ends lost is NOT forgotten", async () => {
   // Or a slow node would get every row twice on the retry.
   const src = await preview();
   const db = new sdk.Db();
-  let puts = 0, slow = true;
+  let puts = 0, slow = true, lost = null;
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "createAt") return async (...a) => { const r = await v.apply(o, a); if (a[0] === "tasks" && r.outcome === "created") puts += 1; return r; };
-    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: slow ? "PENDING" : "CLEAN" }; };
+    if (k === "createAt") return async (...a) => { const r = await v.apply(o, a); if (a[0] === "tasks" && r.outcome === "created") { puts += 1; lost ??= r.record.id; } return r; };
+    if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: slow ? (r.id === lost ? "ROLLED_BACK" : "PENDING") : "CLEAN" }; };
     return typeof v === "function" ? v.bind(o) : v;
   } });
   const go = () => handoff({ source: src, target, ...ctx, confirm: fast });
-  await assert.rejects(go(), /not confirmed by the node yet/);
+  await assert.rejects(go(), /did not reach the node/);
   const before = puts;
   slow = false;
   await go();
@@ -253,9 +280,11 @@ await t("THE CONTROL: a copy merely PENDING at the deadline is NOT forgotten", a
 
 await t("**a record reporting NO state is not counted as confirmed**", async () => {
   const src = await preview();
-  const dst = acking(() => undefined);
+  // No state for a while — then the SDK ends it lost. Had "no state" counted
+  // as confirmed, the handoff would have finished instead of failing here.
+  const dst = acking(n => (n > 50 ? "ROLLED_BACK" : undefined));
   await assert.rejects(handoff({ source: src, target: dst, ...ctx, confirm: fast }),
-    /not confirmed by the node yet/, "absent is UNKNOWN, and unknown waits — it does not say Published");
+    /did not reach the node/, "absent is UNKNOWN, and unknown waits — it does not say Published");
 });
 
 // ---- through the runtime: the UI does not claim what did not happen -------

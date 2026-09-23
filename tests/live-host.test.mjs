@@ -21,6 +21,7 @@ const marker = join(stubDir, "ran");
 writeFileSync(join(stubDir, "freenet"), `#!/usr/bin/env node
 const fs = require("fs"), net = require("net"), dgram = require("dgram");
 fs.appendFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(" ") + "\\n");
+fs.appendFileSync(${JSON.stringify(marker)}, "FREENET_WEBAPP_CACHE_DIR=" + (process.env.FREENET_WEBAPP_CACHE_DIR ?? "") + "\\n");
 const arg = f => Number(process.argv[process.argv.indexOf(f) + 1]);
 if (process.env.STUB_IGNORE_TERM) process.on("SIGTERM", () => {});
 net.createServer().listen(arg("--ws-api-port"), "127.0.0.1");
@@ -64,6 +65,17 @@ await t("the command line: isolated, loopback, three explicit dirs, no auto-upda
     ["--ws-api-port", "18001"], ["--network-port", "38001"], ["--ws-api-address", "127.0.0.1"], ["--network-address", "127.0.0.1"]]) {
     assert.strictEqual(a[a.indexOf(f) + 1], v, f);
   }
+});
+
+await t("a spawned node gets its OWN web-container cache, inside its dir — never the per-user one the owner's node serves from", async () => {
+  clearMarker();
+  const node = await spawnNode("cache", { ws: await freePort(), net: await freePort() });
+  try {
+    const got = readFileSync(marker, "utf8").split("\n").find(l => l.startsWith("FREENET_WEBAPP_CACHE_DIR="))?.slice("FREENET_WEBAPP_CACHE_DIR=".length);
+    assert.ok(got, "the node was started with no FREENET_WEBAPP_CACHE_DIR: it shares the per-user web cache");
+    assert.strictEqual(got, join(node.dir, "webapp_cache"), "the node's web cache is not inside its own dir");
+    assert.ok(existsSync(got), "the node's web cache dir does not exist");
+  } finally { await node.stop(); }
 });
 
 /** The owner's nodes on this machine, named HERE rather than read from the
