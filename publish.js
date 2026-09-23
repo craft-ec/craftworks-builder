@@ -101,9 +101,12 @@ export const RESERVED_PORTS = [7509, 7609];
  * `publisher.app`). Derived, never typed, so two projects cannot share a
  * space by being given the same name.
  *
- * The SDK's rule: 1–32 of a-z 0-9 _ -. A project id is lowercase hex; what
- * does not fit is REFUSED by name rather than bent into something that fits,
- * because a bent id could be another project's.
+ * The SDK's rule: 1–32 of a-z 0-9 _ -. An id longer than 32 is taken at its
+ * FIRST 32 — deliberately: a project id is lowercase hex, 32 or 64
+ * characters, so that is 128 bits, a prefix of the project's OWN id, and the
+ * same prefix every time. Anything else that does not fit (a character outside the rule, an
+ * empty or missing id) is REFUSED by name rather than bent into something
+ * that fits, because a bent id could be another project's.
  */
 export const appIdOf = projectId => {
   const id = String(projectId ?? "").slice(0, 32);

@@ -203,10 +203,10 @@ await t("THE CONTROL: a valid app id reaches open() as `app`", async () => {
   assert.strictEqual(given, "proj1", "open() was not told which app this is");
 });
 
-await t("**one project, one app**: its id comes from the project's own id, the same every time; what does not fit is REFUSED, never bent", () => {
+await t("**one project, one app**: its id comes from the project's own id, the same every time; a 64-hex id is its own 128-bit prefix; anything else that does not fit is REFUSED, never bent", () => {
   const hex = "0123456789abcdef0123456789abcdef";
   assert.strictEqual(appIdOf(hex), hex);
-  assert.strictEqual(appIdOf(hex + hex), hex, "a 64-hex project id is not taken at its first 32");
+  assert.strictEqual(appIdOf(hex + hex), hex, "a 64-hex project id was not taken at its first 32 (its own 128-bit prefix)");
   assert.strictEqual(appIdOf(hex), appIdOf(hex), "the same project gave two app ids");
   for (const bad of [undefined, null, "", "ABC", "has.dot", "has space"]) {
     assert.throws(() => appIdOf(bad), /gives no app id/, `${JSON.stringify(bad)} was bent into an id`);
