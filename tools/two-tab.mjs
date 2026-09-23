@@ -107,8 +107,31 @@ const url = live =>
   `http://127.0.0.1:${PAGE_PORT}/#node=${NODE_PORT}&preview=1&app=` +
   encodeURIComponent(JSON.stringify({
     ...APP,
-    components: [APP.components[0], { ...APP.components[1], live }],
+    // `live` only when ON, as the builder itself writes it (app.js: "Written
+    // only when ON"). An explicit `live: false` is a value the builder never
+    // produces, so a control carrying one is not a plain binding as a person
+    // makes it.
+    components: [APP.components[0], { ...APP.components[1], ...(live ? { live: true } : {}) }],
   }));
+
+/**
+ * ONE PERSON'S PROFILE, FRESH FOR EACH ARM.
+ *
+ * Every tab of this run is in one browser profile, so they share the page's
+ * storage — which is right WITHIN an arm (two tabs of one person) and wrong
+ * ACROSS arms. Measured: the control arm published first and left its app
+ * (table without LIVE) as the profile's open project; the live arm's tabs
+ * then came up on THAT project, not the LIVE app in their URL — its table
+ * read `live: false`, `liveBindings` 0, and the live arm measured the control
+ * a second time. So each arm starts by clearing the origin's storage, once,
+ * before its first tab loads the app.
+ */
+async function freshProfile(tab) {
+  await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${PAGE_PORT}/about-blank-for-storage`)}; return 1;`);
+  await sleep(300);
+  const left = await tab.evaluate(`localStorage.clear(); sessionStorage.clear(); return localStorage.length + sessionStorage.length;`);
+  if (left !== 0) throw new Error(`the profile's storage did not clear (${left} keys left), so this arm would inherit the last one's project`);
+}
 
 /** Publish a tab and wait until the NODE has confirmed it. */
 async function publish(tab, live) {
@@ -165,6 +188,21 @@ const rows = tab => tab.evaluate(`return document.querySelectorAll(".rt-comp tbo
 const liveMode = tab => tab.evaluate(
   `return window.__craftworks?.db?.liveMode?.() ?? null;`);
 
+/**
+ * EVERY CHIP STATE THE PAGE SHOWED, from before the write — not a poll that
+ * starts after it. A poll begun after the click can miss a state that lasted
+ * less than its first look; an observer installed first cannot.
+ */
+const watchChips = tab => tab.evaluate(`
+  window.__chipsSeen = [];
+  const note = () => { for (const e of document.querySelectorAll(".rt-comp .rt-state")) window.__chipsSeen.push(e.textContent); };
+  window.__chipObs?.disconnect();
+  window.__chipObs = new MutationObserver(note);
+  window.__chipObs.observe(document.body, { subtree: true, childList: true, characterData: true });
+  note();
+  return 1;`);
+const chipsSeen = tab => tab.evaluate(`return [...new Set(window.__chipsSeen ?? [])];`);
+
 /** What each row's chip says about its own write. */
 const chips = tab => tab.evaluate(
   `return [...document.querySelectorAll(".rt-comp .rt-state")].map(e => e.textContent);`);
@@ -208,6 +246,17 @@ const N = 20;
 const ACK_MS = 3_000;
 
 /**
+ * B SEEING A's WRITE is a different path from A's own ack, and it is sized
+ * from ITS measurement, not borrowed: a LIVE binding in a second tab of the
+ * notes example showed each of three writes ~2.2–2.3 s after it saved
+ * (SDK 53e9f50, private node, load ~7): the head move is delivered, the page
+ * re-reads the head, and the binding re-asks. ACK_MS (sized on the 177 ms
+ * write ack) counted every one of those as a miss. About 4x the measured path;
+ * the table still prints what each sample took.
+ */
+const CROSS_TAB_MS = 10_000;
+
+/**
  * The FIRST write after a publish gets longer, once, and is not a sample.
  *
  * A cold page has ranges nobody has loaded, so its first write pays for a
@@ -246,6 +295,7 @@ function summarise(xs) {
  */
 async function arm(live) {
   const a = await openTab(`tab A (live=${live})`);
+  await freshProfile(a);
   const b = await openTab(`tab B (live=${live})`);
   await publish(a, live);
   await publish(b, live);
@@ -281,7 +331,12 @@ async function arm(live) {
       break;
     }
     const before = await a.evaluate(`return ${settled};`);
-    const notes = (await liveMode(b))?.foreignNotifications ?? 0;
+    // THE PAGE PATH'S "B WAS TOLD": its own head subscription delivering a
+    // head move (`headChanges`, craftworks-sdk#259). `foreignNotifications`
+    // counts notifications for OTHER contracts — the delegate era's signal —
+    // and on the page path it never moves, so this leg read "never told" on a
+    // tab that was told every time.
+    const notes = (await liveMode(b))?.headChanges ?? 0;
     const title = `s${i} ${live ? "live" : "tick"} ${Date.now()}`;
     const t0 = now();
     await a.evaluate(`
@@ -302,7 +357,7 @@ async function arm(live) {
     // LEG 2: B hears about it. Only the live arm can.
     let tNote = NaN;
     if (live) {
-      try { tNote = await b.until(`(window.__craftworks?.db?.liveMode?.().foreignNotifications ?? 0) > ${notes}`, "B to be notified", ACK_MS); }
+      try { tNote = await b.until(`(window.__craftworks?.db?.liveMode?.().headChanges ?? 0) > ${notes}`, "B to be notified", ACK_MS); }
       catch (_) { /* recorded as NaN, not retried */ }
     }
 
@@ -312,9 +367,22 @@ async function arm(live) {
     // The CONTROL arm is told by its tick, so it is bounded by the tick
     // period and not by an ack. Two ticks is generous; more would be waiting
     // for a mechanism that has already had its chance.
-    const renderBy = live ? ACK_MS : 2 * TICK_MS + ACK_MS;
+    const renderBy = live ? CROSS_TAB_MS : 2 * TICK_MS + ACK_MS;
     try { tRender = await b.until(`document.querySelectorAll(".rt-comp tbody tr").length >= ${have}`, "B to render A's row", renderBy); }
-    catch (_) { have -= 1; missed += 1; }
+    catch (_) {
+      have -= 1; missed += 1;
+      // THE FIRST MISS SAYS WHICH LINK IS MISSING: was B told (headChanges),
+      // does its binding hold the row, and does the app's OWN explicit
+      // re-read show it? Told + re-read shows it = the LIVE re-run never
+      // fired; re-read does not show it either = the read itself.
+      if (missed === 1) {
+        const before = await rows(b);
+        const lm = await liveMode(b);
+        let after = "(refresh threw)";
+        try { await b.evaluate(`await window.__craftworks.refresh(); return 1;`); await sleep(CROSS_TAB_MS); after = await rows(b); } catch (e) { after = `refresh threw: ${e.message.split("\n")[0]}`; }
+        console.log(`  live miss #1: B rows ${before} (wanted ${have + 1}), liveMode ${JSON.stringify(lm)}; after B's explicit re-read + ${CROSS_TAB_MS} ms: ${after}`);
+      }
+    }
 
     legs.published.push(tPub - t0);
     legs.notified.push(Number.isFinite(tNote) ? tNote - tPub : NaN);
@@ -359,6 +427,7 @@ async function arm(live) {
  */
 async function controlArm() {
   const a = await openTab("tab A (control)");
+  await freshProfile(a);
   const b = await openTab("tab B (control)");
   await publish(a, false);
   await publish(b, false);
@@ -371,13 +440,18 @@ async function controlArm() {
 
   const settled = `[...document.querySelectorAll(".rt-comp .rt-state")].filter(x => x.textContent === "saved" || x.textContent === "saved + backed up").length`;
   const before = await a.evaluate(`return ${settled};`);
+  await watchChips(a);
   const title = `control ${Date.now()}`;
   await a.evaluate(`
     const i = document.querySelector(".rt-comp input[name=title]");
     i.value = ${JSON.stringify(title)};
     document.querySelector(".rt-comp button.pri").click();
     return 1;`);
-  await a.until(`${settled} > ${before}`, "A's row to reach the network", ACK_MS);
+  // The FIRST write in a fresh profile: cold, like the live arm's warm-up —
+  // so it gets the warm-up's bound, not the normal-ack one. The control makes
+  // exactly one write and is not a latency, so there is nothing to time.
+  try { await a.until(`${settled} > ${before}`, "A's row to reach the network", WARMUP_MS); }
+  catch (e) { throw new Error(`${e.message.split("\n")[0]} — A's chips showed, from before the write: ${JSON.stringify(await chipsSeen(a))}; A's rows now: ${await rows(a)}`); }
 
   // 1. B DOES NOT SHOW IT. The window is the one the old control allowed for
   // the row to APPEAR, so this claim is at least as strong as that one was.
@@ -416,10 +490,13 @@ async function controlArm() {
  */
 async function writePath() {
   const a = await openTab("write path");
+  await freshProfile(a);
   await publish(a, true);
 
   const start = await rows(a);
+  const dbStart = await a.evaluate(`return await window.__craftworks.db.count("notes");`);
   const title = `one write ${Date.now()}`;
+  await watchChips(a);
   await a.evaluate(`
     const i = document.querySelector(".rt-comp input[name=title]");
     i.value = ${JSON.stringify(title)};
@@ -429,14 +506,11 @@ async function writePath() {
   // SAVING FIRST. If the chip never says "saving" the transition is not being
   // observed — it would pass just as well on a build that reported every row
   // "saved" from the moment it was typed.
-  const sawPending = await a.evaluate(`
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const c = [...document.querySelectorAll(".rt-comp .rt-state")].map(e => e.textContent);
-      if (c.includes("saving") || c.includes("queued")) return true;
-      await new Promise(r => setTimeout(r, 20));
-    }
-    return false;`);
+  // Read from the OBSERVER, which was watching before the click: a state
+  // shorter than a poll's first look is still seen.
+  await sleep(5000);
+  const seenStates = await chipsSeen(a);
+  const sawPending = seenStates.includes("saving") || seenStates.includes("queued");
 
   await a.until(
     `[...document.querySelectorAll(".rt-comp .rt-state")].filter(e => e.textContent === "saved" || e.textContent === "saved + backed up").length >= ${start + 1}`,
@@ -455,13 +529,26 @@ async function writePath() {
     }
     return { refused, reasons };`);
 
-  await a.until(`document.querySelectorAll(".rt-comp tbody tr").length >= ${start + 301}`,
-    "all 300 rows to appear", 120_000);
-  const after = await rows(a);
+  // COUNTED THROUGH THE DB, not the table: the runtime reads a PAGE of 50
+  // (runtime.js PAGE, builder#51), so "301 rows in the table" could never be
+  // true and this wait failed on every build since reads were bounded.
+  // AWAITED, not through `until`: `until` evaluates `!!(expr)`, so an async
+  // expression is a Promise and would read true at once — a green that
+  // counted nothing.
+  const count = () => a.evaluate(`return await window.__craftworks.db.count("notes");`);
+  const want = dbStart + 301;
+  let after = 0;
+  for (const end = now() + 120_000; now() < end; await sleep(250)) {
+    after = await count();
+    if (after >= want) break;
+  }
+  // SHORT IS A RESULT, not a crash: 3a (saving → saved) was already observed
+  // and must still be judged; 3b reads `wrote` and fails on its own terms.
+  if (after < want) console.log(`  write path: only ${after - dbStart} of the 301 writes are in the db after 120 s`);
   await shot(a, "write-path-300");
 
   a.close();
-  return { sawPending, settled, ...bulk, wrote: after - start };
+  return { sawPending, seenStates, settled, ...bulk, wrote: after - dbStart };
 }
 
 /**
@@ -473,6 +560,7 @@ async function writePath() {
  */
 async function reload() {
   const a = await openTab("reload");
+  await freshProfile(a);
   await publish(a, true);
   const start = await rows(a);
   const title = `survives a reload ${Date.now()}`;
@@ -525,6 +613,7 @@ async function reload() {
  */
 async function parityUnderTwoTabs() {
   const a = await openTab("parity A");
+  await freshProfile(a);
   const b = await openTab("parity B");
   await publish(a, true);
   await publish(b, true);
@@ -649,7 +738,7 @@ check("2. the control follows the owner's rule: not live = read when needed", ()
 });
 check("3a. a write reached the network: the chip said saving, then saved", () => {
   assert.ok(report.writePath?.sawPending,
-    "the chip never said saving or queued, so the transition is not being observed at all");
+    `the chip never said saving or queued, so the transition is not being observed at all — states the observer saw from before the click: ${JSON.stringify(report.writePath?.seenStates)}`);
   assert.ok(report.writePath.settled.some(c => c === "saved" || c === "saved + backed up"),
     `no row reached saved; chips were ${JSON.stringify(report.writePath.settled.slice(0, 5))}`);
 });
