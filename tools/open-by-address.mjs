@@ -5,12 +5,20 @@
 // it), explicit dirs, --disable-auto-update, named ports that refuse the
 // owner's 7509/7609. Prints each step's evidence and exits non-zero on any
 // failed check. Run: `node tools/open-by-address.mjs` (BUDGET_MS to extend).
+//
+// REAL NETWORK: with RN_PUB=<ws> and RN_VIS=<ws> (and RN_PUB_LABEL /
+// RN_VIS_LABEL) it spawns NO node and runs across two EXISTING nodes — the
+// SDK's tools/realnet/run.sh sets them, with the server's node behind an SSH
+// tunnel. The builder refuses to publish to the owner's ports (publish.js
+// RESERVED_PORTS), so there the publisher is the server's node.
 import { openPageHost, openFreshBrowser, spawnNode } from "../tests/page-host.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const A = { ws: 17521, net: 37521, gatewayKey: true }, B = { ws: 17531, net: 37531 };
-const BUDGET_MS = Number(process.env.BUDGET_MS ?? 600_000);
-const host = await openPageHost("open-by-address", { node: A, budgetMs: BUDGET_MS });
+const REAL = !!(process.env.RN_PUB && process.env.RN_VIS);
+const A = REAL ? { ws: Number(process.env.RN_PUB), label: process.env.RN_PUB_LABEL ?? "publisher" } : { ws: 17521, net: 37521, gatewayKey: true };
+const B = REAL ? { ws: Number(process.env.RN_VIS), label: process.env.RN_VIS_LABEL ?? "visitor" } : { ws: 17531, net: 37531 };
+const BUDGET_MS = Number(process.env.BUDGET_MS ?? (REAL ? 1_100_000 : 600_000));
+const host = await openPageHost("open-by-address", { ...(REAL ? {} : { node: A }), budgetMs: BUDGET_MS });
 const nodeA = host.node;
 let nodeB = null, fresh = null, failed = 0;
 const check = (ok, what, evidence) => {
@@ -34,11 +42,11 @@ async function untilIn(tab, expr, ms, everyMs = 1000, frame = "__sandbox=1") {
 }
 
 try {
-  nodeB = await spawnNode("open-by-address: node B", { ...B, joins: nodeA });
+  if (!REAL) nodeB = await spawnNode("open-by-address: node B", { ...B, joins: nodeA });
   // If the run is cut short (its budget), B and the visitor's browser must not
   // outlive it: killed by their recorded PIDs on the way out.
   process.on("exit", () => { for (const pid of [nodeB?.pid, fresh?.pid]) { try { if (pid) process.kill(pid, "SIGKILL"); } catch (_) {} } });
-  console.log(`A pid ${nodeA.pid} ws ${A.ws} (gateway, key ${nodeA.publicKey.slice(0, 12)}…); B pid ${nodeB.pid} ws ${B.ws} joins A`);
+  console.log(REAL ? `REAL NETWORK: publisher ${A.label} ws ${A.ws}; visitor ${B.label} ws ${B.ws}; ${new Date().toISOString()}` : `A pid ${nodeA.pid} ws ${A.ws} (gateway, key ${nodeA.publicKey.slice(0, 12)}…); B pid ${nodeB.pid} ws ${B.ws} joins A`);
   await sleep(4000);
 
   // ---- 1. PUBLISH ON A, from the builder ------------------------------------
@@ -53,7 +61,24 @@ try {
   }
   const tPublish = Date.now();
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
-  const pub = await until(builder, `const p = window.__craftworksPublished; return p ? p : null;`, 180_000, 500);
+  // The publish's own words while it runs, each change printed; on the real
+  // network a record handoff that stalls is RETRIED as a person would (at most
+  // 3), and each retry is printed as a finding, not hidden.
+  let pub = null, lastLine = "", retries = 0;
+  const pubEnd = Date.now() + (REAL ? 500_000 : 180_000);
+  while (Date.now() < pubEnd) {
+    pub = await builder.evaluate(`return window.__craftworksPublished ?? null;`).catch(() => null);
+    if (pub) break;
+    const line = JSON.stringify(await builder.evaluate(`const b = document.getElementById("publish"); return { label: b?.textContent, note: document.getElementById("publish-note")?.textContent?.slice(0, 300) || undefined, notice: document.getElementById("storage-note")?.textContent?.slice(0, 300) || undefined };`).catch(e => ({ error: e.message })));
+    if (line !== lastLine) { console.log(`  +${Date.now() - tPublish} ms publish: ${line}`); lastLine = line; }
+    if (REAL && line.includes("Try publishing again") && retries < 3) {
+      retries += 1;
+      console.log(`  FINDING  the publish stopped (above) and is retried by a click, ${retries} of 3`);
+      await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
+      lastLine = "";
+    }
+    await sleep(500);
+  }
   const publishMs = Date.now() - tPublish;
   check(!!pub?.address, `Publish on A put the app on the network, in ${publishMs} ms (click → both containers acknowledged)`, pub?.address ? { address: pub.address, head: pub.head?.slice(0, 16) } : pub);
   if (!pub?.address) throw new Error("nothing to open");
