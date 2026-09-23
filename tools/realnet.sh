@@ -101,13 +101,13 @@ if lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null || lsof -nP -iUDP:"$VNET" >/dev
 fi
 vdir=$(mktemp -d "${TMPDIR:-/tmp}/realnet-v.XXXXXX")
 mkdir -p "$vdir/data" "$vdir/config" "$vdir/log" "$vdir/webapp_cache"
-FREENET_WEBAPP_CACHE_DIR="$vdir/webapp_cache" freenet network --ws-api-address 127.0.0.1 --ws-api-port "$VWS" \
+RUST_LOG="${REALNET_V_RUST_LOG:-}" FREENET_WEBAPP_CACHE_DIR="$vdir/webapp_cache" "${REALNET_V_BIN:-freenet}" network --ws-api-address 127.0.0.1 --ws-api-port "$VWS" \
   --network-port "$VNET" --data-dir "$vdir/data" --config-dir "$vdir/config" --log-dir "$vdir/log" \
   --disable-auto-update > "$vdir/log/console.out" 2>&1 &
 vpid=$!
 for _ in $(seq 1 240); do nc -z 127.0.0.1 "$VWS" 2>/dev/null && break; kill -0 "$vpid" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
 if ! nc -z 127.0.0.1 "$VWS" 2>/dev/null; then echo "FAIL  the user's node did not start: $(tail -3 "$vdir/log/console.out")"; exit 1; fi
-echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the real network; dirs + web cache under $vdir)"
+echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the real network; dirs + web cache under $vdir; binary ${REALNET_V_BIN:-freenet} $("${REALNET_V_BIN:-freenet}" --version 2>/dev/null | head -1); RUST_LOG=${REALNET_V_RUST_LOG:-unset})"
 
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
