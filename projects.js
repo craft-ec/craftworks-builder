@@ -221,21 +221,28 @@ export async function listProjects(db) {
  * re-derived from the fields — so the slot is the last half. A LocalDb id is
  * its own slot.
  */
-const slotOfId = (id, ids) => {
-  // By the SDK's one parse (`sdk.ids.slot`); an id it does not read as a
-  // record id (a LocalDb one) is its own slot.
-  if (!ids?.slot) throw new Error("restore: the SDK is not loaded yet, so the record's slot cannot be read");
-  return ids.slot(id) ?? id;
+/**
+ * A record's slot. `ids` is the SDK's id rules, or a promise of them while the
+ * SDK loads: WAITED on, never refused (the SDK always loads; it is local). An
+ * SDK record id (32 hex, or 64 under a parent) gives its rkey by the SDK's one
+ * parse (`sdk.ids.slot`). Any other id is the store's OWN id, its own slot:
+ * LocalDb's ids (`r<time><tag><seq>`) are, and its `createAt` refuses by name
+ * anything outside its rule, so nothing unchecked is ever written.
+ */
+const slotOfId = async (id, ids) => {
+  const rules = await ids;
+  if (!rules?.slot) throw new Error("restore: no SDK id rules were given, so the record's slot cannot be read");
+  return rules.slot(id) ?? id;
 };
 
 /** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
 export async function restoreProject(db, pid, fields, ids) {
-  return db.createAt(PROJECT, slotOfId(pid, ids), fields);
+  return db.createAt(PROJECT, await slotOfId(pid, ids), fields);
 }
 
 /** Put one component back under ITS OWN id (builder#82). Never overwrites. */
 export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }, ids) {
-  return db.createAt(COMPONENT, slotOfId(rid, ids), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
+  return db.createAt(COMPONENT, await slotOfId(rid, ids), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
 }
 
 /** Add one component to a project. ONE record. */

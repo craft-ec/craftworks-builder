@@ -338,4 +338,21 @@ await t("**over the SDK's Db, a project and a component are restored under THEIR
   assert.strictEqual((await restoreProject(lost, p.id, { title: "other" }, sdk.ids)).outcome, "exists", "and never overwrites");
 });
 
+await t("**a restore issued BEFORE the SDK has loaded WAITS for it, then lands; with no rules at all it is refused by name** (the architect on builder#131)", async () => {
+  const had = await fresh();
+  const p = await createProject(had, { title: "Early" });
+  const lost = await fresh();
+  let load;
+  const loading = new Promise(ok => { load = ok; });   // the SDK, still loading
+  const pending = restoreProject(lost, p.id, (await openProject(had, p.id)).record, loading);
+  let settled = false;
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(settled, false, "a restore before the load ended instead of waiting");
+  load(sdk.ids);
+  const r = await pending;
+  assert.deepStrictEqual([r.outcome, r.record.id], ["created", p.id], "the waited restore did not land under its own id");
+  await assert.rejects(restoreProject(lost, p.id, {}, null), /no SDK id rules were given/);
+});
+
 process.stdout.write("\nprojects: all ok\n");

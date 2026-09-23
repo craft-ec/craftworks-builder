@@ -512,8 +512,8 @@ export async function mountProjects(host, {
   // version was kept). No default: with nobody to tell, `saveCanvas` fails
   // at the conflict rather than being quiet about it (builder#74, #73).
   onConflict,
-  // () => the SDK's id rules (`sdk.ids`) once it has loaded: a restore reads
-  // a record's slot by them.
+  // () => the SDK's id rules (`sdk.ids`), or a promise of them while it loads:
+  // a restore reads a record's slot by them, waiting for the load if it must.
   getIds = () => null,
 }) {
   await defineProjectDomains(db);
