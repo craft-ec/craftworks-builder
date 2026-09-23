@@ -6,7 +6,9 @@
 //
 //   1. the SDK's wasm is fetched from the artefacts container and VERIFIED by
 //      its hash before it runs — a mismatch is refused and the app does not
-//      load; an artefact nobody serves fails naming which one and its hash;
+//      load; an artefact the node does not serve yet is WAITED on through the
+//      SDK's one fetch path (`artefactBytes`, re-asked on its RTO, rule 8),
+//      naming the file — never an end;
 //   2. this node's signer is ASKED whose it is (`openPublished`), and the
 //      app opens as a NORMAL WEBSITE where everyone is a user: each
 //      component shows its SOURCE -- the APP's data (the tree `app.json`'s
