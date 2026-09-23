@@ -32,7 +32,31 @@ if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
 const STEP_MS = Number(process.env.STEP_MS ?? 180_000);
 const host = await openPageHost("realnet-demo", { budgetMs: Number(process.env.BUDGET_MS ?? 1_500_000) });
 let pubBrowser = null, visBrowser = null, vBrowser = null, failed = 0, stepN = 0;
+// SCRATCH PROBE (#330 diagnosis): every 10 s, each open reader tab's
+// sessions' read_probe(), as JSON lines into PROBE_LOG, tagged with the step.
+import { appendFileSync } from "node:fs";
+const PROBE_LOG = process.env.PROBE_LOG;
+const probed = [];
+const probeJs = `return (globalThis.__cwSessions ?? []).map(s => { try { return JSON.parse(s.read_probe()); } catch (e) { return String(e); } });`;
+function probeTab(label, tab, frame) {
+  probed.push({ label, tab, frame });
+}
+async function sampleProbes() {
+  for (const p of probed) {
+    // evaluateIn RESOLVES undefined when the frame is not there yet (it does not throw): say so, and record what
+    // the tab's top document shows instead — a sample must never be silently empty (engineer2).
+    const v = await p.tab.evaluateIn(p.frame, probeJs).catch(e => ({ error: e.message }));
+    const status = await p.tab.evaluateIn(p.frame, `return document.getElementById("status")?.textContent ?? null;`).catch(e => ({ error: e.message }));
+    const top = v === undefined
+      ? await p.tab.evaluate(`return { url: location.href, ready: document.readyState, frames: [...document.querySelectorAll("iframe")].map(f => f.src) };`).catch(e => ({ error: e.message }))
+      : undefined;
+    if (PROBE_LOG) appendFileSync(PROBE_LOG, JSON.stringify({ t: new Date().toISOString(), step: stepN + 1, tab: p.label, frame: p.frame, status: status === undefined ? "UNDEFINED (frame not found)" : status, sessions: v === undefined ? "UNDEFINED (frame not found)" : v, ...(top === undefined ? {} : { top }) }) + "\n");
+  }
+}
+const sampler = setInterval(() => { sampleProbes().catch(() => {}); }, 10_000);
+sampler.unref?.();
 const step = (ok, what, evidence) => {
+  if (PROBE_LOG) appendFileSync(PROBE_LOG, JSON.stringify({ t: new Date().toISOString(), stepDone: stepN + 1, ok, what }) + "\n");
   stepN += 1;
   if (!ok) failed += 1;
   console.log(`${ok ? "PASS" : "FAIL"}  ${stepN}. ${what}${evidence === undefined ? "" : `  — ${typeof evidence === "string" ? evidence : JSON.stringify(evidence)}`}`);
@@ -79,6 +103,7 @@ try {
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await vis.evaluate(`window.location.href = ${JSON.stringify(url(A.ws))}; return 1;`);
+  probeTab("A", vis, frameOf(A.ws));
   const seen = await until(vis, has(["alpha", "beta"]), STEP_MS, 500, frameOf(A.ws));
   // The APP's components are a view here: no notes form, and the notes
   // table carries no writing button. (The guestbook is the user's own and
@@ -138,6 +163,7 @@ try {
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();
   await vt.evaluate(`window.location.href = ${JSON.stringify(url(V.ws))}; return 1;`);
+  probeTab("V", vt, frameOf(V.ws));
   const vReady = await until(vt, `return (${comp("Form", "guests")}?.querySelector("input[name=title]") && !${comp("Form", "notes")} && ${JSON.stringify(["alpha", "beta"])}.every(t => [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].some(td => td.textContent === t)) && 1) || null;`, STEP_MS, 500, frameOf(V.ws));
   if (!step(!!vReady, `${V.label} opens it: the app's rows as a view, and the guestbook writable (${Date.now() - t9} ms)`, vReady ? undefined : await vt.evaluateIn(frameOf(V.ws), `return { status: document.getElementById("status")?.textContent?.slice(0, 300), mounted: document.querySelectorAll(".rt-comp").length, headings: [...document.querySelectorAll(".rt-comp h4")].map(h => h.textContent), body: document.body?.innerText?.slice(0, 200) };`).catch(e => e.message))) throw new Error("no guestbook to write");
   const t10 = Date.now();
