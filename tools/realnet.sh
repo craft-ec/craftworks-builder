@@ -119,7 +119,7 @@ echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
 kill "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null
 if kill -0 "$vpid" 2>/dev/null || lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null; then echo "FAIL  the user's node (pid $vpid) is still up"; fail=1
-else echo "PASS  the user's node (pid $vpid) is gone; port $VWS free"; rm -rf "$vdir"; fi
+else echo "PASS  the user's node (pid $vpid) is gone; port $VWS free"; [ -n "${PROBE_LOG:-}" ] && cp -R "$vdir/log" "${PROBE_LOG%.jsonl}.v-log" && echo "KEPT  V's node log: ${PROBE_LOG%.jsonl}.v-log"; rm -rf "$vdir"; fi
 vpid=""
 if lsof -nP -iTCP:"$T" -sTCP:LISTEN >/dev/null; then echo "FAIL  port $T still listening"; fail=1; else echo "PASS  tunnel closed; port $T free"; fi
 after=$(state)

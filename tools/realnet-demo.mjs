@@ -39,7 +39,7 @@ const PROBE_LOG = process.env.PROBE_LOG;
 const probed = [];
 const probeJs = `return (globalThis.__cwSessions ?? []).map(s => { try { return JSON.parse(s.read_probe()); } catch (e) { return String(e); } });`;
 function probeTab(label, tab, frame) {
-  probed.push({ label, tab, frame });
+  probed.push({ label, tab, frame, navigated: new Date().toISOString() });
 }
 async function sampleProbes() {
   for (const p of probed) {
@@ -47,10 +47,12 @@ async function sampleProbes() {
     // the tab's top document shows instead — a sample must never be silently empty (engineer2).
     const v = await p.tab.evaluateIn(p.frame, probeJs).catch(e => ({ error: e.message }));
     const status = await p.tab.evaluateIn(p.frame, `return document.getElementById("status")?.textContent ?? null;`).catch(e => ({ error: e.message }));
+    // The loader's own timeline (engineer4): every fetch it made, timed, and each status it showed.
+    const load = await p.tab.evaluateIn(p.frame, `return globalThis.__cwLoad ?? null;`).catch(e => ({ error: e.message }));
     const top = v === undefined
       ? await p.tab.evaluate(`return { url: location.href, ready: document.readyState, frames: [...document.querySelectorAll("iframe")].map(f => f.src) };`).catch(e => ({ error: e.message }))
       : undefined;
-    if (PROBE_LOG) appendFileSync(PROBE_LOG, JSON.stringify({ t: new Date().toISOString(), step: stepN + 1, tab: p.label, frame: p.frame, status: status === undefined ? "UNDEFINED (frame not found)" : status, sessions: v === undefined ? "UNDEFINED (frame not found)" : v, ...(top === undefined ? {} : { top }) }) + "\n");
+    if (PROBE_LOG) appendFileSync(PROBE_LOG, JSON.stringify({ t: new Date().toISOString(), step: stepN + 1, tab: p.label, frame: p.frame, status: status === undefined ? "UNDEFINED (frame not found)" : status, sessions: v === undefined ? "UNDEFINED (frame not found)" : v, navigated: p.navigated, load: load === undefined ? "UNDEFINED (frame not found)" : load, ...(top === undefined ? {} : { top }) }) + "\n");
   }
 }
 const sampler = setInterval(() => { sampleProbes().catch(() => {}); }, 10_000);

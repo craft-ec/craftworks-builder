@@ -21,12 +21,40 @@ import { mountApp, sourceOf } from "./runtime.js";
 import { openPublished } from "./runtime-logic.js";
 
 const status = document.getElementById("status");
-const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+// SCRATCH PROBE (never for a PR): the loader's own timeline, read by tools/realnet-demo.mjs's sampler. Page times are
+// performance.now() (ms since this frame's navigation began); `wall` ties them to the nodes' logs.
+const LOAD = (globalThis.__cwLoad = { marks: [], fetches: [] });
+const ms = () => Math.round(performance.now());
+const mark = what => LOAD.marks.push({ what, at: ms(), wall: new Date().toISOString() });
+mark("loader start");
+// Every fetch the loader makes, timed: to the headers (ttfb) and to the last byte (total).
+const timedFetch = async (u, init) => {
+  const at = performance.now(), wall = new Date().toISOString();
+  const url = String(u).replace(/^.*\/v1\/contract\/web\//, "");
+  let r;
+  try {
+    r = await fetch(u, init);
+  } catch (e) {
+    LOAD.fetches.push({ url, at: Math.round(at), wall, error: String(e?.message ?? e), total: Math.round(performance.now() - at) });
+    throw e;
+  }
+  const ttfb = performance.now() - at;
+  let buf;
+  try {
+    buf = await r.arrayBuffer();
+  } catch (e) {
+    LOAD.fetches.push({ url, at: Math.round(at), wall, status: r.status, ttfb: Math.round(ttfb), bodyError: String(e?.message ?? e) });
+    throw e;
+  }
+  LOAD.fetches.push({ url, at: Math.round(at), wall, status: r.status, ttfb: Math.round(ttfb), total: Math.round(performance.now() - at), bytes: buf.byteLength });
+  return new Response(buf, { status: r.status, statusText: r.statusText, headers: r.headers });
+};
+const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; mark(`status: ${text.slice(0, 60)}`); };
 
 try {
   // This container's own files, through the SDK's one fetch: waited on (and
   // named while waiting), never ended by a status (rule 8, craftworks-sdk#340).
-  const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
+  const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { fetch: timedFetch, onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
   const [art, app] = await Promise.all([json("artefacts.json"), json("app.json")]);
   const head = app?.publisher?.head;
   // Every artefact from the SDK's artefacts container on THIS node, by hash.
@@ -35,7 +63,8 @@ try {
   // node's own.
   const from = e => ({ urls: [new URL(`/v1/contract/web/${art.contract}/${e.file}`, location.href).href], sha256: e.sha256 });
   say("Loading the SDK…");
-  const sdk = await load(await artefactBytes(from(art.sdk)));
+  const sdk = await load(await artefactBytes(from(art.sdk), { fetch: timedFetch }));
+  mark("sdk loaded");
   say("Connecting…");
   // The APP's id (craftworks-sdk#267): the space its data was written
   // under, which this view reads. Absent, the app predates app ids and names
