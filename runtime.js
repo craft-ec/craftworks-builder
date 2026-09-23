@@ -2,7 +2,7 @@
 // the published app will use the same module.
 import { byType } from "./catalogue.js";
 import { openApp, toFields, display, headline, inputType, readsNewestFirst, pageView, savingLabel } from "./runtime-logic.js";
-import { show, isLive, rowState } from "./publish-state.js";
+import { show, bindsLive, rowState } from "./publish-state.js";
 import { previewDb } from "./handoff.js";
 
 /**
@@ -86,7 +86,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const bindings = [];
   const shared = new Map();
   for (const inst of app.components) {
-    const live = isLive(inst);
+    const live = bindsLive(inst, readOnly);
     const reverse = readsNewestFirst(inst.type);
     const key = `${inst.domain}\u0000${live}\u0000${PAGE}\u0000${reverse}`;
     if (!shared.has(key)) {
@@ -310,7 +310,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
           : el("p", { className: "rt-empty", textContent: `${byType[inst.type]?.label ?? inst.type} runs once its substrate lands (phase ${byType[inst.type]?.phase}).` });
         return el("section", { className: "rt-comp" },
           el("h4", {}, `${byType[inst.type]?.label ?? inst.type} · ${inst.domain}`,
-            isLive(inst) ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
+            bindsLive(inst, readOnly) ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
           body);
       }));
   }
