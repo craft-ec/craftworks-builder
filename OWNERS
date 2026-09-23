@@ -1,0 +1,13 @@
+# WHO OWNS WHAT (builder#120): `path owner`, longest prefix wins, `*` is the
+# default. craftworks-sdk's tools/owners.mjs (run by tools/machine-checks.mjs)
+# prints the owner of every file a branch changes and FAILS when they are more
+# than one owner's, unless a commit message on the branch or the PR body has a
+# line starting `shared:`. Owners follow the CURRENT queues; core dev moves a
+# path when work moves.
+*                        craftworks-engineer1
+OWNERS                   craftworks-main
+SDK_REV                  craftworks-main
+dup-gate.json            craftworks-engineer4
+dup-baseline.json        craftworks-engineer4
+tools/machine-checks.mjs craftworks-engineer4
+tests/machine-checks.test.mjs craftworks-engineer4

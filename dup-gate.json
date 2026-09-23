@@ -1,0 +1,8 @@
+{
+  "note": "craftworks-sdk tools/dup-gate.mjs over the builder's own JS (builder#120). Tests, the copied SDK and build output are out of scope.",
+  "dirs": ["."],
+  "formats": "javascript:js,mjs",
+  "ignore": ["**/node_modules/**", "sdk/**", ".sdk-build/**", "tests/**", "docs/**", "**/*.min.js"],
+  "minTokens": 50,
+  "baseline": "dup-baseline.json"
+}
