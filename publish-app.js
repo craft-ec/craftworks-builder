@@ -15,9 +15,13 @@
 // No DOM. `session` is the SDK's (`put_contract`/`put_status`), `sdk` the
 // entry (`sdk.webapp`), `read` returns a file's bytes or text — injected, so
 // this is tested without a node.
-import { packageApp } from "./package-app.js";
+import { packageApp, isModuleName } from "./package-app.js";
 
-/** The files an app container carries, by their path IN the container → where the builder has them. */
+/**
+ * The BUILDER's files an app container carries, by their path IN the
+ * container → where the builder has them. The SDK's modules are not listed
+ * here: they are the SDK manifest's (`appFiles`).
+ */
 export const APP_FILES = {
   "index.html": "app-loader/index.html",
   "loader.js": "app-loader/loader.js",
@@ -28,10 +32,32 @@ export const APP_FILES = {
   "runtime-logic.js": "runtime-logic.js",
   "publish-state.js": "publish-state.js",
   "handoff.js": "handoff.js",
-  // The SDK's JavaScript; its wasm is NAMED by hash, never carried.
-  ...Object.fromEntries(["index.js", "craftworks_sdk.js", "wrap.js", "session.js", "connection.js", "engine-db.js", "artefacts.js"]
-    .map(f => [`sdk/${f}`, `sdk/${f}`])),
 };
+
+/**
+ * Every file an app container carries: the builder's (`APP_FILES`) and the
+ * SDK's JavaScript modules — EXACTLY the set the SDK's own build says is
+ * reachable from its entry (`artefacts.json` `modules`, written by the step
+ * that checks them). Its wasm is NAMED by hash, never carried.
+ *
+ * NOT a hand list: a copy of the SDK's module list here went stale the day
+ * the SDK gained a module (`rto.js`), and every published page then hung on
+ * "Loading…" importing a file its container did not have. No `modules`, no
+ * publication: said by name, never a guess.
+ */
+export function appFiles(manifest) {
+  const modules = manifest?.modules;
+  if (!Array.isArray(modules) || modules.length === 0) {
+    throw new Error("publish: the SDK's artefacts.json names no `modules` — which of its files an app needs is the SDK's to say; rebuild against an SDK that says it");
+  }
+  for (const m of modules) {
+    // A module is a file beside index.js: a path out of sdk/ is not one.
+    if (!isModuleName(m)) {
+      throw new Error(`publish: the SDK's artefacts.json names ${JSON.stringify(m)} as a module, which is not a file beside its index.js`);
+    }
+  }
+  return { ...APP_FILES, ...Object.fromEntries(modules.map(m => [`sdk/${m}`, `sdk/${m}`])) };
+}
 
 const enc = new TextEncoder();
 const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
@@ -73,7 +99,7 @@ export async function publishApp(app, {
   // 2. The app, naming its data: the publisher's head. A visitor opens it by
   // address and READS it (published data is readable by default).
   const sdkFiles = {};
-  for (const [at, from] of Object.entries(APP_FILES)) sdkFiles[at] = await read(from);
+  for (const [at, from] of Object.entries(appFiles(manifest))) sdkFiles[at] = await read(from);
   const published = { ...app, publisher: { head: headId, app: appId } };
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 

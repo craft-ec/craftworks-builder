@@ -49,7 +49,15 @@ export const NAMED = ["sdk", "signer", "block", "register"];
 export const PLATFORM = {
   container: e => typeof e?.address === "string" && e.address.length > 0 && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
   webapp: e => e?.file === "webapp.wasm" && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
+  // The SDK's JavaScript an app CARRIES (its build's reachable set from
+  // index.js): what goes into the container, never fetched by hash.
+  modules: e => Array.isArray(e) && e.length > 0 && e.every(isModuleName),
 };
+
+/** A name `modules` may hold: one JavaScript file beside the SDK's index.js. */
+export function isModuleName(m) {
+  return typeof m === "string" && /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.js$/.test(m);
+}
 
 /**
  * Artefacts the SDK ships that an app does NOT name yet, each with why.
