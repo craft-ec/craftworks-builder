@@ -16,9 +16,12 @@
 # SSH tunnel on this machine's loopback, recorded and killed by PID. On B only
 # read-only commands run (systemctl show, journalctl, the binary's --version);
 # its MainPID and start time must be unchanged at the end, or the run says STOP.
-# The run starts NO node, so there is no node web cache to separate
-# (FREENET_WEBAPP_CACHE_DIR applies to spawned nodes). Test data only: rows are
-# tagged per run; the publishing identity is the server node's test key.
+# The run starts ONE node of its own: V, the visitor who WRITES (a private node
+# on this machine joined to the real network — never the owner's), with its
+# data, config, log AND web cache (FREENET_WEBAPP_CACHE_DIR) in a directory of
+# its own, --disable-auto-update, recorded and killed by PID and proven gone.
+# Test data only: rows are tagged per run; the publishing identity is the
+# server node's test key, the writing visitor's is V's own.
 #
 # Env: REALNET_HOST (root@46.224.172.252)  REALNET_A (7509)  REALNET_TUNNEL
 # (17619)  REALNET_B_REMOTE (7509)  CRAFTWORKS_SDK  CRAFTWORKS_CONTRACTS
@@ -28,6 +31,8 @@ HOST=${REALNET_HOST:-root@46.224.172.252}
 A=${REALNET_A:-7509}
 # 17619, not 17609: 17609 is the owner's standing demo tunnel.
 T=${REALNET_TUNNEL:-17619}
+VWS=${REALNET_VIEWER_WS:-17639}
+VNET=${REALNET_VIEWER_NET:-37639}
 BR=${REALNET_B_REMOTE:-7509}
 # The one lock every session shares (REALNET_LOCK only for the lock's own test).
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
@@ -46,9 +51,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK" && mkdir "$LOCK" || { echo "REFUSED  could not take $LOCK"; exit 3; }
 fi
 printf 'pid=%s\ncwd=%s\nbranch=%s\nsince=%s\n' "$$" "$here" "$(git rev-parse --abbrev-ref HEAD)" "$(date -u +%FT%TZ)" > "$LOCK/owner"
-tunnel=""
+tunnel=""; vpid=""; vdir=""
 cleanup() {
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
+  [ -n "$vpid" ] && kill "$vpid" 2>/dev/null && wait "$vpid" 2>/dev/null
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -86,14 +92,35 @@ for _ in $(seq 1 40); do nc -z 127.0.0.1 "$T" 2>/dev/null && break; perl -e 'sel
 echo "tunnel pid $tunnel: 127.0.0.1:$T -> $HOST 127.0.0.1:$BR"
 start=$(date -u '+%Y-%m-%d %H:%M:%S')
 
+# ---- V: the visitor who writes, on a node of its own -------------------------
+for p in "$VWS" "$VNET"; do
+  case "$p" in 7509|7609) echo "FAIL  $p is the owner's node: the visitor's node never uses it"; exit 2;; esac
+done
+if lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null || lsof -nP -iUDP:"$VNET" >/dev/null; then
+  echo "REFUSED  port $VWS (ws) or $VNET (udp) is taken — set REALNET_VIEWER_WS / REALNET_VIEWER_NET; nothing started"; exit 2
+fi
+vdir=$(mktemp -d "${TMPDIR:-/tmp}/realnet-viewer.XXXXXX")
+mkdir -p "$vdir/data" "$vdir/config" "$vdir/log" "$vdir/webapp_cache"
+FREENET_WEBAPP_CACHE_DIR="$vdir/webapp_cache" freenet network --ws-api-address 127.0.0.1 --ws-api-port "$VWS" \
+  --network-port "$VNET" --data-dir "$vdir/data" --config-dir "$vdir/config" --log-dir "$vdir/log" \
+  --disable-auto-update > "$vdir/log/console.out" 2>&1 &
+vpid=$!
+for _ in $(seq 1 240); do nc -z 127.0.0.1 "$VWS" 2>/dev/null && break; kill -0 "$vpid" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
+if ! nc -z 127.0.0.1 "$VWS" 2>/dev/null; then echo "FAIL  the visitor's node did not start: $(tail -3 "$vdir/log/console.out")"; exit 1; fi
+echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the real network; dirs + web cache under $vdir)"
+
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
-RN_PUB="$T" RN_PUB_LABEL="B" RN_VIS="$A" RN_VIS_LABEL="A" node tools/realnet-demo.mjs
+RN_PUB="$T" RN_PUB_LABEL="B" RN_VIS="$A" RN_VIS_LABEL="A" RN_VIEWER="$VWS" RN_VIEWER_LABEL="V" node tools/realnet-demo.mjs
 fail=$?
 
 # ---- cleanup, proven ----------------------------------------------------------
 echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
+kill "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null
+if kill -0 "$vpid" 2>/dev/null || lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null; then echo "FAIL  the visitor's node (pid $vpid) is still up"; fail=1
+else echo "PASS  the visitor's node (pid $vpid) is gone; port $VWS free"; rm -rf "$vdir"; fi
+vpid=""
 if lsof -nP -iTCP:"$T" -sTCP:LISTEN >/dev/null; then echo "FAIL  port $T still listening"; fail=1; else echo "PASS  tunnel closed; port $T free"; fi
 after=$(state)
 if [ "$after" != "$before" ]; then echo "STOP  B changed during the run: before [$(tr '\n' ' ' <<<"$before")] after [$(tr '\n' ' ' <<<"$after")]"; fail=1
