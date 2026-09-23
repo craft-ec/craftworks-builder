@@ -31,13 +31,23 @@ HOST=${REALNET_HOST:-root@46.224.172.252}
 A=${REALNET_A:-7509}
 # 17619, not 17609: 17609 is the owner's standing demo tunnel.
 T=${REALNET_TUNNEL:-17619}
-VWS=${REALNET_V_WS:-17639}
-VNET=${REALNET_V_NET:-37639}
+# V's ports are FREE ones chosen per run (REALNET_V_WS / REALNET_V_NET to pin
+# them): a fixed port is one a stale client from an earlier run finds again —
+# an orphaned browser reconnected to 17639 and provisioned V before step 9.
+free_port() { python3 -c "import socket,sys; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM if sys.argv[1]=='udp' else socket.SOCK_STREAM); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])" "$1"; }
+VWS=${REALNET_V_WS:-$(free_port tcp)}
+VNET=${REALNET_V_NET:-$(free_port udp)}
 BR=${REALNET_B_REMOTE:-7509}
 # The one lock every session shares (REALNET_LOCK only for the lock's own test).
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here" || exit 2
+# EVERY BROWSER A RUN STARTS names its owner: a TMPDIR of the run's own (the
+# system default is where the 06:30 orphan's profile could not be tied to
+# anyone), and a PID file page-host writes each browser into.
+case "${TMPDIR:-}" in
+  ""|/var/folders/*|/tmp|/tmp/|/private/tmp|/private/tmp/) echo "REFUSED  TMPDIR is ${TMPDIR:-unset}: set it to your own directory, so every browser and node this run starts names its owner; nothing started"; exit 2;;
+esac
 
 # ---- the lock: one session on the server at a time ---------------------------
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -51,8 +61,22 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK" && mkdir "$LOCK" || { echo "REFUSED  could not take $LOCK"; exit 3; }
 fi
 printf 'pid=%s\ncwd=%s\nbranch=%s\nsince=%s\n' "$$" "$here" "$(git rev-parse --abbrev-ref HEAD)" "$(date -u +%FT%TZ)" > "$LOCK/owner"
+# Under the lock only: no run of this TMPDIR is live now, so what an earlier one
+# recorded is left over, never another run's.
+# A BROWSER AN EARLIER RUN LEFT (killed with SIGKILL, so nothing of it could
+# clean up): swept before anything starts. Only a PID whose command line still
+# names the profile its run recorded is killed — a PID reused by anything else
+# is left alone — and each is verified gone.
+. "$here/tools/browser-sweep.sh"
+for old in "$TMPDIR"/realnet-run.*/browsers.pids; do [ -f "$old" ] && { sweep "$old" || exit 2; }; done
+run=$(mktemp -d "$TMPDIR/realnet-run.XXXXXX")
+export PAGE_HOST_PIDFILE="$run/browsers.pids"
+: > "$PAGE_HOST_PIDFILE"
 tunnel=""; vpid=""; vdir=""
 cleanup() {
+  # This run's browsers, whatever ended it (the demo killed, this script
+  # signalled): page-host kills them on every exit IT sees; this is the rest.
+  [ -f "$PAGE_HOST_PIDFILE" ] && sweep "$PAGE_HOST_PIDFILE"
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
   [ -n "$vpid" ] && kill "$vpid" 2>/dev/null && wait "$vpid" 2>/dev/null
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"

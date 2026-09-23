@@ -15,6 +15,21 @@
 // private node on this machine joined to the real network. When A is one of the owner's ports that needs REALNET_OWNER_OK=1, the
 // owner's standing permission for these runs.
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
+import { spawnSync } from "node:child_process";
+
+/** Every CLIENT connected to the node on `port` now: `{ pid, command, peer }` (lsof, read-only). */
+function clientsOn(port) {
+  const r = spawnSync("lsof", ["-nP", `-iTCP@127.0.0.1:${port}`, "-sTCP:ESTABLISHED", "-F", "pcn"], { encoding: "utf8" });
+  const out = [];
+  let pid = null, command = null;
+  for (const line of (r.stdout ?? "").split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith("c")) command = line.slice(1);
+    // The CLIENT end: a connection whose REMOTE is the node's port.
+    else if (line.startsWith("n") && line.endsWith(`->127.0.0.1:${port}`)) out.push({ pid, command, peer: line.slice(1) });
+  }
+  return out;
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const B = { ws: Number(process.env.RN_B), label: process.env.RN_B_LABEL ?? "B (the app owner's node)" };
@@ -134,6 +149,12 @@ try {
   // view, and the guestbook (source: mine) takes the user's entry into
   // the user's OWN tree: saved, shown, still there after a reload, and the
   // app's data untouched.
+  // NOTHING IS CONNECTED TO V BEFORE ITS PAGE: V is this run's own node, and
+  // nothing of this run has opened it yet — a client here is a stray (an
+  // earlier run's browser found V's port and provisioned its signer before
+  // step 9). Named, and the run fails.
+  const strays = clientsOn(V.ws);
+  step(strays.length === 0, `no client is connected to ${V.label} before its page opens (${strays.length} found)`, strays.length ? strays.map(c => ({ ...c, command: spawnSync("ps", ["-o", "command=", "-p", String(c.pid)], { encoding: "utf8" }).stdout.trim().slice(0, 200) })) : undefined);
   vBrowser = await openFreshBrowser("realnet-demo: a user who writes their own data, on V");
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();

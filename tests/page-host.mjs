@@ -40,7 +40,7 @@
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,6 +122,20 @@ export function nodeArgs({ ws, net, transportKey = null, gateway = null }, dir) 
  */
 export function nodeEnv(dir, env = process.env) {
   return { ...env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") };
+}
+
+// EVERY BROWSER THIS PROCESS STARTS, so that no exit leaves one behind (the
+// realnet orphans, 2026-09-24: a killed or crashed run's headless Chrome
+// stayed connected to the owner's node for 13 h, and one reconnected to V
+// and provisioned its signer). Each is killed by `openPageHost`'s `done` on ANY
+// exit it sees (normal, a signal, the budget); and each is written to
+// PAGE_HOST_PIDFILE (`pid <TAB> profile`), which the next realnet run sweeps
+// for an exit nothing here could see (a SIGKILL).
+const browsers = new Set();
+function recordBrowser(child, profile) {
+  browsers.add(child);
+  child.once("exit", () => browsers.delete(child));
+  if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${child.pid}\t${profile}\n`);
 }
 
 /** Kill `child` by its recorded PID and wait until it is GONE; SIGKILL after `graceMs`. */
@@ -325,7 +339,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
       const { gone, held } = await node.stop();
       if (!gone || held.length) code = code || 1;
     }
-    for (const k of kids) {
+    for (const k of [...kids, ...browsers]) {
       if (!(await killVerified(k))) { console.error(`${label}: pid ${k.pid} did not exit`); code = code || 1; }
     }
     rmSync(join(nonceDir, nonce), { force: true });
@@ -347,9 +361,11 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     const back = await fetch(`http://127.0.0.1:${port}/.page-nonce/${nonce}`).then(r => (r.ok ? r.text() : `HTTP ${r.status}`), e => `unreachable: ${e.message}`);
     if (back !== nonce) throw new Error(`the server on ${port} is not serving THIS tree (${ROOT}): the nonce came back as ${JSON.stringify(back)}`);
 
+    const profile = mkdtempSync(join(tmpdir(), "cw-page-"));
     const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0", ...chromeArgs,
-      `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-page-"))}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
+      `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
     kids.push(chrome);
+    if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${chrome.pid}\t${profile}\n`);
     const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
 
     const pageProof = `return await (await fetch("/.page-nonce/${nonce}")).text();`;
@@ -366,8 +382,17 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
  * a stranger opening an app by address has. Returns `{ tab(label), stop() }`.
  */
 export async function openFreshBrowser(label, { windowSize = "1280,800" } = {}) {
+  // A browser that opens apps on REAL nodes (only the live tools start one) is
+  // made where its owner can be told: never in the system's default temp dir,
+  // where the 06:30 orphan's profile could not be tied to anyone.
+  const t = process.env.TMPDIR ?? "";
+  if (process.env.PAGE_HOST_ALLOW_DEFAULT_TMPDIR !== "1" && (!t || t.startsWith("/var/folders/") || /^\/(private\/)?tmp\/?$/.test(t))) {
+    throw new Error(`${label}: TMPDIR is ${t ? `the system default (${t})` : "unset"}; set it to your run's own directory, so every browser profile names its owner`);
+  }
+  const profile = mkdtempSync(join(tmpdir(), "cw-fresh-"));
   const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0",
-    `--user-data-dir=${mkdtempSync(join(tmpdir(), "cw-fresh-"))}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
+    `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
+  recordBrowser(chrome, profile);
   const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
   return { debug, pid: chrome.pid, tab: (tabLabel, opts) => openTab(debug, tabLabel, opts), stop: () => killVerified(chrome) };
 }
