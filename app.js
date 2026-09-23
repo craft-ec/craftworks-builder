@@ -3,7 +3,7 @@ import { publishApp } from "./publish-app.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
-import { mountApp } from "./runtime.js";
+import { mountApp, sourceOf } from "./runtime.js";
 import { defaultSchema, KINDS, preloadManifest, schemasOf } from "./runtime-logic.js";
 import { handoff } from "./handoff.js";
 import { LIVE_NOTE, isLive, reconnectsOnOpen } from "./publish-state.js";
@@ -465,7 +465,10 @@ function renderPalette() {
     const ready = c.phase <= BUILT_PHASE + 1;
     const b = el("button", { className: "chip", disabled: !ready, title: `${c.primitives.join(" + ")} · ${c.schema} — ${c.note}${ready ? "" : ` (lands in phase ${c.phase})`}` },
       c.label, el("small", { textContent: ready ? c.schema : `phase ${c.phase}` }));
-    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0] }); sel = app.components.length - 1; rt.invalidate(); save(); render(); };
+    // A NEW component shows each visitor's OWN data (DATA-SOURCE `viewer`):
+    // a published site is a normal website, where everyone can add. A
+    // component with no `source` (a project from before) is `publisher`.
+    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0], source: "viewer" }); sel = app.components.length - 1; rt.invalidate(); save(); render(); };
     return b;
   }));
 }
@@ -611,9 +614,18 @@ function renderProps() {
     el("span", { textContent: "Live — updates by itself" }));
   const liveWhy = el("p", { className: "note", id: "live-note", textContent: LIVE_NOTE });
 
+  // WHOSE DATA this component shows once published (DATA-SOURCE): the
+  // publisher's, which only the publisher adds to, or each visitor's own,
+  // which every visitor adds to (their own tree, made on their first entry).
+  const source = el("select", { id: "source" });
+  for (const [v, label] of [["viewer", "Each visitor's own data (everyone can add)"], ["publisher", "The publisher's data (only the publisher can add)"]]) {
+    source.append(el("option", { value: v, textContent: label, selected: v === sourceOf(inst) }));
+  }
+  source.onchange = () => { inst.source = source.value; rt.invalidate(); save(); render(); };
+
   const rm = el("button", { textContent: "Remove", style: "margin-top:12px" });
   rm.onclick = () => { app.components.splice(sel, 1); sel = -1; rt.invalidate(); save(); render(); };
-  $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Consistency" }), mode,
+  $("props").replaceChildren(el("label", { textContent: "Domain" }), domain, el("label", { textContent: "Data" }), source, el("label", { textContent: "Consistency" }), mode,
     liveRow, liveWhy,
     el("label", { textContent: `Schema of “${inst.domain}” — shared by every component on it` }), schemaEditor(inst.domain), rm);
   renderMap();
