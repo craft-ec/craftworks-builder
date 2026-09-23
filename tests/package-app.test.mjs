@@ -129,11 +129,11 @@ await t("no artefacts key is a refusal", async () => {
 });
 
 await t("a manifest missing a hash is a refusal, naming which AND why", async () => {
-  const broken = { ...manifest, delegate: { file: "engine_delegate.wasm" } };
+  const broken = { ...manifest, signer: { file: "signer.wasm" } };
   await assert.rejects(
     () => packageApp(APP, { sdkFiles: SDK_JS, manifest: broken, artefactsKey: KEY, subtle }),
     e => {
-      assert.match(e.message, /no hash for: delegate/, "it does not name the missing entry");
+      assert.match(e.message, /no hash for: signer/, "it does not name the missing entry");
       assert.match(e.message, /too old/,
         "it does not say the SDK build is too old, so the reader treats a stale PIN as a " +
         "broken manifest — which is the wrong thing to go and fix");
@@ -160,7 +160,7 @@ const WEBAPP = { file: "webapp.wasm", sha256: "4".repeat(64), bytes: 30476 };
 const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP };
 
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
-  assert.deepStrictEqual(NAMED, ["sdk", "delegate", "block", "register"], "NAMED changed: it is an exact set");
+  assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
   assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "webapp"]);
   const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: CONTAINER.address, subtle });
   const named = JSON.parse(files["artefacts.json"]);
@@ -178,12 +178,13 @@ await t("**a container or webapp entry shaped like an APP artefact is refused, n
   }
 });
 
-await t("**THE REAL MANIFEST packages: the app names the four and the SDK's own container, and never the signer yet**", async () => {
+await t("**THE REAL MANIFEST packages: the app names the four (the signer among them) and the SDK's own container, and never the engine delegate**", async () => {
   const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest, artefactsKey: manifest.container.address, subtle });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort());
   assert.strictEqual(named.contract, manifest.container.address);
-  assert.ok(!("signer" in named), "the app names the signer before the switch-over");
+  assert.ok("signer" in named, "the app does not name the signer: it could not provision");
+  assert.ok(!("delegate" in named), "the app names the deleted engine delegate");
 });
 
 await t("**an artefacts key that is not the SDK's container address is refused**", async () => {

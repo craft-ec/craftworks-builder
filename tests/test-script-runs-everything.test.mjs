@@ -71,5 +71,37 @@ t("THE CONTROL: the reader finds files and names, not nothing", () => {
     "pattern dropped, because it excluded digits");
 });
 
+// NOTHING RUNS AFTER THE EXIT. A test file ends with an unconditional,
+// top-level `process.exit(…)`; a test written BELOW it is never executed, and
+// the file still says "all passing". Three app-id tests of builder#109 sat
+// there, and the one about a refused publication hid a real defect (it had
+// PUT four containers before refusing). So: after a line that BEGINS with
+// `process.exit(` — top level, unconditional — only blank lines and comments
+// may follow. A GUARDED exit (`if (!KEY) { … process.exit(1); }`) does not
+// begin its line with it, and is not one.
+export function codeAfterExit(text) {
+  const lines = text.split("\n");
+  const at = lines.findIndex(l => /^process\.exit\(/.test(l));
+  if (at < 0) return [];
+  return lines.slice(at + 1)
+    .map((l, i) => ({ line: at + 2 + i, text: l }))
+    .filter(({ text }) => text.trim() !== "" && !/^\s*\/\//.test(text));
+}
+
+t("**no test file has code after its unconditional exit** — it would never run", () => {
+  const dead = disk
+    .map(f => ({ f, after: codeAfterExit(readFileSync(at(`../${f}`), "utf8")) }))
+    .filter(x => x.after.length > 0)
+    .map(x => `${x.f}:${x.after[0].line} (${x.after.length} line(s), first: ${x.after[0].text.trim().slice(0, 60)})`);
+  assert.deepStrictEqual(dead, [], `code after the exit, never run: ${dead.join("; ")}`);
+});
+
+t("THE CONTROL: a test after the exit is caught; a guarded exit and trailing comments are not", () => {
+  const deadFile = 'await t("a", () => {});\nprocess.exit(failures ? 1 : 0);\n\nawait t("never runs", () => {});\n';
+  assert.deepStrictEqual(codeAfterExit(deadFile).map(x => x.line), [4], "a test after the exit was not caught");
+  const guarded = 'if (!KEY) { process.stdout.write("no"); process.exit(1); }\nawait t("runs", () => {});\nprocess.exit(failures ? 1 : 0);\n// a closing note\n\n';
+  assert.deepStrictEqual(codeAfterExit(guarded), [], "a guarded exit or a trailing comment was taken for dead code");
+});
+
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok test script\n");
 process.exit(failures ? 1 : 0);

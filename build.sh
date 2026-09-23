@@ -47,12 +47,13 @@ fi
 # written and silently wrong afterwards. One list up here, both loops read
 # it, and they cannot drift.
 # builder#104: publishing PUTs the SDK's artefacts container (artefacts.webapp)
-# and the app's under the `webapp` contract (webapp.wasm); the signer ships
-# for page mode. All three are checked and copied like the rest.
-WASM_ARTEFACTS="craftworks_sdk_bg.wasm engine_delegate.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+# and the app's under the `webapp` contract (webapp.wasm). The signer is the
+# one delegate (the switch-over deleted the engine delegate). All are checked
+# and copied like the rest.
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
-COPIED_ARTEFACTS="engine_delegate.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
 
 out=.sdk-build/$rev
 
@@ -63,7 +64,7 @@ out=.sdk-build/$rev
 # that point, by a failed environment or a killed terminal, leaves a
 # directory that answers YES and is missing everything after it. Every run
 # afterwards takes the hit, skips the build, and dies at the copy with
-# "the SDK build has no engine_delegate.wasm" — which reads like a broken
+# "the SDK build has no signer.wasm" — which reads like a broken
 # SDK rather than like a cache holding half a build. It cost three runs
 # before anyone doubted the cache.
 #
@@ -160,7 +161,8 @@ cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
 }
 # ITS CONTENT, NOT ITS PRESENCE.
 #
-# Older SDK revisions wrote a manifest carrying only `delegate`. Checking the
+# Older SDK revisions wrote a manifest carrying only `delegate` (and until the
+# switch-over, no signer an app could name). Checking the
 # file EXISTS accepts one of those and leaves packaging to fail later with
 # "the SDK manifest has no hash for: sdk, block, register" — which reads as a
 # broken manifest when the truth is that THE PIN IS TOO OLD. So the failure
@@ -171,7 +173,7 @@ cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
 # test run here — the suite read a manifest left in the tree by a NEWER
 # build than the pin selects, so it measured an environment the commit does
 # not contain.
-for want in sdk delegate block register; do
+for want in sdk signer block register; do
   grep -q "\"$want\"" "$out/pkg/web/artefacts.json" || {
     echo "the SDK at $rev writes an artefacts.json with no \"$want\" entry." >&2
     echo "A packaged app names all four artefacts by hash, so this pin is too old for it." >&2
@@ -182,7 +184,7 @@ cp "$out/pkg/web/artefacts.json" sdk/
 
 # THE ARTEFACTS PUBLISHING NEEDS.
 #
-# The engine delegate and the two contracts. They are fetched by URL at
+# The signer and the two contracts. They are fetched by URL at
 # publish time, not imported, so no import walker finds them and nothing
 # above copies them — and without them Publish fails with a 404 on a path
 # nobody recognises, which is how this was found.

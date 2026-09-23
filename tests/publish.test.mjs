@@ -4,7 +4,7 @@
 // is that they can be checked like this, on any machine, every run.
 
 import assert from "node:assert/strict";
-import { buttonFor, rowStateFor, publish, waitFor, PHASES, RESERVED_PORTS } from "../publish.js";
+import { appIdOf, buttonFor, rowStateFor, publish, waitFor, PHASES, RESERVED_PORTS } from "../publish.js";
 import { UNPUBLISHED } from "../publish-state.js";
 
 let failures = 0;
@@ -93,7 +93,7 @@ await t("THE CONTROL: the budget does not fire on a node that answers", async ()
 await t("publish reports each phase, in order, and hands back the engine db", async () => {
   const seen = [];
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
-  const { db } = await publish({}, { onSaving: () => {},
+  const { db } = await publish({}, { appId: "proj1", onSaving: () => {},
     port: 17509,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   }, p => seen.push(p));
@@ -103,7 +103,7 @@ await t("publish reports each phase, in order, and hands back the engine db", as
 
 await t("a node that is not there fails with advice, not a stack trace", async () => {
   const seen = [];
-  await assert.rejects(() => publish({}, { onSaving: () => {},
+  await assert.rejects(() => publish({}, { appId: "proj1", onSaving: () => {},
     port: 17509,
     open: async () => { throw new Error("ECONNREFUSED"); },
   }, (p, e) => seen.push([p, e])));
@@ -153,7 +153,7 @@ await t("**the OWNER'S node ports are REFUSED**, not published to", async () => 
   // owner's, and began provisioning it.
   for (const port of RESERVED_PORTS) {
     let opened = false;
-    await assert.rejects(() => publish({}, { onSaving: () => {},
+    await assert.rejects(() => publish({}, { appId: "proj1", onSaving: () => {},
       port,
       open: async () => { opened = true; return {}; },
     }), e => {
@@ -166,7 +166,7 @@ await t("**the OWNER'S node ports are REFUSED**, not published to", async () => 
 
 await t("no port at all is refused too — there is no safe default", async () => {
   let opened = false;
-  await assert.rejects(() => publish({}, { onSaving: () => {}, open: async () => { opened = true; return {}; } }),
+  await assert.rejects(() => publish({}, { appId: "proj1", onSaving: () => {}, open: async () => { opened = true; return {}; } }),
     e => { assert.match(e.message, /no safe default|no node port/); return true; });
   assert.equal(opened, false);
 });
@@ -175,11 +175,40 @@ await t("THE CONTROL: an ordinary port is NOT refused", async () => {
   // Without this, a `publish` that refused every port would pass the two
   // tests above and nothing could ever be published.
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
-  const { db } = await publish({}, { onSaving: () => {},
+  const { db } = await publish({}, { appId: "proj1", onSaving: () => {},
     port: 17509,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   });
   assert.equal(db.marker, "engine");
+});
+
+
+await t("**no app id is refused BEFORE anything opens** — the SDK would refuse it as a failed connection (craftworks-sdk#267)", async () => {
+  for (const appId of [undefined, "", "Not Valid", "x".repeat(33)]) {
+    let opened = false;
+    const phases = [];
+    await assert.rejects(() => publish({}, { appId, onSaving: () => {}, port: 18080, open: async () => { opened = true; return {}; } }, (p, why) => phases.push([p, why])),
+      /no app id/, `app id ${JSON.stringify(appId)} was accepted`);
+    assert.ok(!opened, `a session was opened for app id ${JSON.stringify(appId)}`);
+    assert.strictEqual(phases.at(-1)?.[0], "failed", "the refusal did not reach the publish button");
+  }
+});
+
+await t("THE CONTROL: a valid app id reaches open() as `app`", async () => {
+  let given;
+  await publish({}, { appId: "proj1", onSaving: () => {}, port: 18080,
+    open: async o => { given = o.app; throw new Error("stop here"); } }).catch(() => {});
+  assert.strictEqual(given, "proj1", "open() was not told which app this is");
+});
+
+await t("**one project, one app**: its id comes from the project's own id, the same every time; a 64-hex id is its own 128-bit prefix; anything else that does not fit is REFUSED, never bent", () => {
+  const hex = "0123456789abcdef0123456789abcdef";
+  assert.strictEqual(appIdOf(hex), hex);
+  assert.strictEqual(appIdOf(hex + hex), hex, "a 64-hex project id was not taken at its first 32 (its own 128-bit prefix)");
+  assert.strictEqual(appIdOf(hex), appIdOf(hex), "the same project gave two app ids");
+  for (const bad of [undefined, null, "", "ABC", "has.dot", "has space"]) {
+    assert.throws(() => appIdOf(bad), /gives no app id/, `${JSON.stringify(bad)} was bent into an id`);
+  }
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nall passing\n");

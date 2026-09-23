@@ -36,9 +36,15 @@ try {
   say("Loading the SDK…");
   const sdk = await load(await artefactBytes(from(art.sdk)));
   say("Connecting…");
+  // The publisher's APP (craftworks-sdk#267): the space its data was written
+  // under, which this view reads. Absent, the app predates app ids and names
+  // nothing this SDK can open.
+  const appId = app?.publisher?.app;
+  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) throw new Error("app.json names no publisher app, so there is no space to read");
   const handle = await sdk.open({
+    app: appId,
     port: Number(location.port),
-    artefacts: { delegate: from(art.delegate), block: from(art.block), register: from(art.register) },
+    artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
     provision: false,
   });
   say("Reading…");
