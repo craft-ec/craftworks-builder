@@ -49,6 +49,14 @@ export async function publishApp(app, {
   if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
   }
+  // AND THE APP ID it is written under (craftworks-sdk#267): a visitor's
+  // session must open the SAME app's space in the publisher's tree, or it
+  // reads an empty one. Checked BEFORE anything is PUT: it used to be checked
+  // after the artefacts container went out, so a refused publication had
+  // already put something (its test sat after the file's exit and never ran).
+  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) {
+    throw new Error("publish: no app id, so a visitor could not find this app's data in the publisher's tree");
+  }
   const code = bytesOf(await read("sdk/webapp.wasm"));
   const put = state => session.put_contract(code, sdk.webapp.params(state), state);
 
@@ -64,12 +72,6 @@ export async function publishApp(app, {
   // address and READS it (published data is readable by default).
   const sdkFiles = {};
   for (const [at, from] of Object.entries(APP_FILES)) sdkFiles[at] = await read(from);
-  // AND THE APP ID it was written under (craftworks-sdk#267): a visitor's
-  // session must open the SAME app's space in the publisher's tree, or it
-  // reads an empty one.
-  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) {
-    throw new Error("publish: no app id, so a visitor could not find this app's data in the publisher's tree");
-  }
   const published = { ...app, publisher: { head: headId, app: appId } };
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 

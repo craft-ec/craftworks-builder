@@ -119,8 +119,6 @@ await t("refused before anything is sent: no head, and an artefacts container th
     /not the elsewhere its manifest names/);
 });
 
-process.stdout.write(failures ? `\n${failures} failing\n` : "\nok publish app\n");
-process.exit(failures ? 1 : 0);
 
 await t("**no app id, no publication** — a visitor would read an empty space (craftworks-sdk#267)", async () => {
   const s = node();
@@ -130,3 +128,6 @@ await t("**no app id, no publication** — a visitor would read an empty space (
   }
   assert.strictEqual(s.puts.length, 0, "something was PUT for an app that names no space");
 });
+
+process.stdout.write(failures ? `\n${failures} failing\n` : "\nok publish app\n");
+process.exit(failures ? 1 : 0);

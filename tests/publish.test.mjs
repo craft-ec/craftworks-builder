@@ -182,8 +182,6 @@ await t("THE CONTROL: an ordinary port is NOT refused", async () => {
   assert.equal(db.marker, "engine");
 });
 
-process.stdout.write(failures ? `\n${failures} failing\n` : "\nall passing\n");
-process.exit(failures ? 1 : 0);
 
 await t("**no app id is refused BEFORE anything opens** — the SDK would refuse it as a failed connection (craftworks-sdk#267)", async () => {
   for (const appId of [undefined, "", "Not Valid", "x".repeat(33)]) {
@@ -212,3 +210,6 @@ await t("**one project, one app**: its id comes from the project's own id, the s
     assert.throws(() => appIdOf(bad), /gives no app id/, `${JSON.stringify(bad)} was bent into an id`);
   }
 });
+
+process.stdout.write(failures ? `\n${failures} failing\n` : "\nall passing\n");
+process.exit(failures ? 1 : 0);
