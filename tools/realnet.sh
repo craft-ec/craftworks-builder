@@ -96,6 +96,13 @@ built=$(tr -d ' \n' < sdk/REV 2>/dev/null)
 if [ "$pinned" != "$built" ]; then echo "FAIL  the SDK built is ${built:-none}, not the pinned $pinned: refusing to run evidence on the wrong code"; exit 1; fi
 dirty=$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')
 echo "RAN   builder $(git rev-parse --short HEAD) ($(git rev-parse --abbrev-ref HEAD)$( [ "$dirty" != 0 ] && echo ", $dirty uncommitted file(s)"))"
+# THE A-SIDE CHECK's one decoder, from THIS SDK revision's own source (the
+# format and its encoders are the SDK's): classify-frames, and frame-put for
+# the Register-PUT mutant.
+if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put) > "$run/probe-build.log" 2>&1; then
+  echo "FAIL  the SDK's classify-frames did not build: $(tail -3 "$run/probe-build.log")"; exit 1
+fi
+probe_bin="$here/.sdk-build/$pinned/target/release"
 echo "RAN   sdk ${built:0:12} (sdk/REV), wasm sha256 $(shasum -a 256 sdk/craftworks_sdk_bg.wasm | cut -c1-16), artefacts container $(node -e 'console.log(require("./sdk/artefacts.json").container.address)')"
 
 # ---- B, read-only, and the tunnel --------------------------------------------
@@ -135,7 +142,12 @@ echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the r
 
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
-RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" node tools/realnet-demo.mjs
+# A's log is the OWNER's (A is the owner's node): the demo only ever READS it.
+RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
+  RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
+  RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
+  RN_V_LOG="$vdir/log" RN_A_LOG="${REALNET_A_LOG:-$HOME/Library/Logs/freenet}" RN_WIRE_DIR="$run" \
+  node tools/realnet-demo.mjs
 fail=$?
 
 # ---- cleanup, proven ----------------------------------------------------------
