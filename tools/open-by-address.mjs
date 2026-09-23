@@ -251,15 +251,34 @@ try {
     const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: bad, read, subtle: crypto.subtle });
     const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: missing, read, subtle: crypto.subtle });
     return { mismatch: a.address, missing: b.address, sha: m.sdk.sha256 };`);
-  for (const [kind, addr, expect] of [["mismatch", tampered.mismatch, /sha256|hash|mismatch|does not match/i], ["missing", tampered.missing, /no-such-artefact\.wasm/]]) {
-    const tab = await fresh.tab(`visitor-${kind}`);
+  // A MISMATCH is an END: bytes that do not hash are refused, by name.
+  {
+    const tab = await fresh.tab("visitor-mismatch");
+    const addr = tampered.mismatch;
     await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`)}; return 1;`);
     const st = await untilIn(tab, `const s = document.getElementById("status"); return s?.className === "bad" ? s.textContent : null;`, 90_000, 2000, `${addr}/?__sandbox=1`);
     const rows = await tab.evaluateIn(`${addr}/?__sandbox=1`, `return document.querySelectorAll("tbody tr").length;`);
-    check(typeof st === "string" && expect.test(st) && rows === 0,
-      kind === "mismatch" ? "an SDK wasm that does not match its hash is REFUSED and the app does not load" : "an unresolvable artefact is NAMED, with its hash",
-      st);
+    check(typeof st === "string" && /sha256|hash|mismatch|does not match/i.test(st) && rows === 0, "an SDK wasm that does not match its hash is REFUSED and the app does not load", st);
   }
+  // A MISSING artefact is NOT an answer (rule 8, sdk#319): it is re-asked on
+  // the RTO with no give-up, and the page SAYS it waits — naming the file and
+  // counting seconds — and loads nothing meanwhile.
+  {
+    const tab = await fresh.tab("visitor-missing");
+    const addr = tampered.missing;
+    const frame = `${addr}/?__sandbox=1`;
+    await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`)}; return 1;`);
+    const waiting = `const s = document.getElementById("status")?.textContent ?? ""; const m = /not available on this node yet \\((\\d+) s\\): no-such-artefact\\.wasm/.exec(s); return m ? Number(m[1]) : null;`;
+    const first = await untilIn(tab, waiting, 90_000, 1000, frame);
+    await sleep(5_000);
+    const later = await tab.evaluateIn(frame, waiting).catch(() => null);
+    const rows = await tab.evaluateIn(frame, `return document.querySelectorAll("tbody tr").length;`).catch(() => null);
+    const bad = await tab.evaluateIn(frame, `return document.getElementById("status")?.className === "bad";`).catch(() => null);
+    check(Number.isInteger(first) && Number.isInteger(later) && later > first && rows === 0 && bad === false,
+      "an artefact the node does not serve is WAITED on, not an end: the page names the file and counts seconds, and loads nothing",
+      { first, later, rows, bad, status: await tab.evaluateIn(frame, `return document.getElementById("status")?.textContent;`).catch(e => e.message) });
+  }
+
 } catch (e) {
   failed += 1;
   console.log(`FAIL  the run stopped: ${e.message}`);

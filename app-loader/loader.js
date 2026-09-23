@@ -38,7 +38,9 @@ try {
   // node's own.
   const from = e => ({ urls: [new URL(`/v1/contract/web/${art.contract}/${e.file}`, location.href).href], sha256: e.sha256 });
   say("Loading the SDK…");
-  const sdk = await load(await artefactBytes(from(art.sdk)));
+  // A file the node does not serve yet is WAITED on, never an end (rule 8):
+  // the SDK re-asks on its RTO and says so, and the status names the file.
+  const sdk = await load(await artefactBytes(from(art.sdk), { onWait: w => say(`${w.says}: ${art.sdk.file}`) }));
   say("Connecting…");
   // The APP's id (craftworks-sdk#267): the space its data was written
   // under, which this view reads. Absent, the app predates app ids and names
