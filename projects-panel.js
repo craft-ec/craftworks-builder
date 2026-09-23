@@ -685,11 +685,14 @@ export async function mountProjects(host, {
    * a no-op and at worst the bug above.
    */
   async function choose(pid) {
+    // Read BEFORE the handover, which is synchronous: a published project
+    // reopens connected (`reconnectsOnOpen`).
+    const publication = (await publicationsOf(db, pid))[0] ?? null;
     const project = await openInto(db, pid, {
       setLastOpened: id => writeDeviceSettings(storage, { lastOpened: id }),
       handOver: p => {
         loading = true;
-        try { setCanvas(canvasOf(p), p); }
+        try { setCanvas(canvasOf(p), { ...p, publication }); }
         finally { loading = false; }
       },
     });
@@ -771,7 +774,7 @@ export async function mountProjects(host, {
   // wrong on a second device.
   if (last) {
     const project = await openProject(db, last);
-    if (project) setCanvas(canvasOf(project), project);
+    if (project) setCanvas(canvasOf(project), { ...project, publication: (await publicationsOf(db, project.id))[0] ?? null });
   }
   return { persist, refresh: paint, openProjectId: current, published, adopt };
 }

@@ -52,6 +52,10 @@
 // was created by the publish itself.
 //
 import { sameRows } from "./sdk/engine-db.js";
+// WHAT A ROW STATE MEANS is the SDK's (`RowState`, one owner): never a
+// literal here. `=== "CLEAN"` stalled every publish once the SDK reported
+// `BACKED_UP` for a row saved and backed up.
+import { row_saved as rowSaved } from "./sdk/craftworks_sdk.js";
 
 // Pure: both databases are passed in, so every path is testable without a
 // page or a node (tests/handoff.test.mjs, tests/handoff-across-runtimes.test.mjs).
@@ -195,13 +199,12 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
     plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
   }
 
-  // ONE LOOP, TWO CONDITIONS: room and progress (builder#94). The target
-  // holds a bounded number of writes it has not had confirmed — the SDK's copy
-  // refuses the next one `NO_ROOM`, retryable, by name (sdk#180). A publish
-  // larger than that is not a failure: the handoff waits for the node to
-  // confirm a record, which frees room, and makes THAT row again — never
-  // skipping it, never counting it failed. The one deadline is progress: no
-  // record newly confirmed, and no row made, for `stallMs`.
+  // ONE LOOP: room (builder#94). The target holds a bounded number of writes
+  // it has not had confirmed — the SDK's copy refuses the next one `NO_ROOM`,
+  // retryable, by name (sdk#180). A publish larger than that is not a
+  // failure: the handoff waits for writes to END, which frees room, and makes
+  // THAT row again — never skipping it, never counting it failed. No deadline
+  // of its own: the SDK ends every write within its one budget.
   const total = plan.reduce((n, { copies, live }) => n + copies.filter(c => !(live && c.row.seed !== undefined)).length, 0);
   const confirmRows = [];
   const progress = tracker(target, confirmRows, { ...confirm, onProgress }, total);
@@ -274,26 +277,28 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
 }
 
 /**
- * What the node has confirmed of `rows`, and the one deadline: PROGRESS.
+ * What the node has confirmed of `rows`, reported as it moves.
  *
- * A deadline on progress, not on the total (builder#94). "Not confirmed yet"
- * can last for ever on a node that has gone away, and waiting on it would
- * leave the button saying Publishing… with nothing to act on. But the node
- * confirms one write per commit, about 3.4 a second: 100 rows took 27–29 s of
- * a 30 s total, and 300 rows could not fit at any speed. A publish that is
- * still ADVANCING — a record newly confirmed, or a row made — is never failed
- * for being large; one that has stalled for `stallMs` fails as promptly as
- * before, and says how far it got.
+ * "Not confirmed yet" no longer lasts for ever on a node that has gone away:
+ * the SDK ends every write within its one budget — saved, rolled back, or
+ * Unknown (its record absent) — and a row that ends lost is thrown here,
+ * named. So a large publish is never failed for being large, and a dead node
+ * fails it within the SDK's budget, saying how far it got.
  *
  * `rows` may grow while this is in use: the handoff adds each row it makes.
  * `onProgress({ confirmed, total })` is told each time the count moves.
  */
-function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Date.now(), sleep = pause, onProgress = () => {}, ...rest } = {}, total = null) {
-  // The old TOTAL budget, passed by a caller that was not updated, would be
-  // silently ignored and wait 30 s of no progress instead. Refused by name.
-  if ("budgetMs" in rest) throw new Error("handoff: `budgetMs` is gone — the deadline is on progress now; pass `stallMs` (builder#94)");
+function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = pause, onProgress = () => {}, signal = null, ...rest } = {}, total = null) {
+  // NO TIMER HERE (rule 8). A write ends only on an ANSWER — saved, rolled
+  // back, or its head's witness — and the SDK re-sends until there is one; a
+  // slow network never ends it. So this waits for those ends and names them,
+  // and a person may cancel (`signal`). A deadline of the builder's own (the
+  // old 30 s of no progress) failed a real-network publish the SDK would have
+  // finished (2026-09-23). A caller passing one is refused by name.
+  if ("budgetMs" in rest || "stallMs" in rest) {
+    throw new Error("handoff: there is no deadline to pass — a write ends only on the node's answer (rule 8); `budgetMs` and `stallMs` are gone");
+  }
   let best = -1;
-  let movedAt = now();
   let polledAt = null;
   // The fewest writes the target has held unconfirmed — ANY of this page's,
   // not only these rows. The node confirming someone else's write is the node
@@ -301,10 +306,12 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
   // node, and counting only our own confirmations called that a stall.
   let fewest = null;
   const t = {
-    everyMs, stallMs, now, sleep, rows,
+    everyMs, now, sleep, rows,
     get best() { return best; },
-    /** Something moved that is not a confirmation: a row was made. */
-    moved: () => { movedAt = now(); },
+    /** A person stopped the publish: the one end that is not the node's. */
+    cancelled() {
+      if (signal?.aborted) throw new Error("cancelled: the publish was stopped; your data is still here");
+    },
     /**
      * REPORT progress if `everyMs` has passed since the last poll. Only
      * reports: a row lost is judged where it always was — in the room wait
@@ -315,7 +322,6 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
       if (polledAt !== null && now() - polledAt < everyMs) return;
       await t.poll({ judge: false });
     },
-    stalled: () => now() - movedAt > stallMs,
     /** Read every row's state; throw on anything lost. */
     async poll({ judge = true } = {}) {
       polledAt = now();
@@ -329,23 +335,19 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
         // record with no state is unpublished, not saved. Unknown waits.
         const state = r?.state ?? "UNKNOWN";
         if (!r || state === "ROLLED_BACK") lost += 1;
-        else if (state !== "CLEAN") waiting += 1;
+        else if (!rowSaved(state)) waiting += 1;
       }
       if (lost && judge) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
       // The engine surface says how many writes it holds unconfirmed
       // (`stats().pendingWrites`); a store with nothing to wait on does not.
       const unconfirmed = typeof target.stats === "function" ? (await target.stats())?.pendingWrites : undefined;
-      if (Number.isInteger(unconfirmed)) {
-        if (fewest !== null && unconfirmed < fewest) movedAt = now();
-        if (fewest === null || unconfirmed < fewest) fewest = unconfirmed;
-      }
+      if (Number.isInteger(unconfirmed) && (fewest === null || unconfirmed < fewest)) fewest = unconfirmed;
       // A LOST row is not confirmed, whether or not this poll judges it.
       const confirmed = rows.length - waiting - lost;
       // PROGRESS is a record newly confirmed — the HIGHEST count so far
       // moving up, so a count that dips and recovers is not mistaken for it.
       if (confirmed > best) {
         best = confirmed;
-        movedAt = now();
         onProgress({ confirmed, total: total ?? rows.length });
       }
       return { waiting, confirmed };
@@ -365,47 +367,42 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
  * ANY write this page made — the handoff's, or writes it did not make — so
  * this looks again every `everyMs` and makes the SAME write again as soon as
  * there is room. It does NOT wait for a confirmation of its own rows: with
- * 255 other writes ahead of them, that is 77 s of freed room left unused and
- * a false stall. It gives up only when nothing has moved — no record of ours
- * newly confirmed, no row made — for `stallMs`. Anything that is not
- * retryable is thrown as it came.
+ * 255 other writes ahead of them, that is 77 s of freed room left unused.
+ * It has no deadline of its own: writes END in the SDK, which frees room, and
+ * a row of ours that ends lost is thrown by `poll`, named. Anything that is
+ * not retryable is thrown as it came.
  */
 async function roomFor(fn, t, rows) {
   for (;;) {
     try {
-      const r = await fn();
-      t.moved();
-      return r;
+      return await fn();
     } catch (e) {
       if (!(e && e.retryable === true)) throw e;
+      // Room comes back as writes END, each on the node's answer; a row of
+      // ours that ends lost is thrown by `poll`, named.
+      t.cancelled();
       await t.sleep(t.everyMs);
-      const { confirmed } = await t.poll();
-      if (t.stalled()) {
-        throw new Error(`the node has room for no more records and has confirmed none in ${Math.round(t.stallMs / 1000)} s — ${confirmed} of ${rows.length} made so far are confirmed; your data is still here`);
-      }
+      await t.poll();
     }
   }
 }
 
-/** Wait until every row `t` tracks reads CLEAN; fail on anything lost, or on no progress. */
+/** Wait until every row `t` tracks is SAVED (the SDK's rowSaved); fail, named, on anything lost. */
 async function settled(t) {
   for (;;) {
-    const { waiting, confirmed } = await t.poll();
+    const { waiting } = await t.poll();
     if (!waiting) return;
-    if (t.stalled()) {
-      throw new Error(`${waiting} of ${t.rows.length} records are not confirmed by the node yet — ${confirmed} confirmed, and none newly in ${Math.round(t.stallMs / 1000)} s; your data is still here`);
-    }
+    t.cancelled();
     await t.sleep(t.everyMs);
   }
 }
 
 /**
- * Wait until every copy reads CLEAN, and fail on anything lost — or when
- * `stallMs` passes with no record newly confirmed (see `tracker`).
+ * Wait until every copy is SAVED, and fail on anything lost (see `tracker`).
  *
  * A LOST copy needs no forgetting: the next attempt's `createAt` finds its
- * slot empty and copies it again, and a copy merely PENDING at the deadline is
- * found there and not copied twice.
+ * slot empty and copies it again, and a copy still pending when another
+ * ended lost is found there and not copied twice.
  */
 export async function acknowledged(target, rows, opts = {}) {
   await settled(tracker(target, rows, opts));

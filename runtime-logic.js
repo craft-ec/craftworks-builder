@@ -168,3 +168,31 @@ export function pageView(page, more, size) {
   if (page.length < size) return { rows, footer: null };
   return { rows, footer: { more: !more.ended, shown: rows.length } };
 }
+
+/**
+ * OPEN A PUBLISHED APP: the publisher's own node gets it EDITABLE, everyone
+ * else a VIEW (the owner's ruling: "if I published myself on this node, the
+ * opened app definitely uses the same id"). ONE decision: this node's signer
+ * is ASKED which head it signs for (`sdk.openAsked` — nothing registered,
+ * minted or provisioned by asking). Equal to the app's publisher head: the
+ * person opening it holds the key HERE, so it opens through the same
+ * `open({ app })` the builder uses, writable. Anything else — no signer, no
+ * key, another person's key, no answer — opens the publisher's tree as a view,
+ * as before. Another DEVICE of the publisher is a visitor until it holds the
+ * key too (Phase 6, the keyset).
+ *
+ * Resolves `{ db, readOnly, why, asked }`: `asked` is the OPEN asking
+ * session — the one owner of "can this page write here" (its `asked()`), read
+ * by whoever needs it and cached nowhere else.
+ */
+export async function openPublished(sdk, { head, app, port, artefacts }) {
+  // The session that ASKED stays open: its answer is this page's identity.
+  const asked = await sdk.openAsked({ app, port, artefacts });
+  if (asked.head === head) {
+    const handle = await sdk.open({ app, port, artefacts });
+    return { db: handle.db, readOnly: false, why: "this node holds the publisher's key", asked };
+  }
+  // A visitor reads through the SAME session, which provisioned nothing.
+  const tree = await asked.tree(head);
+  return { db: tree.db, readOnly: true, why: asked.why ?? "another person's node", asked };
+}

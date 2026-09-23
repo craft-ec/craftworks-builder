@@ -43,8 +43,8 @@ const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
  */
 export async function publishApp(app, {
   sdk, session, headId, appId, manifest, read, subtle,
-  budgetMs = 60_000, everyMs = 200, now = () => Date.now(),
-  sleep = ms => new Promise(r => setTimeout(r, ms)),
+  everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)), signal = null,
+  last = null, sdkVersion = null,
 }) {
   if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
@@ -62,8 +62,10 @@ export async function publishApp(app, {
 
   // 1. The SDK's artefacts container — its address must be the one the
   // manifest names, or every app of this build would point at nothing.
+  // COMPUTED, not learned from a PUT: both containers are content-addressed,
+  // so their addresses are known before anything is sent.
   const artefacts = bytesOf(await read("sdk/artefacts.webapp"));
-  const artefactsKey = put(artefacts);
+  const artefactsKey = sdk.webapp.address(code, artefacts);
   if (artefactsKey !== manifest.container?.address) {
     throw new Error(`the SDK's artefacts container is ${artefactsKey}, not the ${manifest.container?.address} its manifest names`);
   }
@@ -76,40 +78,55 @@ export async function publishApp(app, {
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 
   // 3. Its container, built by the SDK (deterministic: the same app is the
-  // same address), and PUT.
+  // same address).
   const c = new sdk.webapp.AppContainer();
   for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
   const state = c.finish();
-  const address = put(state);
+  const address = sdk.webapp.address(code, state);
+  const result = { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
 
-  // 4. Both acknowledged, matched by KEY.
+  // NOTHING CHANGED, NOTHING SENT. A published project reopening (the
+  // builder's reconnect) whose app is the SAME address as its last
+  // acknowledged publication, built on the same SDK, has both containers on
+  // the network already: content-addressed, the same bytes are the same
+  // contract. Re-PUTting them was measured to make the node serve the
+  // artefacts container 404 on BOTH linked nodes for a moment (250 ms probe,
+  // 1 run in 3), which the owner hit as "could not resolve artefact".
+  if (last?.app_contract_id === address && !!sdkVersion && last?.sdk_version === sdkVersion) {
+    return { ...result, put: false };
+  }
+
+  // 4. PUT, and both acknowledged, matched by KEY.
+  for (const [what, key, bytes] of [["artefacts", artefactsKey, artefacts], ["app", address, state]]) {
+    const k = put(bytes);
+    if (k !== key) throw new Error(`the node keyed the ${what} container ${k}, not the ${key} its content names`);
+  }
   await Promise.all([
-    settled(session, artefactsKey, "the SDK's artefacts container", () => put(artefacts), { budgetMs, everyMs, now, sleep }),
-    settled(session, address, "the app's container", () => put(state), { budgetMs, everyMs, now, sleep }),
+    settled(session, artefactsKey, "the SDK's artefacts container", { everyMs, sleep, signal }),
+    settled(session, address, "the app's container", { everyMs, sleep, signal }),
   ]);
-  return { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
+  return { ...result, put: true };
 }
 
 /**
- * Wait until the node acknowledged the PUT of `key`. Refused: fails in the
- * node's words. Unanswered (the socket dropped): PUT again, once — the same
- * state under the same contract is the same PUT. Silent past the budget:
- * fails saying so. Never "published" on anything short of the ack.
+ * Wait until the PUT of `key` ENDS on the node's ANSWER — `put`, or
+ * `refused` in its words — or a person cancels (`signal`, named `cancelled`).
+ * The SDK's page sender re-sends it until then; no time ends it (rule 8). No
+ * budget and no re-PUT here: a second copy of those rules, with its own
+ * numbers, is what stalled a real-network publish that the SDK would have
+ * finished (2026-09-23). Never "published" on anything short of the ack.
  */
-export async function settled(session, key, what, again, { budgetMs, everyMs, now, sleep }) {
-  const started = now();
-  let retried = false;
+export async function settled(session, key, what, { everyMs, sleep, signal = null }) {
   for (;;) {
+    // A person stopped the publish: the SDK ends the PUT, named `cancelled`.
+    if (signal?.aborted) session.cancel_put?.(key);
     const { state, said } = JSON.parse(session.put_status(key));
     if (state === "put") return;
     if (state === "refused") throw new Error(`the node refused ${what}: ${said}`);
+    if (state === "cancelled") throw new Error(`cancelled: ${what} was not published`);
+    // The SDK's own end while it still has one (sdk#296's; #302 removes it).
+    if (state === "failed") throw new Error(`${what} was not acknowledged: ${said}`);
     if (state === "none") throw new Error(`${what} was never sent`);
-    if (state === "unanswered") {
-      if (retried) throw new Error(`${what} went unanswered twice — the connection keeps dropping`);
-      retried = true;
-      again();
-    }
-    if (now() - started > budgetMs) throw new Error(`the node did not acknowledge ${what} in ${Math.round(budgetMs / 1000)} s`);
     await sleep(everyMs);
   }
 }

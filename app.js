@@ -6,7 +6,7 @@ import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp } from "./runtime.js";
 import { defaultSchema, KINDS, preloadManifest, schemasOf } from "./runtime-logic.js";
 import { handoff } from "./handoff.js";
-import { LIVE_NOTE, isLive } from "./publish-state.js";
+import { LIVE_NOTE, isLive, reconnectsOnOpen } from "./publish-state.js";
 import { appIdOf, buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
@@ -147,7 +147,9 @@ mountProjects($("projects"), {
     // before anything of the new one exists: its listeners stop, its session
     // closes, and a mount or publish of it still in flight disowns itself.
     rt.dispose();
-    openedProject = { id: project.id, created: project.created };
+    // Its newest publication too: a reconnect whose app is unchanged sends
+    // nothing (publishApp's `last`).
+    openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project), publication: project.publication ?? null };
     rt = newRuntime();
     // The address belonged to the project being left.
     appAddress = null;
@@ -169,6 +171,7 @@ mountProjects($("projects"), {
     offerUpgrade();
     save();
     render();
+    reconnect();
   },
   onChange: () => render(),
   // Two tabs changed one component; this tab's version was kept. Said once
@@ -256,6 +259,7 @@ loadSdk().then(
     offerUpgrade();
     versionsPanel?.refresh();
     render();
+    reconnect();
   },
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
 );
@@ -270,13 +274,28 @@ async function readBuilderFile(path) {
 /** The published app's address, once its container is on the network. */
 let appAddress = null;
 
+/**
+ * A PUBLISHED project reopens CONNECTED: the same Publish a click runs, once
+ * the SDK is here, so the canvas writes to the published tree (the decision:
+ * `reconnectsOnOpen`). If the node cannot be reached the publish fails, and
+ * the address bar says so by name.
+ */
+function reconnect() {
+  if (!sdkReady || !openedProject?.published || rt.phase !== "idle") return;
+  doPublish();
+}
+
 function renderAddr() {
   const { realm, identity } = app.tree;
   // The address bar stops saying "in-memory, not published" when the project
   // IS published — and not a moment before. It is the one line a person reads
   // to decide whether closing the tab loses their work, so it tracks what the
   // node has actually confirmed rather than what was asked for.
-  const note = rt.phase === "published" ? "" : "  · in-memory, not published";
+  const note = rt.phase === "published" ? ""
+    // Published before: it is connecting, or it could not — said by name,
+    // never "not published" about an app that is.
+    : openedProject?.published ? (rt.phase === "failed" ? `  · published — not connected: ${rt.error}` : "  · published — connecting…")
+    : "  · in-memory, not published";
   $("tree-addr").replaceChildren(
     "craftec://", el("b", { textContent: realm }), "/", el("b", { textContent: identity ?? "‹you›" }), "/",
     el("span", { textContent: note }),
@@ -401,6 +420,10 @@ async function doPublish() {
             sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id),
             manifest: await (await fetch("./sdk/artefacts.json")).json(),
             read: readBuilderFile, subtle: crypto.subtle,
+            // Unchanged since the last acknowledged publication (same app
+            // address, same SDK): nothing is PUT again.
+            last: openedProject?.publication ?? null,
+            sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
           });
           appAddress = put.address;
           // The acceptance seam: what was PUT, for the tools that open it
@@ -411,11 +434,12 @@ async function doPublish() {
           globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id) };
         } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
-          await projects?.published?.({
+          const rec = await projects?.published?.({
             sourceRoot: db.root?.() ?? null,
             sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
             ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId() } : {}),
           });
+          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null };
         } catch (e) { warn = warn || `history: ${e.message}`; }
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }
