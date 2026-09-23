@@ -104,35 +104,53 @@ export async function publishApp(app, {
   const published = { ...app, publisher: { head: headId, app: appId } };
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 
-  // 3. Its container, built by the SDK (deterministic: the same app is the
-  // same address).
+  // 3. Its web part: the container the SDK builds, without the node's
+  // framing (it has no metadata: 16 bytes of framing, then the web).
   const c = new sdk.webapp.AppContainer();
   for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
   const state = c.finish();
-  const address = sdk.webapp.address(code, state);
-  const result = { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
+  const web = state.subarray(16);
+  const result = { artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
 
   // NOTHING CHANGED, NOTHING SENT. A published project reopening (the
-  // builder's reconnect) whose app is the SAME address as its last
-  // acknowledged publication, built on the same SDK, has both containers on
-  // the network already: content-addressed, the same bytes are the same
-  // contract. Re-PUTting them was measured to make the node serve the
-  // artefacts container 404 on BOTH linked nodes for a moment (250 ms probe,
-  // 1 run in 3), which the owner hit as "could not resolve artefact".
-  if (last?.app_contract_id === address && !!sdkVersion && last?.sdk_version === sdkVersion) {
-    return { ...result, put: false };
+  // builder's reconnect) whose BUNDLE is the one its last acknowledged
+  // publication carried, on the same SDK: that version is on the network at
+  // the site's address already. (The address itself no longer changes with
+  // the content: a site is updated in place, builder#117.)
+  if (last?.app_contract_id && last?.bundle_hash === bundleHash && !!sdkVersion && last?.sdk_version === sdkVersion) {
+    return { ...result, address: last.app_contract_id, put: false };
   }
 
-  // 4. PUT, and both acknowledged, matched by KEY.
-  for (const [what, key, bytes] of [["artefacts", artefactsKey, artefacts], ["app", address, state]]) {
-    const k = put(bytes);
-    if (k !== key) throw new Error(`the node keyed the ${what} container ${k}, not the ${key} its content names`);
-  }
-  await Promise.all([
+  // 4. The artefacts container (content-addressed, PUT as it is), and the
+  // app as the next VERSION of its SITE (builder#117): one stable address —
+  // this identity's, for this app — updated in place. Both end on the
+  // node's answers, never on a clock (rule 8).
+  const k = put(artefacts);
+  if (k !== artefactsKey) throw new Error(`the node keyed the artefacts container ${k}, not the ${artefactsKey} its content names`);
+  const address = session.publish_site(appId, bytesOf(await read("sdk/site.wasm")), web);
+  const [, version] = await Promise.all([
     settled(session, artefactsKey, "the SDK's artefacts container", { everyMs, sleep, signal }),
-    settled(session, address, "the app's container", { everyMs, sleep, signal }),
+    siteSettled(session, address, { everyMs, sleep, signal }),
   ]);
-  return { ...result, put: true };
+  return { ...result, address, version, put: true };
+}
+
+/**
+ * Wait until the SITE's version is published — the node acknowledged its PUT —
+ * or refused, in the signer's or the node's words, or a person cancels. The
+ * SDK reads the version, has it signed and PUTs it, each step on its page's
+ * sender; nothing here ends it on a clock (rule 8). Resolves to the version.
+ */
+export async function siteSettled(session, address, { everyMs, sleep, signal = null }) {
+  for (;;) {
+    if (signal?.aborted) session.cancel_put?.(address);
+    const { state, version, key, said } = JSON.parse(session.site_status());
+    if (key && key !== address) throw new Error(`the site being published is ${key}, not ${address}`);
+    if (state === "published") return version;
+    if (state === "refused") throw new Error(`the app's site was not published: ${said}`);
+    if (state === "none") throw new Error("the app's site was never sent");
+    await sleep(everyMs);
+  }
 }
 
 /**

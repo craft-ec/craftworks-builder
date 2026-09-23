@@ -50,10 +50,10 @@ fi
 # and the app's under the `webapp` contract (webapp.wasm). The signer is the
 # one delegate (the switch-over deleted the engine delegate). All are checked
 # and copied like the rest.
-WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm site.wasm artefacts.webapp"
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
-COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm site.wasm artefacts.webapp"
 
 out=.sdk-build/$rev
 

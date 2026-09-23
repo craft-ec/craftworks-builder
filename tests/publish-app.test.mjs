@@ -42,8 +42,31 @@ function node(answer = () => "put") {
       const s = answer(key, polls[key], puts.filter(p => p.key === key).length);
       return JSON.stringify(typeof s === "string" ? { state: s, said: "" } : s);
     },
+    // THE SITE (builder#117): one stable key per app, the next version per
+    // publish. Recorded as a PUT of the state the node would hold (the web
+    // part, framed), so the container checks below read the same bytes.
+    publish_site(app, code, web) {
+      assert.ok(code.length > 0, "the site was published with no contract code");
+      const key = SITE_KEY(app);
+      const framed = new Uint8Array(16 + web.length);
+      new DataView(framed.buffer).setBigUint64(8, BigInt(web.length));
+      framed.set(web, 16);
+      puts.push({ key, state: framed, site: true });
+      this.site = key;
+      return key;
+    },
+    site_status() {
+      if (!this.site) return JSON.stringify({ state: "none", version: 0, key: "", said: "" });
+      polls[this.site] = (polls[this.site] ?? 0) + 1;
+      const a = answer(this.site, polls[this.site], puts.filter(p => p.key === this.site).length);
+      const { state, said = "" } = typeof a === "string" ? { state: a } : a;
+      const version = puts.filter(p => p.key === this.site).length;
+      return JSON.stringify({ state: state === "put" ? "published" : state === "pending" ? "putting" : state, version, key: this.site, said });
+    },
   };
 }
+/** A site's key: the fake's, stable per app (the real one derives from the identity and the app id). */
+const SITE_KEY = app => `site-key-of-${app}`;
 const fast = { everyMs: 0, sleep: async () => {} };
 const unpack = state => {
   const dir = mkdtempSync(join(tmpdir(), "app-container-"));
@@ -60,7 +83,8 @@ await t("**both containers are PUT: the SDK's artefacts container at its manifes
   const r = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(r.artefactsKey, manifest.container.address);
   assert.deepStrictEqual(s.puts.map(p => p.key), [manifest.container.address, r.address]);
-  assert.strictEqual(r.address, sdk.webapp.address(readFileSync(at("sdk/webapp.wasm")), s.puts[1].state));
+  assert.strictEqual(r.address, SITE_KEY("proj1"), "the app's address is not its SITE's key");
+  assert.strictEqual(r.version, 1, "the first publish is not the site's version 1");
   process.stdout.write(`      sizes: app container ${r.containerBytes} B (bundle ${r.bundleBytes} B, xz stored); artefacts container ${r.artefactsBytes} B, PUT once per SDK build\n`);
 });
 
@@ -83,25 +107,26 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
   } finally { u.done(); }
 });
 
-await t("DETERMINISTIC: the same app publishes to the same address; another app to another", async () => {
+await t("**ONE STABLE ADDRESS (builder#117): a changed app republishes at the SAME address — its site's — while another app id is another address**", async () => {
   const a = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  const b = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  const c = await publishApp({ ...APP, name: "Other" }, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  assert.strictEqual(a.address, b.address);
-  assert.notStrictEqual(a.address, c.address, "THE CONTROL: a different app got the same address");
+  const c = await publishApp({ ...APP, name: "Changed" }, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.notStrictEqual(a.bundleHash, c.bundleHash, "THE SETUP: the changed app is not a different bundle");
+  assert.strictEqual(a.address, c.address, "a changed app moved to another address: the link would break");
+  const other = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj2", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.notStrictEqual(a.address, other.address, "THE CONTROL: another app id got the same address");
 });
 
 await t("**a refused PUT fails in the node's words, naming WHICH container**", async () => {
   const s = node(key => (key === manifest.container.address ? "put" : { state: "refused", said: "invalid contract update" }));
   await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }),
-    /the node refused the app's container: invalid contract update/);
+    /the app's site was not published: invalid contract update/);
 });
 
-await t("**the SDK ENDS the PUT: `failed` (given up, in its words) fails the publish naming the container — and the builder never PUTs again itself**", async () => {
-  const s = node(key => (key === manifest.container.address ? "put" : { state: "failed", said: "the node did not acknowledge the PUT in 120 s (7 attempts)" }));
+await t("**a refused site ends the publish naming it — and the builder never re-publishes on its own**", async () => {
+  const s = node(key => (key === manifest.container.address ? "put" : { state: "refused", said: "the signer refused the site's version 1" }));
   await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }),
-    /the app's container was not acknowledged: the node did not acknowledge the PUT in 120 s/);
-  assert.strictEqual(s.puts.length, 2, "the builder PUT again on its own — the re-send is the SDK's");
+    /the app's site was not published: the signer refused the site's version 1/);
+  assert.strictEqual(s.puts.filter(p => p.site).length, 1, "the builder published the site again on its own — the re-send is the SDK's");
 });
 
 await t("**pending is the SDK's to end: the builder waits it out, with no budget of its own (a slow node that acks late still publishes)**", async () => {
@@ -119,10 +144,10 @@ await t("refused before anything is sent: no head, and an artefacts container th
 });
 
 
-await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same address on the same SDK PUTs neither container** (re-PUTs made the node serve the artefacts 404 for a moment)", async () => {
+await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same BUNDLE on the same SDK PUTs neither container, and keeps its address** (re-PUTs made the node serve the artefacts 404 for a moment)", async () => {
   const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(first.put, true);
-  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  const last = { app_contract_id: first.address, bundle_hash: first.bundleHash, sdk_version: "rev-1" };
   const s = node();
   const again = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion: "rev-1" });
   assert.strictEqual(s.puts.length, 0, `an unchanged app was PUT again: ${s.puts.map(p => p.key)}`);
@@ -133,7 +158,7 @@ await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same address on
 
 await t("THE CONTROLS: a changed app, a changed SDK, or an SDK that cannot say its version PUTs both containers", async () => {
   const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  const last = { app_contract_id: first.address, bundle_hash: first.bundleHash, sdk_version: "rev-1" };
   for (const [what, app, sdkVersion] of [["a changed app", { ...APP, name: "Changed" }, "rev-1"], ["a changed SDK", APP, "rev-2"], ["no SDK version", APP, null]]) {
     const s = node();
     const r = await publishApp(app, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion });

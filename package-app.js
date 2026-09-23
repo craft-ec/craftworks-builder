@@ -49,6 +49,10 @@ export const NAMED = ["sdk", "signer", "block", "register"];
 export const PLATFORM = {
   container: e => typeof e?.address === "string" && e.address.length > 0 && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
   webapp: e => e?.file === "webapp.wasm" && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
+  // The `site` contract's CODE (builder#117): what a published app's ONE
+  // stable address runs; the builder PUTs its versions, an app never
+  // fetches it.
+  site: e => e?.file === "site.wasm" && /^[0-9a-f]{64}$/.test(e?.sha256 ?? ""),
   // The SDK's JavaScript an app CARRIES (its build's reachable set from
   // index.js): what goes into the container, never fetched by hash.
   modules: e => Array.isArray(e) && e.length > 0 && e.every(isModuleName),
