@@ -59,7 +59,7 @@ function viewOf(db) {
  * for `signsFor` (null: none), holding `own` as that identity's tree; the
  * publisher's tree is `pub`. Records what was opened.
  */
-async function nodeSdk(signsFor) {
+async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
   const pub = await publisherDb();
   const own = signsFor === HEAD ? pub : await emptyDb();
   const opens = [];
@@ -76,7 +76,7 @@ async function nodeSdk(signsFor) {
           why: signsFor ? null : "no signer on this node",
           db: own,
           canWrite: head => ({ answer: head === "" || head === signsFor ? "yes" : "no", why: "" }),
-          openOwn: async () => { opens.push("openOwn"); return { answer: "yes", why: "" }; },
+          openOwn: async () => { opens.push("openOwn"); return ownAnswer; },
           tree: async head => { opens.push("tree"); return { db: head === HEAD ? viewOf(pub) : null }; },
         };
       },
@@ -136,6 +136,12 @@ await t("**a VISITOR on a `viewer` app gets working INPUTS, and their entry land
   await opened.backends.viewer.put("notes", { title: "from a visitor" });
   assert.deepStrictEqual((await n.own.scan("notes")).map(r => r.fields.title), ["from a visitor"], "the entry is not in the visitor's own tree");
   assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title), ["one"], "the visitor's entry reached the publisher's tree");
+});
+
+await t("**the publisher's node whose own tree does NOT open says so by name, never falls back to a view**", async () => {
+  const n = await nodeSdk(HEAD, { answer: "no", why: "the signer refused the register" });
+  await assert.rejects(openPublished(n.sdk, { ...ARGS, viewer: false }), /its tree did not open: the signer refused the register/);
+  assert.ok(!n.opens.includes("tree"), "a publisher whose tree failed was quietly shown a view");
 });
 
 if (failures) { process.stdout.write(`${failures} failing\n`); process.exit(1); }

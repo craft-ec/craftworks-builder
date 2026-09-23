@@ -186,7 +186,11 @@ export function pageView(page, more, size) {
 export async function openPublished(sdk, { head, app, port, artefacts, viewer }) {
   const asked = await sdk.openAsked({ app, port, artefacts });
   const mine = asked.canWrite(head).answer === "yes";
-  if (viewer || mine) await asked.openOwn();
+  const own = viewer || mine ? await asked.openOwn() : null;
+  // The publisher's own node whose tree then does not open is SAID, never
+  // quietly shown as a view (a visitor's own tree that does not open is said
+  // on each of its components: "View only: <why>").
+  if (mine && own.answer !== "yes") throw new Error(`this node holds the publisher's key, but its tree did not open: ${own.why}`);
   const publisher = mine ? asked.db : (await asked.tree(head)).db;
   return {
     asked,
