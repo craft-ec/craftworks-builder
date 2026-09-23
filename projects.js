@@ -221,16 +221,20 @@ export async function listProjects(db) {
  * re-derived from the fields — so the slot is the last half. A LocalDb id is
  * its own slot.
  */
-const slotOfId = id => (/^[0-9a-f]{64}$/.test(id) ? id.slice(32) : id);
+// THE PROJECTS' STORE IS LocalDb (app.js mounts the panel on it, and only on
+// it), so a record's id IS its slot, by LocalDb's one rule: `createAt`
+// refuses by name any id outside it. No second id kind reaches here; moving
+// projects onto the SDK's Db is a design change that carries the kind
+// explicitly (the architect on builder#131), not a fallback.
 
 /** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
 export async function restoreProject(db, pid, fields) {
-  return db.createAt(PROJECT, slotOfId(pid), fields);
+  return db.createAt(PROJECT, pid, fields);
 }
 
 /** Put one component back under ITS OWN id (builder#82). Never overwrites. */
 export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }) {
-  return db.createAt(COMPONENT, slotOfId(rid), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
+  return db.createAt(COMPONENT, rid, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
 }
 
 /** Add one component to a project. ONE record. */

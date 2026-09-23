@@ -1,3 +1,4 @@
+import { servedText } from "./sdk/artefacts.js";
 // The versions panel: a footer chip that opens what this builder is running.
 //
 // All of the judgement lives in versions.js, which has no DOM and is tested on
@@ -13,11 +14,12 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 /** Baked values, or null — a missing file is reported, never defaulted. */
-export async function readBuildInfo(fetchFn = fetch) {
+export async function readBuildInfo(fetchFn) {
+  // Through the SDK's one fetch, read FRESH (no-store): waited on until the
+  // builder's server answers. Bytes that are not JSON are reported as null.
+  const text = await servedText({ url: "./build-info.json" }, { init: { cache: "no-store" }, ...(fetchFn ? { fetch: fetchFn } : {}) });
   try {
-    const r = await fetchFn("./build-info.json", { cache: "no-store" });
-    if (!r.ok) return null;
-    return await r.json();
+    return JSON.parse(text);
   } catch (_) {
     return null;
   }

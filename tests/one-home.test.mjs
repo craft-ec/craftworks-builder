@@ -18,9 +18,6 @@ const SKIP = new Set(["node_modules", "sdk", "tests", ".git", "docs", ".sdk-buil
 // excepted file is still red. Each is removed by the work it names.
 const EXEMPT = {
   "local-db.js": [1, "the builder's OWN local store's record-id rule (never an SDK id)"],
-  "package-app.js": [3, "checks the SDK's manifest shape: moves to the SDK's one manifest reader (next SDK PR)"],
-  "projects.js": [1, "a 64-hex id's slot: moves to sdk.ids with the manifest reader (next SDK PR)"],
-  "versions-panel.js": [1, "build-info.json needs no-store: moves to served() once it takes fetch options (next SDK PR)"],
 };
 
 /** What the scan finds wrong in one file: every copy, or for an excepted one a count other than its own. */
