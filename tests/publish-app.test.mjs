@@ -44,7 +44,7 @@ function node(answer = () => "put") {
     },
   };
 }
-const fast = { budgetMs: 1000, everyMs: 0, sleep: async () => {} };
+const fast = { everyMs: 0, sleep: async () => {} };
 const unpack = state => {
   const dir = mkdtempSync(join(tmpdir(), "app-container-"));
   const web = Number(new DataView(state.buffer, state.byteOffset).getBigUint64(8));
@@ -97,19 +97,18 @@ await t("**a refused PUT fails in the node's words, naming WHICH container**", a
     /the node refused the app's container: invalid contract update/);
 });
 
-await t("an UNANSWERED PUT (the socket dropped) is PUT again once and settles; twice is a failure", async () => {
-  let s = node((key, poll, sent) => (sent < 2 ? "unanswered" : "put"));
-  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
-  assert.strictEqual(s.puts.length, 4, "each container was PUT again exactly once");
-  s = node(() => "unanswered");
-  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }), /unanswered twice/);
+await t("**the SDK ENDS the PUT: `failed` (given up, in its words) fails the publish naming the container — and the builder never PUTs again itself**", async () => {
+  const s = node(key => (key === manifest.container.address ? "put" : { state: "failed", said: "the node did not acknowledge the PUT in 120 s (7 attempts)" }));
+  await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }),
+    /the app's container was not acknowledged: the node did not acknowledge the PUT in 120 s/);
+  assert.strictEqual(s.puts.length, 2, "the builder PUT again on its own — the re-send is the SDK's");
 });
 
-await t("silence past the budget fails saying so — never 'published' short of the ack", async () => {
-  let clock = 0;
-  await assert.rejects(
-    () => settled(node(() => "pending"), "k", "the app's container", () => {}, { budgetMs: 5000, everyMs: 1000, now: () => clock, sleep: async ms => { clock += ms; } }),
-    /did not acknowledge the app's container in 5 s/);
+await t("**pending is the SDK's to end: the builder waits it out, with no budget of its own (a slow node that acks late still publishes)**", async () => {
+  const s = node((key, poll) => (poll < 400 ? "pending" : "put"));
+  const r = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.ok(r.address, "a late ack did not publish");
+  assert.strictEqual(s.puts.length, 2, "the builder PUT again on its own");
 });
 
 await t("refused before anything is sent: no head, and an artefacts container that is not the manifest's", async () => {

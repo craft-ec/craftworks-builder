@@ -43,8 +43,7 @@ const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
  */
 export async function publishApp(app, {
   sdk, session, headId, appId, manifest, read, subtle,
-  budgetMs = 60_000, everyMs = 200, now = () => Date.now(),
-  sleep = ms => new Promise(r => setTimeout(r, ms)),
+  everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)),
 }) {
   if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
@@ -84,32 +83,27 @@ export async function publishApp(app, {
 
   // 4. Both acknowledged, matched by KEY.
   await Promise.all([
-    settled(session, artefactsKey, "the SDK's artefacts container", () => put(artefacts), { budgetMs, everyMs, now, sleep }),
-    settled(session, address, "the app's container", () => put(state), { budgetMs, everyMs, now, sleep }),
+    settled(session, artefactsKey, "the SDK's artefacts container", { everyMs, sleep }),
+    settled(session, address, "the app's container", { everyMs, sleep }),
   ]);
   return { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
 }
 
 /**
- * Wait until the node acknowledged the PUT of `key`. Refused: fails in the
- * node's words. Unanswered (the socket dropped): PUT again, once — the same
- * state under the same contract is the same PUT. Silent past the budget:
- * fails saying so. Never "published" on anything short of the ack.
+ * Wait until the PUT of `key` ENDS — which the SDK guarantees: the page's
+ * sender re-sends it on its deadline and ends it `put`, `refused` (in the
+ * node's words) or `failed` (given up, saying what was tried; sdk#296). No
+ * budget and no re-PUT here: a second copy of those rules, with its own
+ * numbers, is what stalled a real-network publish that the SDK would have
+ * finished (2026-09-23). Never "published" on anything short of the ack.
  */
-export async function settled(session, key, what, again, { budgetMs, everyMs, now, sleep }) {
-  const started = now();
-  let retried = false;
+export async function settled(session, key, what, { everyMs, sleep }) {
   for (;;) {
     const { state, said } = JSON.parse(session.put_status(key));
     if (state === "put") return;
     if (state === "refused") throw new Error(`the node refused ${what}: ${said}`);
+    if (state === "failed") throw new Error(`${what} was not acknowledged: ${said}`);
     if (state === "none") throw new Error(`${what} was never sent`);
-    if (state === "unanswered") {
-      if (retried) throw new Error(`${what} went unanswered twice — the connection keeps dropping`);
-      retried = true;
-      again();
-    }
-    if (now() - started > budgetMs) throw new Error(`the node did not acknowledge ${what} in ${Math.round(budgetMs / 1000)} s`);
     await sleep(everyMs);
   }
 }
