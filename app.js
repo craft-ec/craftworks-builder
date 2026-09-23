@@ -87,9 +87,6 @@ function renderSaveState() {
 }
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
-// THE SDK, loading: one promise, awaited by whatever needs it before it is
-// ready (a restore at startup waits for it rather than failing).
-const sdkLoading = loadSdk();
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1";
 // THE OPEN PROJECT'S RUNTIME: its mount, its publish session and phase, and
 // the backend it publishes to. These were four page globals — `publishedDb`,
@@ -145,7 +142,6 @@ mountProjects($("projects"), {
   // and a person can act on each, so each is shown.
   db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
   getCanvas: () => app.components,
-  getIds: () => sdkLoading.then(sdk => sdk.ids),
   getDefinition: () => ({ schemas: app.schemas, seed: app.seed, tree: app.tree, versions: app.versions ?? null }),
   setCanvas: (components, project) => {
     // A DIFFERENT PROJECT, so a different runtime. The old one is disposed
@@ -247,7 +243,7 @@ function offerUpgrade() {
   );
 }
 
-sdkLoading.then(
+loadSdk().then(
   sdk => {
     $("sdk").textContent = `SDK ${sdk.version()}`;
     window.craftec = sdk;

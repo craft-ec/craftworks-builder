@@ -20,6 +20,7 @@ import { LocalDb } from "../local-db.js";
 import {
   defineProjectDomains, createProject, listProjects, addComponent, componentsOf,
   setComponentProps, removeComponent, openProject, recordPublication, nextSeq, publicationsOf,
+  restoreProject, restoreComponent,
 } from "../projects.js";
 
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
@@ -80,6 +81,23 @@ await t("children refuses a domain that declares no parent, as the SDK does", as
   const db = new LocalDb(storage());
   await defineProjectDomains(db);
   await assert.rejects(db.children("project", "x"), /does not declare a parent/);
+});
+
+await t("**over the projects' store (LocalDb), a project and a component are restored under THEIR OWN ids** (builder#82)", async () => {
+  const mk = async () => { const db = new LocalDb(storage()); await defineProjectDomains(db); return db; };
+  const had = await mk();
+  const p = await createProject(had, { title: "Kept" });
+  const c = await addComponent(had, p.id, { kind: "table", props: { domain: "notes" } });
+  const lost = await mk();                           // the store, gone
+  const rp = await restoreProject(lost, p.id, (await openProject(had, p.id)).record);
+  const rc = await restoreComponent(lost, p.id, c.id, { kind: "table", props: { domain: "notes" } });
+  assert.deepStrictEqual([rp.outcome, rp.record.id], ["created", p.id]);
+  assert.deepStrictEqual([rc.outcome, rc.record.id], ["created", c.id]);
+  const back = await openProject(lost, p.id);
+  assert.strictEqual(back.title, "Kept");
+  assert.deepStrictEqual(back.components.map(x => x.id), [c.id]);
+  assert.strictEqual((await restoreProject(lost, p.id, { title: "other" })).outcome, "exists", "and never overwrites");
+  await assert.rejects(restoreProject(lost, "has space", {}), /is not a record id/, "an id outside the store's rule was written");
 });
 
 console.log("\nprojects on LocalDb: all ok");

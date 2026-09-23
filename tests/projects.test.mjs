@@ -322,37 +322,4 @@ await t("**a read that FAILS is reported, not taken for \"no such project\"**", 
   assert.ok(await openProject(db, p.id), "THE CONTROL: the same project over a working db opens");
 });
 
-await t("**over the SDK's Db, a project and a component are restored under THEIR OWN ids** (builder#82)", async () => {
-  const had = await fresh();
-  const p = await createProject(had, { title: "Kept" });
-  const c = await addComponent(had, p.id, { kind: "table", props: { domain: "notes" } });
-  assert.strictEqual(c.id.length, 64, "a component is keyed under its project: 64 hex");
-  const lost = await fresh();                        // the store, gone
-  const rp = await restoreProject(lost, p.id, (await openProject(had, p.id)).record, sdk.ids);
-  const rc = await restoreComponent(lost, p.id, c.id, { kind: "table", props: { domain: "notes" } }, sdk.ids);
-  assert.deepStrictEqual([rp.outcome, rp.record.id], ["created", p.id]);
-  assert.deepStrictEqual([rc.outcome, rc.record.id], ["created", c.id]);
-  const back = await openProject(lost, p.id);
-  assert.strictEqual(back.title, "Kept");
-  assert.deepStrictEqual(back.components.map(x => x.id), [c.id]);
-  assert.strictEqual((await restoreProject(lost, p.id, { title: "other" }, sdk.ids)).outcome, "exists", "and never overwrites");
-});
-
-await t("**a restore issued BEFORE the SDK has loaded WAITS for it, then lands; with no rules at all it is refused by name** (the architect on builder#131)", async () => {
-  const had = await fresh();
-  const p = await createProject(had, { title: "Early" });
-  const lost = await fresh();
-  let load;
-  const loading = new Promise(ok => { load = ok; });   // the SDK, still loading
-  const pending = restoreProject(lost, p.id, (await openProject(had, p.id)).record, loading);
-  let settled = false;
-  pending.then(() => { settled = true; }, () => { settled = true; });
-  await new Promise(r => setTimeout(r, 20));
-  assert.strictEqual(settled, false, "a restore before the load ended instead of waiting");
-  load(sdk.ids);
-  const r = await pending;
-  assert.deepStrictEqual([r.outcome, r.record.id], ["created", p.id], "the waited restore did not land under its own id");
-  await assert.rejects(restoreProject(lost, p.id, {}, null), /no SDK id rules were given/);
-});
-
 process.stdout.write("\nprojects: all ok\n");

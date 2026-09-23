@@ -11,10 +11,6 @@
 // Node and LocalDb over ONE shared storage, as the architect ran it.
 import assert from "node:assert";
 import { LocalDb } from "../local-db.js";
-import { readFileSync } from "node:fs";
-import { loadSdk } from "../sdk-loader.js";
-// The REAL SDK's id rules: a restore reads a record's slot by them.
-const { ids } = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
 import { defineProjectDomains, createProject, openProject, componentsOf, listProjects, saveDefinition, PROJECT } from "../projects.js";
 
 const node = () => new Proxy({ hidden: false, style: {}, contains: () => false },
@@ -34,7 +30,7 @@ const storage = () => {
     getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) };
 };
 const told = [];
-const opts = by => ({ ids, by, onConflict: m => told.push({ by, m }) });
+const opts = by => ({ by, onConflict: m => told.push({ by, m }) });
 const labels = canvas => canvas.map(c => c.label).sort();
 const storedLabels = async (db, pid) => (await openProject(db, pid)).components.map(c => c.props?.label).sort();
 // The components stored under a project id, read directly — what is in storage
@@ -46,7 +42,7 @@ async function twoTabs() {
   const db = new LocalDb(st);
   await defineProjectDomains(db);
   const p = await createProject(db, { title: "shared" });
-  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K v0" }, { type: "form", domain: "m", label: "M v0" }], { ids, by: "setup" });
+  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K v0" }, { type: "form", domain: "m", label: "M v0" }], { by: "setup" });
   const open = async () => canvasOf(await openProject(db, p.id));
   return { st, db, pid: p.id, tab1: await open(), tab2: await open() };
 }
@@ -115,14 +111,14 @@ await t("**the panel RE-RENDERS after a membership adopt, through what mountProj
   const db = new LocalDb(st);
   await defineProjectDomains(db);
   const p = await createProject(db, { title: "shared" });
-  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K" }], { ids, by: "setup" });
+  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K" }], { by: "setup" });
   st.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p.id }));
   let canvas = [], renders = 0;
   const x = await mountProjects(node(), { db, storage: st, getCanvas: () => canvas, setCanvas: c => { canvas = c; },
     onChange: () => { renders += 1; }, onConflict: () => {} });
   const other = canvasOf(await openProject(db, p.id));
   other.push({ type: "list", domain: "n", label: "N from the other tab" });
-  await saveCanvas(db, p.id, other, { ids, by: "other", onConflict: () => {} });
+  await saveCanvas(db, p.id, other, { by: "other", onConflict: () => {} });
   const before = renders;
   await x.persist();
   assert.strictEqual(renders - before, 1, "a membership adopt changed the canvas under the person: drawn again");
@@ -135,14 +131,14 @@ await t("**the panel RE-RENDERS after a membership DROP, too**", async () => {
   const db = new LocalDb(st);
   await defineProjectDomains(db);
   const p = await createProject(db, { title: "shared" });
-  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K" }, { type: "form", domain: "m", label: "M" }], { ids, by: "setup" });
+  await saveCanvas(db, p.id, [{ type: "table", domain: "k", label: "K" }, { type: "form", domain: "m", label: "M" }], { by: "setup" });
   st.setItem("craftec.builder.device.v1", JSON.stringify({ lastOpened: p.id }));
   let canvas = [], renders = 0;
   const x = await mountProjects(node(), { db, storage: st, getCanvas: () => canvas, setCanvas: c => { canvas = c; },
     onChange: () => { renders += 1; }, onConflict: () => {} });
   const other = canvasOf(await openProject(db, p.id));
   other.splice(other.findIndex(c => c.domain === "k"), 1);
-  await saveCanvas(db, p.id, other, { ids, by: "other", onConflict: () => {} });
+  await saveCanvas(db, p.id, other, { by: "other", onConflict: () => {} });
   const before = renders;
   await x.persist();
   assert.strictEqual(renders - before, 1, "a component deleted elsewhere left this canvas: drawn again");
@@ -256,7 +252,7 @@ await t("with no one to tell, a lost store is still saved again FIRST, then the 
   const { st, db, pid, tab1 } = await twoTabs();
   st.m.clear();
   await defineProjectDomains(db);
-  await assert.rejects(saveCanvas(db, pid, tab1, { ids, by: "tab1" }), /stored copy was lost.*no onConflict/);
+  await assert.rejects(saveCanvas(db, pid, tab1, { by: "tab1" }), /stored copy was lost.*no onConflict/);
   assert.deepStrictEqual(await rawLabels(db, pid), ["K v0", "M v0"], "the data is back before the error");
 });
 

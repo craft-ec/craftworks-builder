@@ -221,28 +221,20 @@ export async function listProjects(db) {
  * re-derived from the fields — so the slot is the last half. A LocalDb id is
  * its own slot.
  */
-/**
- * A record's slot. `ids` is the SDK's id rules, or a promise of them while the
- * SDK loads: WAITED on, never refused (the SDK always loads; it is local). An
- * SDK record id (32 hex, or 64 under a parent) gives its rkey by the SDK's one
- * parse (`sdk.ids.slot`). Any other id is the store's OWN id, its own slot:
- * LocalDb's ids (`r<time><tag><seq>`) are, and its `createAt` refuses by name
- * anything outside its rule, so nothing unchecked is ever written.
- */
-const slotOfId = async (id, ids) => {
-  const rules = await ids;
-  if (!rules?.slot) throw new Error("restore: no SDK id rules were given, so the record's slot cannot be read");
-  return rules.slot(id) ?? id;
-};
+// THE PROJECTS' STORE IS LocalDb (app.js mounts the panel on it, and only on
+// it), so a record's id IS its slot, by LocalDb's one rule: `createAt`
+// refuses by name any id outside it. No second id kind reaches here; moving
+// projects onto the SDK's Db is a design change that carries the kind
+// explicitly (the architect on builder#131), not a fallback.
 
 /** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreProject(db, pid, fields, ids) {
-  return db.createAt(PROJECT, await slotOfId(pid, ids), fields);
+export async function restoreProject(db, pid, fields) {
+  return db.createAt(PROJECT, pid, fields);
 }
 
 /** Put one component back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }, ids) {
-  return db.createAt(COMPONENT, await slotOfId(rid, ids), { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
+export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }) {
+  return db.createAt(COMPONENT, rid, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
 }
 
 /** Add one component to a project. ONE record. */
