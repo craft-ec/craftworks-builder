@@ -172,6 +172,14 @@ await t("**PENDING is not done: the handoff waits until the node says CLEAN**", 
   assert.ok(clean, "it returned before any row read CLEAN");
 });
 
+await t("**BACKED_UP is saved: a row saved AND backed up confirms (the SDK's rowSaved, not a literal CLEAN)**", async () => {
+  const src = await preview();
+  let seen = false;
+  const dst = acking(n => (n > 4 ? (seen = true, "BACKED_UP") : "PENDING"));
+  await handoff({ source: src, target: dst, ...ctx, confirm: { everyMs: 0, stallMs: 2_000 } });
+  assert.ok(seen, "it returned before any row read BACKED_UP");
+});
+
 await t("**a ROLLED_BACK write fails the handoff, and says the data is still here**", async () => {
   const src = await preview();
   const dst = acking(() => "ROLLED_BACK");

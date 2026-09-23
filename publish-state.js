@@ -174,6 +174,8 @@ export const FROM_ROW_STATE = {
   PENDING: "accepted",
   // Rolled back: it never landed, and making the change again is safe.
   ROLLED_BACK: "lost",
+  // Saved, and its redundancy is on the network too.
+  BACKED_UP: "parity-complete",
 };
 
 /**

@@ -52,6 +52,10 @@
 // was created by the publish itself.
 //
 import { sameRows } from "./sdk/engine-db.js";
+// WHAT A ROW STATE MEANS is the SDK's (`RowState`, one owner): never a
+// literal here. `=== "CLEAN"` stalled every publish once the SDK reported
+// `BACKED_UP` for a row saved and backed up.
+import { row_saved as rowSaved } from "./sdk/craftworks_sdk.js";
 
 // Pure: both databases are passed in, so every path is testable without a
 // page or a node (tests/handoff.test.mjs, tests/handoff-across-runtimes.test.mjs).
@@ -329,7 +333,7 @@ function tracker(target, rows, { everyMs = 250, stallMs = 30_000, now = () => Da
         // record with no state is unpublished, not saved. Unknown waits.
         const state = r?.state ?? "UNKNOWN";
         if (!r || state === "ROLLED_BACK") lost += 1;
-        else if (state !== "CLEAN") waiting += 1;
+        else if (!rowSaved(state)) waiting += 1;
       }
       if (lost && judge) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
       // The engine surface says how many writes it holds unconfirmed

@@ -12,6 +12,9 @@
 import assert from "node:assert";
 import { acknowledged } from "../handoff.js";
 import { buttonFor } from "../publish.js";
+// The handoff asks the SDK what a row state means (`row_saved`): load it.
+{ const { readFileSync } = await import("node:fs"); const { loadSdk } = await import("../sdk-loader.js");
+  await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url))); }
 
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
 
