@@ -157,11 +157,11 @@ await t("**an EXTRA artefact is a mismatch too**", async () => {
 // publishing tools. Built from the real one, so the four hashes are real.
 const CONTAINER = { address: "BimQYzQWHZLEiffGJHfVXCXHqk4mGiyVzuk1cgBKpxb", sha256: "e".repeat(64), bytes: 510922 };
 const WEBAPP = { file: "webapp.wasm", sha256: "4".repeat(64), bytes: 30476 };
-const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP };
+const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP, modules: ["index.js", "wrap.js"] };
 
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
   assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
-  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "webapp"]);
+  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "modules", "webapp"]);
   const { files } = await packageApp(APP, { sdkFiles: SDK_JS, manifest: withTools, artefactsKey: CONTAINER.address, subtle });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["contract", "note", ...NAMED].sort(),
@@ -170,7 +170,8 @@ await t("**the publishing tools are NOT app artefacts: the app names exactly the
 });
 
 await t("**a container or webapp entry shaped like an APP artefact is refused, not fetched**", async () => {
-  for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }]]) {
+  for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }],
+    ["modules", { file: "modules.wasm", sha256: "e".repeat(64), bytes: 1 }], ["modules", ["index.js", "../app.js"]], ["modules", []]]) {
     await assert.rejects(
       () => packageApp(APP, { sdkFiles: SDK_JS, manifest: { ...withTools, [k]: bad }, artefactsKey: CONTAINER.address, subtle }),
       new RegExp(`${k} entry is not the shape of a publishing tool`),

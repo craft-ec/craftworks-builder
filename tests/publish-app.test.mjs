@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSdk } from "../sdk-loader.js";
-import { publishApp, settled, APP_FILES } from "../publish-app.js";
+import { publishApp, settled, APP_FILES, appFiles } from "../publish-app.js";
 import { NAMED } from "../package-app.js";
 
 let failures = 0;
@@ -69,7 +69,7 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
   await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   const u = unpack(s.puts[1].state);
   try {
-    assert.deepStrictEqual(u.list, [...Object.keys(APP_FILES), "app.json", "artefacts.json"].sort());
+    assert.deepStrictEqual(u.list, [...Object.keys(appFiles(manifest)), "app.json", "artefacts.json"].sort());
     assert.ok(!u.list.some(f => /\.wasm$/.test(f)), "the app carries wasm");
     const app = JSON.parse(u.text("app.json"));
     // AND the app id its data was written under (craftworks-sdk#267): a
@@ -139,6 +139,58 @@ await t("THE CONTROLS: a changed app, a changed SDK, or an SDK that cannot say i
     const r = await publishApp(app, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion });
     assert.deepStrictEqual(s.puts.map(p => p.key), [manifest.container.address, r.address], `${what}: not both PUT`);
     assert.strictEqual(r.put, true, what);
+  }
+});
+
+/**
+ * Every module the SDK's entry reaches, by following its imports: an oracle
+ * INDEPENDENT of the manifest (the manifest is what is under test).
+ */
+function reachableFrom(dir, entry = "index.js") {
+  const seen = new Set();
+  const walk = f => {
+    if (seen.has(f)) return;
+    seen.add(f);
+    const src = readFileSync(join(dir, f), "utf8");
+    for (const m of src.matchAll(/(?:from\s*|import\s*\(\s*|import\s+)["']\.\/([A-Za-z0-9_.-]+\.js)["']/g)) walk(m[1]);
+  };
+  walk(entry);
+  return [...seen].sort();
+}
+/** The reachable modules a published container is missing. */
+const missingFrom = (list, dir) => reachableFrom(dir).filter(m => !list.includes(`sdk/${m}`));
+
+await t("**the published app carries EVERY module the SDK's entry reaches — from the SDK's own `modules`, never a hand list** (a missing rto.js hung every published page on \"Loading…\")", async () => {
+  const sdkDir = at("sdk");
+  const reach = reachableFrom(sdkDir);
+  assert.ok(reach.length >= 5 && reach.includes("index.js"), `the oracle read nothing: ${reach}`);
+  assert.deepStrictEqual([...manifest.modules].sort(), reach, "the SDK's `modules` is not what its entry reaches");
+  const s = node();
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const u = unpack(s.puts[1].state);
+  try {
+    assert.deepStrictEqual(missingFrom(u.list, sdkDir), [], "the published app is missing modules its SDK imports");
+    for (const m of manifest.modules) assert.ok(u.list.includes(`sdk/${m}`), `sdk/${m} is not in the published app`);
+  } finally { u.done(); }
+});
+
+await t("THE CONTROL: a manifest that leaves out ONE module publishes an app the check names as missing it", async () => {
+  const dropped = manifest.modules.find(m => m !== "index.js");
+  const short = { ...manifest, modules: manifest.modules.filter(m => m !== dropped) };
+  const s = node();
+  await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest: short, read, subtle: crypto.subtle, ...fast });
+  const u = unpack(s.puts[1].state);
+  try {
+    assert.deepStrictEqual(missingFrom(u.list, at("sdk")), [dropped], "the check did not name the module the manifest left out");
+  } finally { u.done(); }
+});
+
+await t("**no `modules`, no publication — refused by name before anything is PUT; and a module outside sdk/ is refused**", async () => {
+  for (const [bad, re] of [[{ ...manifest, modules: undefined }, /names no `modules`/], [{ ...manifest, modules: [] }, /names no `modules`/],
+    [{ ...manifest, modules: ["index.js", "../app.js"] }, /not a file beside its index\.js/], [{ ...manifest, modules: ["index.js", ".hidden.js"] }, /not a file beside/]]) {
+    const s = node();
+    await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest: bad, read, subtle: crypto.subtle, ...fast }), re);
+    assert.strictEqual(s.puts.length, 0, "something was PUT for a manifest that names no modules");
   }
 });
 
