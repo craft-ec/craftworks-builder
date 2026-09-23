@@ -473,6 +473,16 @@ export async function nextSeq(db, pid) {
   return hist.length ? Math.max(...hist.map(h => h.seq ?? 0)) + 1 : 1;
 }
 
+/**
+ * A project's NEWEST publication, as its record reads — the one form of it.
+ * Everything that remembers "what was last published" holds this row (a
+ * reconnect's skip compares its bundle_hash); a hand-built copy lacked the
+ * field and made every reconnect republish (#127 review).
+ */
+export async function latestPublication(db, pid) {
+  return (await publicationsOf(db, pid))[0] ?? null;
+}
+
 /** A project's publications, newest first. */
 export async function publicationsOf(db, pid) {
   const rows = await db.children(PUBLICATION, pid, { reverse: true });

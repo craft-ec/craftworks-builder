@@ -9,7 +9,7 @@ import { PROJECT,
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
   readDeviceSettings, writeDeviceSettings, PUBLIC_UNTIL_PHASE_7, openInto,
-  recordPublication, publicationsOf, nextSeq, recordPerComponentKey,
+  recordPublication, publicationsOf, latestPublication, nextSeq, recordPerComponentKey,
   restoreProject, restoreComponent,
   oneRecordPerComponent, BUILDER, componentKey as componentKeyOf,
 } from "./projects.js";
@@ -687,7 +687,7 @@ export async function mountProjects(host, {
   async function choose(pid) {
     // Read BEFORE the handover, which is synchronous: a published project
     // reopens connected (`reconnectsOnOpen`).
-    const publication = (await publicationsOf(db, pid))[0] ?? null;
+    const publication = await latestPublication(db, pid);
     const project = await openInto(db, pid, {
       setLastOpened: id => writeDeviceSettings(storage, { lastOpened: id }),
       handOver: p => {
@@ -721,12 +721,13 @@ export async function mountProjects(host, {
    *
    * The tree root it published FROM, the SDK it was built against, when, and
    * — once the app is on the network (builder#104) — its bundle hash, its
-   * address and the head its data is read from.
+   * address and the head its data is read from. Returns the row AS IT READS
+   * (`latestPublication`), the same form a reopen hands the builder.
    */
   async function published({ sourceRoot = null, sdkVersion = null, bundleHash = null, appContractId = null, head = null } = {}) {
     const pid = current();
     if (!pid) return null;
-    const rec = await recordPublication(db, pid, {
+    await recordPublication(db, pid, {
       seq: await nextSeq(db, pid),
       source_root: sourceRoot,
       sdk_version: sdkVersion,
@@ -735,7 +736,7 @@ export async function mountProjects(host, {
       head,
     });
     await paint();
-    return rec;
+    return latestPublication(db, pid);
   }
 
   chip.onclick = async () => { open = !open; await paint(); };
@@ -774,7 +775,7 @@ export async function mountProjects(host, {
   // wrong on a second device.
   if (last) {
     const project = await openProject(db, last);
-    if (project) setCanvas(canvasOf(project), { ...project, publication: (await publicationsOf(db, project.id))[0] ?? null });
+    if (project) setCanvas(canvasOf(project), { ...project, publication: await latestPublication(db, project.id) });
   }
   return { persist, refresh: paint, openProjectId: current, published, adopt };
 }

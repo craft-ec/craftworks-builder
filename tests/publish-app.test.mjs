@@ -13,6 +13,9 @@ import { fileURLToPath } from "node:url";
 import { loadSdk } from "../sdk-loader.js";
 import { publishApp, settled, APP_FILES, appFiles } from "../publish-app.js";
 import { NAMED } from "../package-app.js";
+import { LocalDb } from "../local-db.js";
+import { createProject, defineProjectDomains, writeDeviceSettings } from "../projects.js";
+import { mountProjects } from "../projects-panel.js";
 
 let failures = 0;
 const t = async (name, fn) => {
@@ -129,6 +132,10 @@ await t("**a refused site ends the publish naming it — and the builder never r
   assert.strictEqual(s.puts.filter(p => p.site).length, 1, "the builder published the site again on its own — the re-send is the SDK's");
 });
 
+await t("**a cancelled site ends the publish as CANCELLED, not as the node's refusal** (#332 review)", async () => {
+  await assert.rejects(publishApp(APP, { sdk, session: node(key => (key.startsWith("site-key-of-") ? "cancelled" : "put")), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast }), /^Error: cancelled: the app's site was not published$/);
+});
+
 await t("**pending is the SDK's to end: the builder waits it out, with no budget of its own (a slow node that acks late still publishes)**", async () => {
   const s = node((key, poll) => (poll < 400 ? "pending" : "put"));
   const r = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
@@ -154,6 +161,32 @@ await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same BUNDLE on 
   assert.strictEqual(again.put, false);
   assert.strictEqual(again.address, first.address, "the unchanged app reports another address");
   assert.strictEqual(again.artefactsKey, manifest.container.address);
+});
+
+await t("**ONE FORM OF THE PUBLICATION: in one session, the second reconnect of an unchanged app sends nothing** — the builder holds the row the panel RECORDED, never a hand-built copy (#127 review: the copy had no bundle_hash, so every reconnect republished)", async () => {
+  // The panel over a real LocalDb, as the app mounts it (a DOM as large as it needs).
+  class El { constructor() { this.children = []; } append(...k) { this.children.push(...k.filter(x => x && typeof x === "object")); } replaceChildren(...k) { this.children = []; this.append(...k); } setAttribute() {} contains() { return false; } }
+  globalThis.document ??= { createElement: () => new El(), addEventListener() {} };
+  const m = new Map();
+  const mem = () => ({ get length() { return m.size; }, key: i => [...m.keys()][i] ?? null, getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) });
+  const db = new LocalDb(mem());
+  await defineProjectDomains(db);
+  const p = await createProject(db, { title: "notes" });
+  const device = mem();
+  writeDeviceSettings(device, { lastOpened: p.id });
+  const panel = await mountProjects(new El(), { db, storage: device, getCanvas: () => [], setCanvas: () => {} });
+  // What app.js's `after` does on every publish and reconnect: publish with
+  // the last publication, record it, hold the recorded row.
+  let last = null;
+  const sent = [];
+  for (const round of ["publish", "reconnect 1", "reconnect 2"]) {
+    const s = node();
+    const put = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion: "rev-1" });
+    sent.push(`${round}: ${s.puts.length}`);
+    last = await panel.published({ sdkVersion: "rev-1", bundleHash: put.bundleHash, appContractId: put.address, head: HEAD });
+  }
+  assert.deepStrictEqual(sent, ["publish: 2", "reconnect 1: 0", "reconnect 2: 0"], sent.join(", "));
+  assert.strictEqual(typeof last.bundle_hash, "string", "the held publication has no bundle_hash");
 });
 
 await t("THE CONTROLS: a changed app, a changed SDK, or an SDK that cannot say its version PUTs both containers", async () => {

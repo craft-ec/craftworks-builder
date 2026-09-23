@@ -104,12 +104,12 @@ export async function publishApp(app, {
   const published = { ...app, publisher: { head: headId, app: appId } };
   const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle });
 
-  // 3. Its web part: the container the SDK builds, without the node's
-  // framing (it has no metadata: 16 bytes of framing, then the web).
+  // 3. Its web part, as the SDK builds it: the framing is the SDK's to know
+  // (the site frames it with its own metadata), never counted here.
   const c = new sdk.webapp.AppContainer();
   for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
   const state = c.finish();
-  const web = state.subarray(16);
+  const web = c.web();
   const result = { artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
 
   // NOTHING CHANGED, NOTHING SENT. A published project reopening (the
@@ -140,6 +140,10 @@ export async function publishApp(app, {
  * or refused, in the signer's or the node's words, or a person cancels. The
  * SDK reads the version, has it signed and PUTs it, each step on its page's
  * sender; nothing here ends it on a clock (rule 8). Resolves to the version.
+ *
+ * A cancel ends only the PUT. While the site is still being read or signed
+ * there is nothing to cancel, so the loop keeps polling until the signer
+ * answers — that answer ends it (rule 8), never a clock.
  */
 export async function siteSettled(session, address, { everyMs, sleep, signal = null }) {
   for (;;) {
@@ -148,6 +152,7 @@ export async function siteSettled(session, address, { everyMs, sleep, signal = n
     if (key && key !== address) throw new Error(`the site being published is ${key}, not ${address}`);
     if (state === "published") return version;
     if (state === "refused") throw new Error(`the app's site was not published: ${said}`);
+    if (state === "cancelled") throw new Error("cancelled: the app's site was not published");
     if (state === "none") throw new Error("the app's site was never sent");
     await sleep(everyMs);
   }

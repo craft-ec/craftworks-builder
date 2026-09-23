@@ -439,7 +439,9 @@ async function doPublish() {
             sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
             ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId() } : {}),
           });
-          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null };
+          // The row as recorded, the same form a reopen reads: its bundle_hash
+          // is what lets the next reconnect in this session send nothing.
+          if (rec && openedProject) openedProject.publication = rec;
         } catch (e) { warn = warn || `history: ${e.message}`; }
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }
