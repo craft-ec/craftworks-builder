@@ -1,12 +1,13 @@
-// A PUBLISHED APP IS A NORMAL WEBSITE (the owner; DATA-SOURCE). ONE session,
-// asked whose node this is, and ONE decision, the SDK's `canWrite`:
-// * on the PUBLISHER's node, `publisher` components are the same tree,
-//   editable (Add/Edit/Delete), and a write lands in it;
+// A PUBLISHED APP IS A NORMAL WEBSITE where everyone is a USER (the owner;
+// DATA-SOURCE). ONE session, asked whose node this is, and ONE decision, the
+// SDK's `canWrite`:
+// * on the node that signs for the APP's data, `publisher` components are
+//   the same tree, editable (Add/Edit/Delete), and a write lands in it;
 // * anywhere else they are a read-only view: no inputs, a write refused, and
 //   nothing opened or minted for a reader;
-// * `viewer` components are the VISITOR's own tree, with inputs for everyone,
-//   opened on the visitor's node (`openOwn`), and a write lands THERE --
-//   never in the publisher's tree.
+// * `mine` components are each USER's own tree, with inputs for everyone,
+//   opened on the user's node (`openOwn`), and a write lands THERE --
+//   never in the app's tree.
 // On the REAL `mountApp` canvas with the real in-memory Db; the SDK's node
 // calls are the only thing faked, and each fake says what it would be.
 import assert from "node:assert";
@@ -40,8 +41,8 @@ const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", 
 const APP = { name: "Notes", components: [{ type: "form", domain: "notes" }, { type: "table", domain: "notes" }] };
 const HEAD = "a".repeat(64);
 
-/** The publisher's data, in a real Db. */
-async function publisherDb() {
+/** The app's data, in a real Db. */
+async function appDb() {
   const db = new sdk.Db();
   await openApp(sdk, APP, db, { seed: false });
   await db.put("notes", { title: "one" });
@@ -57,10 +58,10 @@ function viewOf(db) {
 /**
  * An SDK whose NODE is faked: `openAsked` answers as a node whose signer signs
  * for `signsFor` (null: none), holding `own` as that identity's tree; the
- * publisher's tree is `pub`. Records what was opened.
+ * app's tree is `pub`. Records what was opened.
  */
 async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
-  const pub = await publisherDb();
+  const pub = await appDb();
   const own = signsFor === HEAD ? pub : await emptyDb();
   const opens = [];
   return {
@@ -84,15 +85,15 @@ async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
   };
 }
 
-/** A visitor's own tree before they write anything. */
+/** A user's own tree before they write anything. */
 async function emptyDb() {
   const db = new sdk.Db();
-  await openApp(sdk, VIEWER_APP, db, { seed: false });
+  await openApp(sdk, OWN_DATA_APP, db, { seed: false });
   return db;
 }
 
 const ARGS = { head: HEAD, app: "rmudrr4a4q14w0001", port: 7509, artefacts: { signer: "s", block: "b", register: "r" } };
-const VIEWER_APP = { name: "Guestbook", components: [{ type: "form", domain: "notes", source: "viewer" }, { type: "table", domain: "notes", source: "viewer" }] };
+const OWN_DATA_APP = { name: "Guestbook", components: [{ type: "form", domain: "notes", source: "mine" }, { type: "table", domain: "notes", source: "mine" }] };
 
 async function mounted(app, opened) {
   const root = new Node("div");
@@ -100,48 +101,48 @@ async function mounted(app, opened) {
   return all(root);
 }
 
-await t("**the PUBLISHER's node: `publisher` components open EDITABLE -- inputs and Add, and a write lands in the publisher's tree**", async () => {
+await t("**the node that signs for the APP's data: `publisher` components open EDITABLE -- inputs and Add, and a write lands in the app's tree**", async () => {
   const n = await nodeSdk(HEAD);
-  const opened = await openPublished(n.sdk, { ...ARGS, viewer: false });
-  assert.strictEqual(opened.canWrite("publisher").answer, "yes", "the publisher's own node was not asked to write its tree");
-  assert.strictEqual(opened.backends.publisher, n.pub, "the publisher's node reads a VIEW of its own tree, not the tree");
+  const opened = await openPublished(n.sdk, { ...ARGS, ownData: false });
+  assert.strictEqual(opened.canWrite("publisher").answer, "yes", "the app owner's own node was not asked to write its tree");
+  assert.strictEqual(opened.backends.publisher, n.pub, "the app owner's node reads a VIEW of its own tree, not the tree");
   const nodes = await mounted(APP, opened);
-  assert.ok(nodes.some(x => x.tag === "input"), "no input on the publisher's page");
-  assert.ok(nodes.some(x => x.tag === "button" && x.textContent === "Add"), "no Add on the publisher's page");
-  await opened.backends.publisher.put("notes", { title: "from the publisher" });
-  assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title).sort(), ["from the publisher", "one"]);
+  assert.ok(nodes.some(x => x.tag === "input"), "no input on the app owner's page");
+  assert.ok(nodes.some(x => x.tag === "button" && x.textContent === "Add"), "no Add on the app owner's page");
+  await opened.backends.publisher.put("notes", { title: "from the app's owner" });
+  assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title).sort(), ["from the app's owner", "one"]);
 });
 
-for (const [who, signsFor] of [["a VISITOR's node (no signer)", null], ["ANOTHER person's key", "b".repeat(64)]]) {
+for (const [who, signsFor] of [["another user's node (no signer)", null], ["ANOTHER person's key", "b".repeat(64)]]) {
   await t(`${who}: \`publisher\` components are a VIEW -- no inputs, a write refused, nothing opened for a reader`, async () => {
     const n = await nodeSdk(signsFor);
-    const opened = await openPublished(n.sdk, { ...ARGS, viewer: false });
+    const opened = await openPublished(n.sdk, { ...ARGS, ownData: false });
     assert.strictEqual(opened.canWrite("publisher").answer, "no");
-    assert.ok(!n.opens.includes("openOwn"), "a reader of publisher-only data had its own tree opened (a key minted)");
+    assert.ok(!n.opens.includes("openOwn"), "a reader of the app's data only had its own tree opened (a key minted)");
     const nodes = await mounted(APP, opened);
-    assert.ok(!nodes.some(x => x.tag === "input"), "a visitor's page painted an input on the publisher's data");
+    assert.ok(!nodes.some(x => x.tag === "input"), "a user's page painted an input on the app's data");
     await assert.rejects(opened.backends.publisher.put("notes", { title: "intruder" }), /read-only/);
-    assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title), ["one"], "a visitor's write reached the publisher's tree");
+    assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title), ["one"], "another user's write reached the app's tree");
   });
 }
 
-await t("**a VISITOR on a `viewer` app gets working INPUTS, and their entry lands in THEIR OWN tree, never the publisher's** (the demo)", async () => {
+await t("**a USER of an app with `mine` components gets working INPUTS, and their entry lands in THEIR OWN tree, never the app's** (the demo)", async () => {
   const n = await nodeSdk(null);
-  const opened = await openPublished(n.sdk, { ...ARGS, viewer: true });
-  assert.ok(n.opens.includes("openOwn"), "the visitor's own tree was never opened");
-  assert.strictEqual(opened.canWrite("viewer").answer, "yes", "a visitor may not write their own tree");
-  const nodes = await mounted(VIEWER_APP, opened);
-  assert.ok(nodes.some(x => x.tag === "input" && !x.disabled), "a visitor's page has no working input");
-  assert.ok(nodes.some(x => x.tag === "button" && x.textContent === "Add" && !x.disabled), "a visitor's page has no Add");
-  await opened.backends.viewer.put("notes", { title: "from a visitor" });
-  assert.deepStrictEqual((await n.own.scan("notes")).map(r => r.fields.title), ["from a visitor"], "the entry is not in the visitor's own tree");
-  assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title), ["one"], "the visitor's entry reached the publisher's tree");
+  const opened = await openPublished(n.sdk, { ...ARGS, ownData: true });
+  assert.ok(n.opens.includes("openOwn"), "the user's own tree was never opened");
+  assert.strictEqual(opened.canWrite("mine").answer, "yes", "a user may not write their own tree");
+  const nodes = await mounted(OWN_DATA_APP, opened);
+  assert.ok(nodes.some(x => x.tag === "input" && !x.disabled), "a user's page has no working input");
+  assert.ok(nodes.some(x => x.tag === "button" && x.textContent === "Add" && !x.disabled), "a user's page has no Add");
+  await opened.backends.mine.put("notes", { title: "from a user" });
+  assert.deepStrictEqual((await n.own.scan("notes")).map(r => r.fields.title), ["from a user"], "the entry is not in the user's own tree");
+  assert.deepStrictEqual((await n.pub.scan("notes")).map(r => r.fields.title), ["one"], "the user's entry reached the app's tree");
 });
 
-await t("**the publisher's node whose own tree does NOT open says so by name, never falls back to a view**", async () => {
+await t("**the node that signs for the app's data, whose tree does NOT open, says so by name, never falls back to a view**", async () => {
   const n = await nodeSdk(HEAD, { answer: "no", why: "the signer refused the register" });
-  await assert.rejects(openPublished(n.sdk, { ...ARGS, viewer: false }), /its tree did not open: the signer refused the register/);
-  assert.ok(!n.opens.includes("tree"), "a publisher whose tree failed was quietly shown a view");
+  await assert.rejects(openPublished(n.sdk, { ...ARGS, ownData: false }), /its tree did not open: the signer refused the register/);
+  assert.ok(!n.opens.includes("tree"), "an app owner whose tree failed was quietly shown a view");
 });
 
 if (failures) { process.stdout.write(`${failures} failing\n`); process.exit(1); }

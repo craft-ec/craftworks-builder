@@ -430,7 +430,7 @@ async function doPublish() {
           // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT,
           // and the remount right after a publish replaces it — the field
           // written onto it was gone before a tool polling every 500 ms
-          // could read it (builder#104's visitor acceptance, on this branch).
+          // could read it (builder#104's open-by-address acceptance, on this branch).
           globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id) };
         } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
@@ -465,10 +465,11 @@ function renderPalette() {
     const ready = c.phase <= BUILT_PHASE + 1;
     const b = el("button", { className: "chip", disabled: !ready, title: `${c.primitives.join(" + ")} · ${c.schema} — ${c.note}${ready ? "" : ` (lands in phase ${c.phase})`}` },
       c.label, el("small", { textContent: ready ? c.schema : `phase ${c.phase}` }));
-    // A NEW component shows each visitor's OWN data (DATA-SOURCE `viewer`):
-    // a published site is a normal website, where everyone can add. A
-    // component with no `source` (a project from before) is `publisher`.
-    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0], source: "viewer" }); sel = app.components.length - 1; rt.invalidate(); save(); render(); };
+    // A NEW component shows each user's OWN data (DATA-SOURCE `mine`): a
+    // published site is a normal website, where everyone is a user and adds
+    // their own. A component with no `source` (a project from before) shows
+    // the app's data (`publisher`).
+    b.onclick = () => { app.components.push({ type: c.type, domain: `${c.type}s`, mode: c.modes[0], source: "mine" }); sel = app.components.length - 1; rt.invalidate(); save(); render(); };
     return b;
   }));
 }
@@ -614,11 +615,12 @@ function renderProps() {
     el("span", { textContent: "Live — updates by itself" }));
   const liveWhy = el("p", { className: "note", id: "live-note", textContent: LIVE_NOTE });
 
-  // WHOSE DATA this component shows once published (DATA-SOURCE): the
-  // publisher's, which only the publisher adds to, or each visitor's own,
-  // which every visitor adds to (their own tree, made on their first entry).
+  // WHOSE DATA this component shows once published (DATA-SOURCE): each
+  // user's own (`mine`: everyone adds to their own tree, made on their first
+  // entry), or the app's data (`publisher`: changed only from the identity
+  // that owns the app — the one that built and published it).
   const source = el("select", { id: "source" });
-  for (const [v, label] of [["viewer", "Each visitor's own data (everyone can add)"], ["publisher", "The publisher's data (only the publisher can add)"]]) {
+  for (const [v, label] of [["mine", "Each user's own data (everyone adds their own)"], ["publisher", "The app's data (only you, its owner, change it)"]]) {
     source.append(el("option", { value: v, textContent: label, selected: v === sourceOf(inst) }));
   }
   source.onchange = () => { inst.source = source.value; rt.invalidate(); save(); render(); };

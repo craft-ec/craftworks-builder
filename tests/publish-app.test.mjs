@@ -64,7 +64,7 @@ await t("**both containers are PUT: the SDK's artefacts container at its manifes
   process.stdout.write(`      sizes: app container ${r.containerBytes} B (bundle ${r.bundleBytes} B, xz stored); artefacts container ${r.artefactsBytes} B, PUT once per SDK build\n`);
 });
 
-await t("**the app container holds the loader, the runtime, the SDK's JavaScript, app.json naming the publisher's head, artefacts.json naming the artefacts — and NO wasm**", async () => {
+await t("**the app container holds the loader, the runtime, the SDK's JavaScript, app.json naming the head of the app's tree, artefacts.json naming the artefacts — and NO wasm**", async () => {
   const s = node();
   await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   const u = unpack(s.puts[1].state);
@@ -73,9 +73,9 @@ await t("**the app container holds the loader, the runtime, the SDK's JavaScript
     assert.ok(!u.list.some(f => /\.wasm$/.test(f)), "the app carries wasm");
     const app = JSON.parse(u.text("app.json"));
     // AND the app id its data was written under (craftworks-sdk#267): a
-    // visitor opens that app's space in the publisher's tree, or reads an
+    // user opens that app's space in the app's tree, or reads an
     // empty one.
-    assert.deepStrictEqual(app.publisher, { head: HEAD, app: "proj1" }, "app.json does not name the publisher's head and app");
+    assert.deepStrictEqual(app.publisher, { head: HEAD, app: "proj1" }, "app.json does not name the app tree's head and app id");
     const art = JSON.parse(u.text("artefacts.json"));
     assert.strictEqual(art.contract, manifest.container.address);
     for (const n of NAMED) assert.strictEqual(art[n].sha256, manifest[n].sha256, `${n} named with another hash`);
@@ -194,7 +194,7 @@ await t("**no `modules`, no publication — refused by name before anything is P
   }
 });
 
-await t("**no app id, no publication** — a visitor would read an empty space (craftworks-sdk#267)", async () => {
+await t("**no app id, no publication** — a user would read an empty space (craftworks-sdk#267)", async () => {
   const s = node();
   for (const appId of [undefined, "", "Has.Dot", "x".repeat(33)]) {
     await assert.rejects(() => publishApp(APP, { sdk, session: s, headId: HEAD, appId, manifest, read, subtle: crypto.subtle, ...fast }), /no app id/,

@@ -1,7 +1,7 @@
 // A VIEW RENDERS NO WRITE CONTROLS (builder#104, the owner's ruling).
 //
 // Published data is readable by default and writing is access control. A
-// visitor with view access sees a VIEW: the runtime, given a read-only
+// user reading someone else's data sees a VIEW: the runtime, given a read-only
 // session, paints no input and no button that writes — no Form, no Edit, no
 // Delete — rather than controls that would fail. (The SDK refuses a write on
 // a read-only session anyway, sdk#239: that is the net under this, and no
@@ -45,7 +45,7 @@ const APP = { name: "Notes", components: [
   { type: "list", domain: "notes" },
 ] };
 
-/** The publisher's data: the app's domains, with rows in them. */
+/** The app's data: the app's domains, with rows in them. */
 async function published() {
   const db = new sdk.Db();
   await openApp(sdk, APP, db, { seed: false });
@@ -67,13 +67,13 @@ async function canvas(readOnly, answer = readOnly ? "no" : "yes") {
   asked = [];
   db.bind = (domain, opts = {}) => { asked.push(opts.live === true); return bind(domain, opts); };
   const canWrite = () => ({ answer, why: answer === "unknown" ? "this node's signer is not answering" : "" });
-  await mountApp(root, sdk, APP, () => {}, { publisher: db, viewer: null }, "published", { alive: () => true, seed: false, canWrite });
+  await mountApp(root, sdk, APP, () => {}, { publisher: db, mine: null }, "published", { alive: () => true, seed: false, canWrite });
   return all(root);
 }
 const WRITES = ["Add", "Save changes", "Edit", "Delete", "Cancel"];
 const writingButtons = nodes => nodes.filter(n => n.tag === "button" && WRITES.includes(n.textContent));
 
-await t("**a VIEW paints no input and no button that writes — and still shows the publisher's rows**", async () => {
+await t("**a VIEW paints no input and no button that writes — and still shows the app's rows**", async () => {
   const nodes = await canvas(true);
   assert.deepStrictEqual(nodes.filter(n => n.tag === "input").map(n => n.name), [], "a view painted inputs");
   assert.deepStrictEqual(writingButtons(nodes).map(n => n.textContent), [], "a view painted writing buttons");
