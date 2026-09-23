@@ -50,9 +50,17 @@ try {
     port: Number(location.port),
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
   });
+  // "Reading…" is never SILENT: it says how long, and a read that ENDS is
+  // shown on its component by the runtime, by name.
+  const t0 = Date.now();
   say("Reading…");
-  await mountApp(document.getElementById("app"), sdk, app, () => {}, opened.db, "published", { alive: () => true, seed: false, readOnly: opened.readOnly });
-  say(app.name ?? "");
+  const counting = setInterval(() => say(`Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
+  const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.db, "published", { alive: () => true, seed: false, readOnly: opened.readOnly });
+  try { await reading; } finally { clearInterval(counting); }
+  // Mounted: a component whose read ENDED says so on the page (the runtime);
+  // the status names it too, so the page is never quietly half-empty.
+  const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
+  say(ended.length ? ended.join(" · ") : (app.name ?? ""), ended.length > 0);
 } catch (e) {
   // THE FIRST THING A PERSON CAN SEND: which artefact, which hash, what failed.
   say(`This app could not open: ${e.message}`, true);

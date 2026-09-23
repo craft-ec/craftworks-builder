@@ -308,10 +308,16 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
         const body = !schema ? el("p", { className: "rt-err", textContent: `No schema for “${inst.domain}”.` })
           : RENDER[inst.type] ? RENDER[inst.type](inst, schema, i)
           : el("p", { className: "rt-empty", textContent: `${byType[inst.type]?.label ?? inst.type} runs once its substrate lands (phase ${byType[inst.type]?.phase}).` });
+        // A READ THAT ENDED IS SAID, by name — never a silent empty table or
+        // a page left at "Reading…" (the binding records it: `status()`).
+        const st = bindings[i]?.status?.();
+        const ended = st?.state === "unreachable"
+          ? el("p", { className: "rt-err rt-read", role: "status", textContent: `Could not read “${inst.domain}”: ${st.why}` })
+          : "";
         return el("section", { className: "rt-comp" },
           el("h4", {}, `${byType[inst.type]?.label ?? inst.type} · ${inst.domain}`,
             bindsLive(inst, readOnly) ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
-          body);
+          ended, body);
       }));
   }
 
