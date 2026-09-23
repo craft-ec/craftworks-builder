@@ -119,6 +119,29 @@ await t("refused before anything is sent: no head, and an artefacts container th
 });
 
 
+await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same address on the same SDK PUTs neither container** (re-PUTs made the node serve the artefacts 404 for a moment)", async () => {
+  const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  assert.strictEqual(first.put, true);
+  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  const s = node();
+  const again = await publishApp(APP, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion: "rev-1" });
+  assert.strictEqual(s.puts.length, 0, `an unchanged app was PUT again: ${s.puts.map(p => p.key)}`);
+  assert.strictEqual(again.put, false);
+  assert.strictEqual(again.address, first.address, "the unchanged app reports another address");
+  assert.strictEqual(again.artefactsKey, manifest.container.address);
+});
+
+await t("THE CONTROLS: a changed app, a changed SDK, or an SDK that cannot say its version PUTs both containers", async () => {
+  const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
+  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  for (const [what, app, sdkVersion] of [["a changed app", { ...APP, name: "Changed" }, "rev-1"], ["a changed SDK", APP, "rev-2"], ["no SDK version", APP, null]]) {
+    const s = node();
+    const r = await publishApp(app, { sdk, session: s, headId: HEAD, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion });
+    assert.deepStrictEqual(s.puts.map(p => p.key), [manifest.container.address, r.address], `${what}: not both PUT`);
+    assert.strictEqual(r.put, true, what);
+  }
+});
+
 await t("**no app id, no publication** — a visitor would read an empty space (craftworks-sdk#267)", async () => {
   const s = node();
   for (const appId of [undefined, "", "Has.Dot", "x".repeat(33)]) {

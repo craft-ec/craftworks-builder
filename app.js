@@ -147,7 +147,9 @@ mountProjects($("projects"), {
     // before anything of the new one exists: its listeners stop, its session
     // closes, and a mount or publish of it still in flight disowns itself.
     rt.dispose();
-    openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project) };
+    // Its newest publication too: a reconnect whose app is unchanged sends
+    // nothing (publishApp's `last`).
+    openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project), publication: project.publication ?? null };
     rt = newRuntime();
     // The address belonged to the project being left.
     appAddress = null;
@@ -418,6 +420,10 @@ async function doPublish() {
             sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id),
             manifest: await (await fetch("./sdk/artefacts.json")).json(),
             read: readBuilderFile, subtle: crypto.subtle,
+            // Unchanged since the last acknowledged publication (same app
+            // address, same SDK): nothing is PUT again.
+            last: openedProject?.publication ?? null,
+            sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
           });
           appAddress = put.address;
           // The acceptance seam: what was PUT, for the tools that open it
@@ -428,11 +434,12 @@ async function doPublish() {
           globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id) };
         } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
-          await projects?.published?.({
+          const rec = await projects?.published?.({
             sourceRoot: db.root?.() ?? null,
             sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
             ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId() } : {}),
           });
+          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null };
         } catch (e) { warn = warn || `history: ${e.message}`; }
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }
