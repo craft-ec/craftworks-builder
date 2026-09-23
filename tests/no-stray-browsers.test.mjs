@@ -6,7 +6,9 @@
 //      NOT a PID the recording no longer names (a reused PID);
 //   2. page-host REFUSES a live browser under the system's default TMPDIR;
 //   3. a signal to a page-host process kills every browser it started,
-//      including `openFreshBrowser`'s (they were outside its kill list).
+//      including `openFreshBrowser`'s (they were outside its kill list);
+//   4. a page-host process SIGKILLed (nothing of it can run) leaves no
+//      browser either: each browser's watchdog ends it.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
@@ -75,6 +77,29 @@ await t("**a signal to a page-host run kills every browser it started — openFr
   assert.ok(recorded.every(alive), "THE SETUP: the browsers are running");
   child.kill("SIGTERM");
   assert.ok(await until(() => recorded.every(p => !alive(p)), 20_000), `a browser outlived the signal: ${recorded.filter(alive)}`);
+});
+
+await t("**a page-host run SIGKILLed (nothing of it runs) still leaves no browser: each one's watchdog ends it within seconds, no next run needed**", async () => {
+  const pids = join(dir, "killed.pids");
+  writeFileSync(pids, "");
+  const script = `
+    const m = await import("${join(ROOT, "tests/page-host.mjs")}");
+    await m.openPageHost("killed-test");
+    await m.openFreshBrowser("killed-test fresh");
+    console.log("READY");
+    await new Promise(() => {});`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TMPDIR: dir, PAGE_HOST_PIDFILE: pids }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", d => { out += d; });
+  assert.ok(await until(() => out.includes("READY"), 60_000), `the run did not start: ${out}`);
+  const recorded = readFileSync(pids, "utf8").trim().split("\n").map(l => Number(l.split("\t")[0]));
+  assert.equal(recorded.length, 2, `both browsers are recorded: ${recorded}`);
+  assert.ok(recorded.every(alive), "THE SETUP: the browsers are running");
+  child.kill("SIGKILL");
+  const gone = await until(() => recorded.every(p => !alive(p)), 12_000);
+  const left = recorded.filter(alive);
+  for (const p of left) { try { process.kill(p, "SIGKILL"); } catch {} }
+  assert.ok(gone, `a browser outlived its SIGKILLed page-host: ${left}`);
 });
 
 if (failures) { process.stdout.write(`${failures} failed\n`); process.exit(1); }

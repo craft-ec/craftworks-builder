@@ -134,8 +134,17 @@ export function nodeEnv(dir, env = process.env) {
 const browsers = new Set();
 function recordBrowser(child, profile) {
   browsers.add(child);
-  child.once("exit", () => browsers.delete(child));
   if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${child.pid}\t${profile}\n`);
+  // A WATCHDOG for the exit nothing in this process can see (SIGKILL; macOS
+  // has no PDEATHSIG): a detached shell that ends the browser the moment THIS
+  // process is gone — only while the PID still names its profile, so a
+  // reused PID is never touched — and is itself ended when the browser exits.
+  const dog = spawn("/bin/sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "--user-data-dir=$3" || exit 0; kill "$2"; sleep 5; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "--user-data-dir=$3" && kill -9 "$2"', "watchdog", String(process.pid), String(child.pid), profile], { detached: true, stdio: "ignore" });
+  dog.unref();
+  child.once("exit", () => {
+    browsers.delete(child);
+    try { process.kill(dog.pid); } catch (_) {}
+  });
 }
 
 /** Kill `child` by its recorded PID and wait until it is GONE; SIGKILL after `graceMs`. */
@@ -365,7 +374,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0", ...chromeArgs,
       `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
     kids.push(chrome);
-    if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${chrome.pid}\t${profile}\n`);
+    recordBrowser(chrome, profile);
     const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
 
     const pageProof = `return await (await fetch("/.page-nonce/${nonce}")).text();`;
