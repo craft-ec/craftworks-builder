@@ -11,6 +11,7 @@
 // SDK's tools/realnet/run.sh sets them, with the server's node behind an SSH
 // tunnel. The builder refuses to publish to the owner's ports (publish.js
 // RESERVED_PORTS), so there the publisher is the server's node.
+import { execFileSync } from "node:child_process";
 import { openPageHost, openFreshBrowser, spawnNode } from "../tests/page-host.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -217,9 +218,20 @@ try {
   check(!!again.pub && !/not published|not connected/.test(addrNow), `after a reload the builder reopens CONNECTED, with no click, in ${Date.now() - tReload} ms`, addrNow);
   if (again.pub) {
     await until(builder, `return document.querySelectorAll(".rt-comp input[name=title]").length > 0 || null;`, 30_000, 500);
+    // WHAT THE ADD HITS, said before and after (a row from the reloaded
+    // builder once never reached the other node): the canvas's backend and
+    // address line, the row's own state in the builder, and — with HEAD_READ
+    // set to the SDK's head-read probe — the publisher's head seq on its node.
+    const headSeq = () => {
+      if (!process.env.HEAD_READ) return "HEAD_READ unset";
+      try { return execFileSync(process.env.HEAD_READ, [String(A.ws), pub.head], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/^port \d+: /, ""); } catch (e) { return "probe failed"; }
+    };
+    const canvas = () => builder.evaluate(`return { addr: document.getElementById("tree-addr")?.textContent, publish: document.getElementById("publish")?.textContent, rows: [...document.querySelectorAll("tbody tr")].map(tr => tr.textContent.trim().replace(/\\s+/g, " ")).filter(t => t.startsWith("after the builder reload")) };`).catch(e => ({ error: e.message }));
+    console.log("  BEFORE the add:", JSON.stringify(await canvas()), "| head", headSeq());
     await addIn(builder, null, "after the builder reload");
-    const rl = await seenOnVisitor(["after the builder reload"], 90_000);
-    check(rl.ms !== null, `a row added in the reloaded builder shows on ${B.label}'s open view, no reload: ${rl.ms} ms`, rl);
+    for (const at of [2_000, 10_000, 30_000]) { await sleep(at === 2_000 ? 2_000 : at - (at === 10_000 ? 2_000 : 10_000)); console.log(`  +${at} ms after the add:`, JSON.stringify(await canvas()), "| head", headSeq()); }
+    const rl = await seenOnVisitor(["after the builder reload"], 60_000);
+    check(rl.ms !== null, `a row added in the reloaded builder shows on ${B.label}'s open view, no reload: ${rl.ms === null ? null : rl.ms + 30_000} ms`, rl);
   }
 
   // ---- 4. A BYTE THAT DOES NOT MATCH ITS HASH IS REFUSED --------------------

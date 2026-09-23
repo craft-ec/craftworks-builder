@@ -43,7 +43,7 @@ const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
  */
 export async function publishApp(app, {
   sdk, session, headId, appId, manifest, read, subtle,
-  everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)),
+  everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)), signal = null,
 }) {
   if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
@@ -83,25 +83,29 @@ export async function publishApp(app, {
 
   // 4. Both acknowledged, matched by KEY.
   await Promise.all([
-    settled(session, artefactsKey, "the SDK's artefacts container", { everyMs, sleep }),
-    settled(session, address, "the app's container", { everyMs, sleep }),
+    settled(session, artefactsKey, "the SDK's artefacts container", { everyMs, sleep, signal }),
+    settled(session, address, "the app's container", { everyMs, sleep, signal }),
   ]);
   return { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
 }
 
 /**
- * Wait until the PUT of `key` ENDS — which the SDK guarantees: the page's
- * sender re-sends it on its deadline and ends it `put`, `refused` (in the
- * node's words) or `failed` (given up, saying what was tried; sdk#296). No
+ * Wait until the PUT of `key` ENDS on the node's ANSWER — `put`, or
+ * `refused` in its words — or a person cancels (`signal`, named `cancelled`).
+ * The SDK's page sender re-sends it until then; no time ends it (rule 8). No
  * budget and no re-PUT here: a second copy of those rules, with its own
  * numbers, is what stalled a real-network publish that the SDK would have
  * finished (2026-09-23). Never "published" on anything short of the ack.
  */
-export async function settled(session, key, what, { everyMs, sleep }) {
+export async function settled(session, key, what, { everyMs, sleep, signal = null }) {
   for (;;) {
+    // A person stopped the publish: the SDK ends the PUT, named `cancelled`.
+    if (signal?.aborted) session.cancel_put?.(key);
     const { state, said } = JSON.parse(session.put_status(key));
     if (state === "put") return;
     if (state === "refused") throw new Error(`the node refused ${what}: ${said}`);
+    if (state === "cancelled") throw new Error(`cancelled: ${what} was not published`);
+    // The SDK's own end while it still has one (sdk#296's; #302 removes it).
     if (state === "failed") throw new Error(`${what} was not acknowledged: ${said}`);
     if (state === "none") throw new Error(`${what} was never sent`);
     await sleep(everyMs);

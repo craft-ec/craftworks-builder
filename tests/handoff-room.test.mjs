@@ -35,7 +35,7 @@ const slotFrom = (ms, ns, id) => `${String(ms).padStart(12, "0")}${ns}${id}`.rep
  * node confirms one every `confirmMs` of the clock, oldest first, or never
  * once `stopAt` writes are confirmed.
  */
-function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0, lose = null } = {}) {
+function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign = 0, lose = null, loseAllAfter = Infinity } = {}) {
   let clock = 0;
   // Writes that are NOT the handoff's, made before it starts and holding room.
   const order = Array.from({ length: foreign }, (_, i) => `foreign/${i}`);
@@ -43,10 +43,13 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
   const schemas = new Map();
   let refusals = 0;
   const confirmedCount = () => Math.min(order.length, Math.floor(clock / confirmMs), stopAt);
-  const unconfirmed = () => order.length - confirmedCount();
+  // Past `loseAllAfter` the node ANSWERS every write still waiting: rolled
+  // back. An answered write holds no room.
+  const answeredLost = () => clock > loseAllAfter;
+  const unconfirmed = () => (answeredLost() ? 0 : order.length - confirmedCount());
   // `lose`: the n-th row the handoff makes is ROLLED BACK by the node.
   let made = 0, lost = null;
-  const stateOf = key => (key === lost ? "ROLLED_BACK" : order.indexOf(key) < confirmedCount() ? "CLEAN" : "PENDING");
+  const stateOf = key => (key === lost ? "ROLLED_BACK" : order.indexOf(key) < confirmedCount() ? "CLEAN" : answeredLost() ? "ROLLED_BACK" : "PENDING");
   const noRoom = () => {
     refusals += 1;
     // EXACTLY the shape the SDK's session throws (web/src/session.rs `db_err`).
@@ -126,15 +129,16 @@ await t("**300 rows against a target with room for 256: all 300 land, none refus
   process.stdout.write(`  300 rows, room for 256: ${node.refusals()} NO_ROOM answers waited out; done at ${node.clock() / 1000} s of the fake clock\n`);
 });
 
-await t("**a target that has no room and confirms nothing more fails on NO PROGRESS, naming how far it got**", async () => {
-  // Room for 20; the node confirms 5 and then stops.
-  const node = roomySession({ cap: 20, stopAt: 5 });
+await t("**no room and nothing confirmed: the handoff WAITS (no timer) until the node answers — here, the rest rolled back — and fails naming it**", async () => {
+  // Room for 20; the node confirms 5, then says nothing for ten minutes of
+  // the fake clock, then answers every waiting write lost.
+  const node = roomySession({ cap: 20, stopAt: 5, loseAllAfter: 600_000 });
   const { go } = run(node, 60);
   await assert.rejects(go, e => {
-    assert.match(e.message, /has room for no more records and has confirmed none in 30 s — \d+ of \d+ made so far are confirmed; your data is still here/);
+    assert.match(e.message, /records did not reach the node; your data is still here/);
     return true;
   });
-  assert.ok(node.stored("notes") < 60, "it cannot have made every row");
+  assert.ok(node.clock() > 600_000, `it gave up at ${node.clock()} ms of the fake clock, before the node answered`);
 });
 
 await t("**the room is held by writes that are NOT the handoff's: once they confirm, the refused rows are made and the publish completes**", async () => {
