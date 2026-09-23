@@ -8,6 +8,10 @@
 import assert from "node:assert";
 import { createProjectRuntime } from "../project-runtime.js";
 import { publish } from "../publish.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { loadSdk } from "../sdk-loader.js";
+const { ids } = await loadSdk(readFileSync(fileURLToPath(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url))));
 
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
 
@@ -179,7 +183,7 @@ await t("publishing remounts on the new backend", async () => {
 
 await t("**the issue's own reproduction: a refused publish closes the session it opened**", async () => {
   let closed = 0;
-  await publish({}, { appId: "proj1", onSaving: () => {},
+  await publish({}, { appId: "proj1", ids, onSaving: () => {},
     port: 18080,
     open: async () => ({ provisioned: () => false, refused: () => "test refusal", close: () => { closed++; } }),
   }).catch(() => {});
@@ -192,7 +196,7 @@ for (const [why, opts, msg] of [
 ]) {
   await t(`a ${why} closes the session and keeps the ORIGINAL error, even when close throws`, async () => {
     const s = fakeSession({ ...opts, closeThrows: true });
-    await assert.rejects(publish({}, { appId: "proj1", onSaving: () => {}, port: 18080, open: async () => s }), msg,
+    await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, open: async () => s }), msg,
       "the close's own failure must not replace the reason that explains what went wrong");
     assert.strictEqual(s.closed, 1);
   });
@@ -209,7 +213,7 @@ await t("waitFor times out, and ANY error out of the wait closes the session", a
   // that is not a handover closes the handle.
   const s2 = fakeSession({ provisioned: false, refused: null });
   s2.exhausted = () => { throw new Error("did not finish setting up in time"); };
-  await assert.rejects(publish({}, { appId: "proj1", onSaving: () => {}, port: 18080, open: async () => s2 }), /in time/);
+  await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, open: async () => s2 }), /in time/);
   assert.strictEqual(s2.closed, 1);
 });
 
@@ -223,7 +227,7 @@ await t("**retrying after failures leaves exactly one session open**", async () 
     return s;
   };
   const rt = createProjectRuntime({ mount: fakeMounts().mount, publish });
-  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", port: 18080, open }, NO_HANDOFF).catch(() => {});
+  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", ids, port: 18080, open }, NO_HANDOFF).catch(() => {});
   assert.strictEqual(rt.phase, "published");
   assert.deepStrictEqual(sessions.map(s => s.closed), [1, 1, 0],
     "the two failed attempts closed theirs; the one that succeeded is OWNED, not orphaned");

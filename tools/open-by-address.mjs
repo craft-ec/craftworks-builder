@@ -240,9 +240,9 @@ try {
     const { publishApp } = await import("./publish-app.js");
     const { loadSdk } = await import("./sdk-loader.js");
     const sdk = await loadSdk();
-    const m = await (await fetch("./sdk/artefacts.json")).json();
+    const { readBuilderFile: read, readSdkManifest } = await import("./builder-files.js");
+    const m = await readSdkManifest();
     const h = window.__craftworks.session;
-    const read = async p => { const r = await fetch("./" + p); return /\\.(js|html|json)$/.test(p) ? r.text() : new Uint8Array(await r.arrayBuffer()); };
     const bad = { ...m, sdk: { ...m.sdk, sha256: "0".repeat(64) } };
     const missing = { ...m, sdk: { ...m.sdk, file: "no-such-artefact.wasm" } };
     const app = ${JSON.stringify(APP)};

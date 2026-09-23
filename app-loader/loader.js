@@ -16,7 +16,7 @@
 //      the SDK's existing provision path);
 //   3. which components show inputs is the SDK's one `canWrite` decision.
 import { load } from "./sdk/index.js";
-import { artefactBytes } from "./sdk/artefacts.js";
+import { artefactBytes, servedText } from "./sdk/artefacts.js";
 import { mountApp, sourceOf } from "./runtime.js";
 import { openPublished } from "./runtime-logic.js";
 
@@ -24,14 +24,11 @@ const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
 
 try {
-  const json = async f => {
-    const r = await fetch(`./${f}`);
-    if (!r.ok) throw new Error(`this app's ${f} could not be read (${r.status})`);
-    return r.json();
-  };
+  // This container's own files, through the SDK's one fetch: waited on (and
+  // named while waiting), never ended by a status (rule 8, craftworks-sdk#340).
+  const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
   const [art, app] = await Promise.all([json("artefacts.json"), json("app.json")]);
   const head = app?.publisher?.head;
-  if (!/^[0-9a-f]{64}$/.test(head ?? "")) throw new Error("app.json names no publisher head, so there is nothing to show");
   // Every artefact from the SDK's artefacts container on THIS node, by hash.
   // From `location.href`, never `location.origin`: a node serves an app in a
   // SANDBOXED iframe, whose origin is opaque — "null" — while its URL is the
@@ -43,8 +40,14 @@ try {
   // The APP's id (craftworks-sdk#267): the space its data was written
   // under, which this view reads. Absent, the app predates app ids and names
   // nothing this SDK can open.
+  // Both ids are checked by the SDK's own rules (`sdk.ids`), now it is loaded.
+  if (!sdk.ids.hex32(head ?? "")) throw new Error("app.json names no publisher head, so there is nothing to show");
   const appId = app?.publisher?.app;
-  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) throw new Error("app.json names no publisher app, so there is no space to read");
+  try {
+    sdk.ids.app(appId ?? "");
+  } catch (e) {
+    throw new Error(`app.json names no publisher app, so there is no space to read (${e?.message ?? e})`);
+  }
   const opened = await openPublished(sdk, {
     head,
     app: appId,
