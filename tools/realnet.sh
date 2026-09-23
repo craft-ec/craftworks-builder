@@ -21,12 +21,13 @@
 # tagged per run; the publishing identity is the server node's test key.
 #
 # Env: REALNET_HOST (root@46.224.172.252)  REALNET_A (7509)  REALNET_TUNNEL
-# (17609)  REALNET_B_REMOTE (7509)  CRAFTWORKS_SDK  CRAFTWORKS_CONTRACTS
+# (17619)  REALNET_B_REMOTE (7509)  CRAFTWORKS_SDK  CRAFTWORKS_CONTRACTS
 # STEP_MS (180000)  BUDGET_MS (1500000).
 set -u
 HOST=${REALNET_HOST:-root@46.224.172.252}
 A=${REALNET_A:-7509}
-T=${REALNET_TUNNEL:-17609}
+# 17619, not 17609: 17609 is the owner's standing demo tunnel.
+T=${REALNET_TUNNEL:-17619}
 BR=${REALNET_B_REMOTE:-7509}
 # The one lock every session shares (REALNET_LOCK only for the lock's own test).
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
@@ -76,7 +77,9 @@ bver=$(remote "/proc/$bpid/exe --version" | head -1 | sed 's/Freenet version: //
 aver=$(freenet --version 2>/dev/null | head -1 | sed 's/Freenet version: //')
 echo "RAN   A = this machine :$A (freenet ${aver:-?}, hotspot/home); B = ${HOST#*@} (freenet ${bver:-?}, datacentre)"
 echo "B before: $(tr '\n' ' ' <<<"$before")"
-if lsof -nP -iTCP:"$T" -sTCP:LISTEN >/dev/null; then echo "FAIL  port $T is taken; nothing started"; exit 2; fi
+if holder=$(lsof -nP -iTCP:"$T" -sTCP:LISTEN -t 2>/dev/null | head -1) && [ -n "$holder" ]; then
+  echo "REFUSED  port $T is held by pid $holder: $(ps -o command= -p "$holder" | cut -c1-160) — set REALNET_TUNNEL to a free port; nothing started"; exit 2
+fi
 ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$T:127.0.0.1:$BR" "$HOST" &
 tunnel=$!
 for _ in $(seq 1 40); do nc -z 127.0.0.1 "$T" 2>/dev/null && break; perl -e 'select undef,undef,undef,0.25'; done
