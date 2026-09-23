@@ -55,13 +55,19 @@ async function published() {
 
 /** `live` as each binding was ASKED for, in order. */
 let asked = [];
-async function canvas(readOnly) {
+/**
+ * The published app, mounted per source (DATA-SOURCE), with the SDK's one
+ * decision answering `answer` for every source -- "no" is a view, "yes" is
+ * writable, "unknown" is the signer not answering.
+ */
+async function canvas(readOnly, answer = readOnly ? "no" : "yes") {
   const root = new Node("div");
   const db = await published();
   const bind = db.bind.bind(db);
   asked = [];
   db.bind = (domain, opts = {}) => { asked.push(opts.live === true); return bind(domain, opts); };
-  await mountApp(root, sdk, APP, () => {}, db, "published", { alive: () => true, seed: false, readOnly });
+  const canWrite = () => ({ answer, why: answer === "unknown" ? "this node's signer is not answering" : "" });
+  await mountApp(root, sdk, APP, () => {}, { publisher: db, viewer: null }, "published", { alive: () => true, seed: false, canWrite });
   return all(root);
 }
 const WRITES = ["Add", "Save changes", "Edit", "Delete", "Cancel"];
@@ -112,11 +118,29 @@ await t("THE CONTROL: the same app on a WRITABLE session has every one of those 
   assert.ok(!nodes.some(n => n.className === "rt-view"));
 });
 
-await t("a view seeds nothing: asking it to is refused", async () => {
+await t("a published app seeds nothing: asking it to is refused", async () => {
+  const db = await published();
   await assert.rejects(
-    () => mountApp(new Node("div"), sdk, APP, () => {}, null, "idle", { alive: () => true, readOnly: true }),
-    /a view seeds nothing/,
+    () => mountApp(new Node("div"), sdk, APP, () => {}, { publisher: db }, "published", { alive: () => true, seed: true, canWrite: () => ({ answer: "no" }) }),
+    /a published app seeds nothing/,
   );
+});
+
+await t("**a published app with NO `canWrite` is refused: no default could be safe** (builder#73)", async () => {
+  const db = await published();
+  await assert.rejects(
+    () => mountApp(new Node("div"), sdk, APP, () => {}, { publisher: db }, "published", { alive: () => true, seed: false }),
+    /needs `canWrite`/,
+  );
+});
+
+await t("**UNKNOWN (the signer not answering): the inputs are shown DISABLED, with the reason** (rules 6, 8)", async () => {
+  const nodes = await canvas(false, "unknown");
+  const inputs = nodes.filter(n => n.tag === "input");
+  assert.ok(inputs.length > 0, "an unknown answer hid the form: it is not known to be a view");
+  assert.ok(inputs.every(n => n.disabled === true), "an unknown answer left an input enabled");
+  assert.ok(writingButtons(nodes).every(n => n.disabled === true), "an unknown answer left a writing button enabled");
+  assert.ok(nodes.some(n => n.className === "rt-why" && /not answering/.test(n.textContent)), "the reason is not shown");
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok view mode\n");

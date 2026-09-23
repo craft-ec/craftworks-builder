@@ -170,29 +170,32 @@ export function pageView(page, more, size) {
 }
 
 /**
- * OPEN A PUBLISHED APP: the publisher's own node gets it EDITABLE, everyone
- * else a VIEW (the owner's ruling: "if I published myself on this node, the
- * opened app definitely uses the same id"). ONE decision: this node's signer
- * is ASKED which head it signs for (`sdk.openAsked` — nothing registered,
- * minted or provisioned by asking). Equal to the app's publisher head: the
- * person opening it holds the key HERE, so it opens through the same
- * `open({ app })` the builder uses, writable. Anything else — no signer, no
- * key, another person's key, no answer — opens the publisher's tree as a view,
- * as before. Another DEVICE of the publisher is a visitor until it holds the
- * key too (Phase 6, the keyset).
- *
- * Resolves `{ db, readOnly, why, asked }`: `asked` is the OPEN asking
- * session — the one owner of "can this page write here" (its `asked()`), read
- * by whoever needs it and cached nowhere else.
+ * OPEN A PUBLISHED APP as a normal website (DATA-SOURCE; the owner: a
+ * published site has working inputs for everyone). ONE session, asked whose
+ * node this is (`sdk.openAsked`), and ONE decision, the SDK's `canWrite`:
+ * - `publisher` components read the publisher's tree: the session's own db
+ *   when this node signs for the publisher's head (the publisher on their own
+ *   site: the same tree, editable), a read-only `tree(head)` view anywhere
+ *   else;
+ * - `viewer` components read and write the VISITOR's own tree, opened with
+ *   `openOwn` (the node's key where it has one, one minted where it has none,
+ *   the tree's head made by its first entry). Only when the app has one.
+ * `canWrite(source)` is asked of the session every time and kept nowhere
+ * (one owner: the SDK's decision).
  */
-export async function openPublished(sdk, { head, app, port, artefacts }) {
-  // The session that ASKED stays open: its answer is this page's identity.
+export async function openPublished(sdk, { head, app, port, artefacts, viewer }) {
   const asked = await sdk.openAsked({ app, port, artefacts });
-  if (asked.head === head) {
-    const handle = await sdk.open({ app, port, artefacts });
-    return { db: handle.db, readOnly: false, why: "this node holds the publisher's key", asked };
-  }
-  // A visitor reads through the SAME session, which provisioned nothing.
-  const tree = await asked.tree(head);
-  return { db: tree.db, readOnly: true, why: asked.why ?? "another person's node", asked };
+  const mine = asked.canWrite(head).answer === "yes";
+  const own = viewer || mine ? await asked.openOwn() : null;
+  // The publisher's own node whose tree then does not open is SAID, never
+  // quietly shown as a view (a visitor's own tree that does not open is said
+  // on each of its components: "View only: <why>").
+  if (mine && own.answer !== "yes") throw new Error(`this node holds the publisher's key, but its tree did not open: ${own.why}`);
+  const publisher = mine ? asked.db : (await asked.tree(head)).db;
+  return {
+    asked,
+    backends: { publisher, viewer: viewer ? asked.db : null },
+    canWrite: source => asked.canWrite(source === "viewer" ? "" : head),
+    why: mine ? "this node holds the publisher's key" : asked.why ?? "another person's node",
+  };
 }

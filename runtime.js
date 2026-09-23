@@ -14,19 +14,36 @@ import { previewDb } from "./handoff.js";
  */
 export const PAGE = 50;
 
+/** A component's data source (DATA-SOURCE): `publisher` unless it says. */
+export const sourceOf = inst => inst.source ?? "publisher";
+
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
 /**
  * Mount `app` into `root`. `onData(db)` is called after every change so the host
  * (the builder's tree panel) can show live counts. Returns the db.
  */
-export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive, seed = !backend, readOnly = false } = {}) {
-  // A VIEW (builder#104, sdk#239): somebody else's published data, which this
-  // person may read and not write. A view renders NO write controls at all —
-  // no Form, no Edit or Delete — rather than controls that fail: a visitor
-  // with view access sees a view. (The SDK refuses a write anyway; that is
-  // the safety net under this, never something the UI reaches.)
-  if (readOnly && seed) throw new Error("mountApp: a view seeds nothing — it shows the publisher's data");
+export async function mountApp(root, sdk, app, onData = () => {}, backend = null, phase = "idle", { alive, seed = !backend, canWrite } = {}) {
+  // WHOSE DATA EACH COMPONENT SHOWS (DATA-SOURCE, builder#113). `backend` is
+  // either ONE db -- the person's own project, which they write -- or, for a
+  // PUBLISHED app opened by address, a db per source:
+  //   `publisher`: the publisher's tree (their own session's db on their own
+  //     node, a read-only `tree(head)` db anywhere else);
+  //   `viewer`: the viewer's OWN tree, which they write (null when the app
+  //     has no viewer component).
+  // Which components show inputs is the SDK's ONE decision, `canWrite(source)`
+  // -> {answer: yes|no|unknown, why}, ASKED each render and kept nowhere here.
+  // "no": no write controls at all -- no Form, no Edit or Delete -- rather
+  // than controls that fail (the SDK refuses a write anyway; that is the net
+  // under this). "unknown": the controls are shown DISABLED, with why.
+  const bySource = backend && "publisher" in backend;
+  // NO DEFAULT for a published app (builder#73): without the decision a view
+  // would show inputs -- the unsafe direction. One db is the person's own.
+  if (bySource && typeof canWrite !== "function") {
+    throw new Error("mountApp: a published app needs `canWrite` — without it every component would show inputs, on somebody else's data too");
+  }
+  if (bySource && seed) throw new Error("mountApp: a published app seeds nothing — it shows its sources' data");
+  const may = inst => (bySource ? canWrite(sourceOf(inst)) : { answer: "yes", why: "" });
   // NO DEFAULT (builder#73). `() => true` made the guard fail OPEN: a mount
   // whose runtime was disposed, switched or edited away was never refused, and
   // nothing said the guard was missing. A caller with no owner to ask says so
@@ -49,8 +66,21 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // (`previewDb`): a delete made in it is the only proof a handoff accepts
   // that a person removed a row, and a seed row is handed off by its place in
   // the definition (builder#83).
-  const { db, problems, schemas } = await openApp(sdk, app, backend ?? previewDb(new sdk.Db()), { seed });
-  if (!alive()) return null;
+  // ONE openApp PER db a source reads: each defines the app's domains (a view
+  // of the publisher's tree defines nothing new: the same schema is a no-op).
+  const sources = bySource ? backend : { publisher: backend ?? previewDb(new sdk.Db()) };
+  const opened = new Map();
+  for (const d of new Set(Object.values(sources).filter(Boolean))) {
+    opened.set(d, await openApp(sdk, app, d, { seed }));
+    if (!alive()) return null;
+  }
+  const dbOf = inst => {
+    const d = sources[sourceOf(inst)] ?? (bySource ? null : sources.publisher);
+    return d && opened.get(d).db;
+  };
+  const db = opened.get(sources.publisher ?? [...opened.keys()][0]).db;
+  const problems = [...new Set([...opened.values()].flatMap(o => o.problems))];
+  const schemas = Object.assign({}, ...[...opened.values()].map(o => o.schemas));
   const editing = {}; // domain → record being edited
   const report = d => { if (alive()) onData(d); };
 
@@ -86,11 +116,15 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const bindings = [];
   const shared = new Map();
   for (const inst of app.components) {
-    const live = bindsLive(inst, readOnly);
+    const cdb = dbOf(inst);
+    // A viewer component with no viewer db (the app was opened without one):
+    // nothing to read. Said on the component, never a read of someone else's.
+    if (!cdb) { bindings.push(null); continue; }
+    const live = bindsLive(inst, may(inst).answer !== "yes");
     const reverse = readsNewestFirst(inst.type);
-    const key = `${inst.domain}\u0000${live}\u0000${PAGE}\u0000${reverse}`;
+    const key = `${sourceOf(inst)}\u0000${inst.domain}\u0000${live}\u0000${PAGE}\u0000${reverse}`;
     if (!shared.has(key)) {
-      const b = db.bind(inst.domain, { live, limit: PAGE, reverse });
+      const b = cdb.bind(inst.domain, { live, limit: PAGE, reverse });
       // THE BINDING MUST SAY IT READS WHAT WAS ASKED FOR.
       //
       // An SDK too old to know an option drops it without a word: at an old
@@ -162,7 +196,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // domain point at the SAME object — so subscribing per component would
   // subscribe twice and re-render twice for one change, and reloading per
   // component would read the same rows twice.
-  const each = [...new Set(bindings)];
+  const each = [...new Set(bindings.filter(Boolean))];
   // A change resets what was fetched past the page: new rows shift the page
   // itself, so pages fetched against the old one could leave a gap or repeat
   // a row. Back to the first page is honest; a stitched-together one is not.
@@ -193,11 +227,13 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   };
 
   function form(inst, schema) {
+    const db = dbOf(inst);
+    const w = may(inst);
     const rec = editing[inst.domain];
     const inputs = {};
     const err = el("p", { className: "rt-err" });
     const rows = schema.fields.map(f => {
-      const i = el("input", { type: inputType(f.kind), name: f.name });
+      const i = el("input", { type: inputType(f.kind), name: f.name, disabled: w.answer !== "yes" });
       if (f.kind === "float") i.step = "any";
       const v = rec?.fields[f.name];
       if (f.kind === "bool") i.checked = !!v;
@@ -205,7 +241,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
       inputs[f.name] = i;
       return el("label", { className: "rt-row" }, el("span", { textContent: f.name + (f.required ? " *" : "") }), i);
     });
-    const save = el("button", { className: "pri", textContent: rec ? "Save changes" : "Add" });
+    const save = el("button", { className: "pri", textContent: rec ? "Save changes" : "Add", disabled: w.answer !== "yes", title: w.why || "" });
     save.onclick = () => guard(async () => {
       const raw = Object.fromEntries(schema.fields.map(f => [f.name, f.kind === "bool" ? inputs[f.name].checked : inputs[f.name].value]));
       const fields = toFields(schema, raw);
@@ -221,14 +257,16 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
       await changed();
     }, err);
     const cancel = rec && el("button", { textContent: "Cancel", onclick: () => { delete editing[inst.domain]; render(); } });
-    return [rows, el("div", { className: "rt-actions" }, save, cancel || ""), err];
+    const why = w.answer === "unknown" ? el("p", { className: "rt-why", role: "note", textContent: `Cannot tell yet whether you may write here: ${w.why}` }) : "";
+    return [rows, el("div", { className: "rt-actions" }, save, cancel || ""), why, err];
   }
 
-  const actions = (inst, r) => el("span", { className: "rt-actions" },
-    el("button", { textContent: "Edit", onclick: () => { editing[inst.domain] = r; render(); } }),
-    el("button", { textContent: "Delete", onclick: async () => { await db.delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
-  // A view's rows carry no actions: nothing in a view writes.
-  const rowActions = (inst, r) => (readOnly ? "" : actions(inst, r));
+  const actions = (inst, r, w) => el("span", { className: "rt-actions" },
+    el("button", { textContent: "Edit", disabled: w.answer !== "yes", title: w.why || "", onclick: () => { editing[inst.domain] = r; render(); } }),
+    el("button", { textContent: "Delete", disabled: w.answer !== "yes", title: w.why || "", onclick: async () => { await dbOf(inst).delete(inst.domain, r.id); if (editing[inst.domain]?.id === r.id) delete editing[inst.domain]; await changed(); } }));
+  // Rows a component may not write carry no actions ("no"), or disabled ones
+  // with the reason ("unknown").
+  const rowActions = (inst, r) => { const w = may(inst); return w.answer === "no" ? "" : actions(inst, r, w); };
 
   // WHAT THE VIEW SAYS ABOUT ITS OWN EXTENT.
   //
@@ -246,7 +284,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
       btn.disabled = true;
       const last = view.rows[view.rows.length - 1];
       try {
-        const next = await db.scan(inst.domain, { limit: PAGE, reverse: b.reverse, after: last.id });
+        const next = await dbOf(inst).scan(inst.domain, { limit: PAGE, reverse: b.reverse, after: last.id });
         beyond.set(b, { rows: [...m.rows, ...next], ended: next.length < PAGE, err: "" });
       } catch (e) {
         // A failed read proves nothing about the end — it stays "may be more".
@@ -261,7 +299,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
       m.err ? el("span", { className: "rt-err", textContent: ` ${m.err}` }) : "");
   }
 
-  const viewOf = i => pageView(bindings[i].getSnapshot(), moreOf(bindings[i]), PAGE);
+  const viewOf = i => (bindings[i] ? pageView(bindings[i].getSnapshot(), moreOf(bindings[i]), PAGE) : pageView([], moreOf(null), PAGE));
 
   function table(inst, schema, i) {
     const view = viewOf(i);
@@ -298,12 +336,12 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
         title: "Not yet published to your node — closing this tab now would lose them",
       })] : []),
       ...problems.map(p => el("p", { className: "rt-err", textContent: p })),
-      ...(readOnly ? [el("p", { className: "rt-view", role: "note", textContent: "View only — somebody else's published data." })] : []),
-      // A FORM IS A WRITE: a view does not render one at all. Skipped in
-      // place (flatMap), so `i` stays the component's index — the bindings
-      // are indexed by it.
+      // A FORM IS A WRITE: a component that may not write ("no") does not
+      // render one at all. Skipped in place (flatMap), so `i` stays the
+      // component's index — the bindings are indexed by it.
       ...app.components.flatMap((inst, i) => {
-        if (readOnly && inst.type === "form") return [];
+        const w = may(inst);
+        if (w.answer === "no" && inst.type === "form") return [];
         const schema = schemas[inst.domain];
         const body = !schema ? el("p", { className: "rt-err", textContent: `No schema for “${inst.domain}”.` })
           : RENDER[inst.type] ? RENDER[inst.type](inst, schema, i)
@@ -316,7 +354,9 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
           : "";
         return el("section", { className: "rt-comp" },
           el("h4", {}, `${byType[inst.type]?.label ?? inst.type} · ${inst.domain}`,
-            bindsLive(inst, readOnly) ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
+            bindsLive(inst, w.answer !== "yes") ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
+          w.answer === "no" ? el("p", { className: "rt-view", role: "note", textContent: sourceOf(inst) === "publisher" ? "View only — somebody else's published data." : `View only: ${w.why}` }) : "",
+          !bindings[i] && inst.type !== "form" ? el("p", { className: "rt-err", textContent: "This component shows your own data, and this app was opened without it." }) : "",
           ended, body);
       }));
   }
