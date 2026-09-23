@@ -9,7 +9,7 @@
 //     every app of this SDK build, PUT here only so it is on this node's
 //     network; a second PUT of it is the same contract;
 //   * the APP's container — the loader, the runtime, the SDK's JavaScript,
-//     `app.json` naming the publisher's head, and `artefacts.json` naming the
+//     `app.json` naming the head of the app's tree, and `artefacts.json` naming the
 //     artefacts by hash. Its address IS the app's address.
 //
 // No DOM. `session` is the SDK's (`put_contract`/`put_status`), `sdk` the
@@ -75,13 +75,13 @@ export async function publishApp(app, {
   if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
   }
-  // AND THE APP ID it is written under (craftworks-sdk#267): a visitor's
-  // session must open the SAME app's space in the publisher's tree, or it
+  // AND THE APP ID it is written under (craftworks-sdk#267): every user's
+  // session must open the SAME app's space in the app's tree, or it
   // reads an empty one. Checked BEFORE anything is PUT: it used to be checked
   // after the artefacts container went out, so a refused publication had
   // already put something (its test sat after the file's exit and never ran).
   if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) {
-    throw new Error("publish: no app id, so a visitor could not find this app's data in the publisher's tree");
+    throw new Error("publish: no app id, so a user could not find this app's data in its tree");
   }
   const code = bytesOf(await read("sdk/webapp.wasm"));
   const put = state => session.put_contract(code, sdk.webapp.params(state), state);
@@ -96,8 +96,9 @@ export async function publishApp(app, {
     throw new Error(`the SDK's artefacts container is ${artefactsKey}, not the ${manifest.container?.address} its manifest names`);
   }
 
-  // 2. The app, naming its data: the publisher's head. A visitor opens it by
-  // address and READS it (published data is readable by default).
+  // 2. The app, naming its data: the head of the tree it was built on. Any
+  // user opens it by address and READS it (published data is readable by
+  // default).
   const sdkFiles = {};
   for (const [at, from] of Object.entries(appFiles(manifest))) sdkFiles[at] = await read(from);
   const published = { ...app, publisher: { head: headId, app: appId } };

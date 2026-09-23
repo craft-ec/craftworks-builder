@@ -8,11 +8,12 @@
 //      its hash before it runs — a mismatch is refused and the app does not
 //      load; an artefact nobody serves fails naming which one and its hash;
 //   2. this node's signer is ASKED whose it is (`openPublished`), and the
-//      app opens as a NORMAL WEBSITE: each component shows its SOURCE -- the
-//      publisher's tree (`app.json`'s `publisher.head`, editable only on the
-//      publisher's own node, a read-only view anywhere else) or the VISITOR's
-//      own tree, which every visitor writes (their key and tree are made on
-//      their first entry, through the SDK's existing provision path);
+//      app opens as a NORMAL WEBSITE where everyone is a user: each
+//      component shows its SOURCE -- the APP's data (the tree `app.json`'s
+//      `publisher.head` names: editable only on the node that signs for it,
+//      read-only anywhere else) or the USER's own tree (`mine`), which every
+//      user writes (their key and tree are made on their first entry, through
+//      the SDK's existing provision path);
 //   3. which components show inputs is the SDK's one `canWrite` decision.
 import { load } from "./sdk/index.js";
 import { artefactBytes } from "./sdk/artefacts.js";
@@ -39,7 +40,7 @@ try {
   say("Loading the SDK…");
   const sdk = await load(await artefactBytes(from(art.sdk)));
   say("Connecting…");
-  // The publisher's APP (craftworks-sdk#267): the space its data was written
+  // The APP's id (craftworks-sdk#267): the space its data was written
   // under, which this view reads. Absent, the app predates app ids and names
   // nothing this SDK can open.
   const appId = app?.publisher?.app;
@@ -49,7 +50,7 @@ try {
     app: appId,
     port: Number(location.port),
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
-    viewer: (app.components ?? []).some(c => sourceOf(c) === "viewer"),
+    ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
   });
   // "Reading…" is never SILENT: it says how long, and a read that ENDS is
   // shown on its component by the runtime, by name.

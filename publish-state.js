@@ -136,10 +136,10 @@ export const isLive = inst => inst?.live === true;
 /**
  * Does this component's binding follow the data LIVE? What the app declares —
  * except in a VIEW (a published app opened by address), which is always live:
- * the owner's ruling, "update live". A visitor has no Live switch to turn,
- * and a published page that never shows the publisher's next row is the bug
- * a person sees (2026-09-23, real network: the head reached the visitor's
- * node in a second, the page never re-read).
+ * the owner's ruling, "update live". A user of a published app has no Live
+ * switch to turn, and a published page that never shows the app's next row is
+ * the bug a person sees (2026-09-23, real network: the head reached the
+ * reading node in a second, the page never re-read).
  */
 export const bindsLive = (inst, readOnly) => readOnly === true || isLive(inst);
 

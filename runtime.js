@@ -27,10 +27,11 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // WHOSE DATA EACH COMPONENT SHOWS (DATA-SOURCE, builder#113). `backend` is
   // either ONE db -- the person's own project, which they write -- or, for a
   // PUBLISHED app opened by address, a db per source:
-  //   `publisher`: the publisher's tree (their own session's db on their own
-  //     node, a read-only `tree(head)` db anywhere else);
-  //   `viewer`: the viewer's OWN tree, which they write (null when the app
-  //     has no viewer component).
+  //   `publisher`: the APP's data (the tree app.json names: the session's own
+  //     db on the node that signs for it, a read-only `tree(head)` db anywhere
+  //     else);
+  //   `mine`: the USER's own tree, which they write (null when the app has no
+  //     `mine` component). Everyone is a user; there are no roles here.
   // Which components show inputs is the SDK's ONE decision, `canWrite(source)`
   // -> {answer: yes|no|unknown, why}, ASKED each render and kept nowhere here.
   // "no": no write controls at all -- no Form, no Edit or Delete -- rather
@@ -67,7 +68,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // that a person removed a row, and a seed row is handed off by its place in
   // the definition (builder#83).
   // ONE openApp PER db a source reads: each defines the app's domains (a view
-  // of the publisher's tree defines nothing new: the same schema is a no-op).
+  // of the app's tree defines nothing new: the same schema is a no-op).
   const sources = bySource ? backend : { publisher: backend ?? previewDb(new sdk.Db()) };
   const opened = new Map();
   for (const d of new Set(Object.values(sources).filter(Boolean))) {
@@ -117,7 +118,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   const shared = new Map();
   for (const inst of app.components) {
     const cdb = dbOf(inst);
-    // A viewer component with no viewer db (the app was opened without one):
+    // A `mine` component with no own db (the app was opened without one):
     // nothing to read. Said on the component, never a read of someone else's.
     if (!cdb) { bindings.push(null); continue; }
     const live = bindsLive(inst, may(inst).answer !== "yes");
@@ -355,7 +356,7 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
         return el("section", { className: "rt-comp" },
           el("h4", {}, `${byType[inst.type]?.label ?? inst.type} · ${inst.domain}`,
             bindsLive(inst, w.answer !== "yes") ? el("span", { className: "rt-live", textContent: "live", title: "updates by itself" }) : ""),
-          w.answer === "no" ? el("p", { className: "rt-view", role: "note", textContent: sourceOf(inst) === "publisher" ? "View only — somebody else's published data." : `View only: ${w.why}` }) : "",
+          w.answer === "no" ? el("p", { className: "rt-view", role: "note", textContent: sourceOf(inst) === "publisher" ? "View only — the app's data, which only its owner's identity changes." : `View only: ${w.why}` }) : "",
           !bindings[i] && inst.type !== "form" ? el("p", { className: "rt-err", textContent: "This component shows your own data, and this app was opened without it." }) : "",
           ended, body);
       }));
