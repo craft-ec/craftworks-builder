@@ -72,7 +72,7 @@ export async function publishApp(app, {
   everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)), signal = null,
   last = null, sdkVersion = null,
 }) {
-  if (!/^[0-9a-f]{64}$/.test(headId ?? "")) {
+  if (!sdk.ids.hex32(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
   }
   // AND THE APP ID it is written under (craftworks-sdk#267): every user's
@@ -80,8 +80,10 @@ export async function publishApp(app, {
   // reads an empty one. Checked BEFORE anything is PUT: it used to be checked
   // after the artefacts container went out, so a refused publication had
   // already put something (its test sat after the file's exit and never ran).
-  if (!/^[a-z0-9_-]{1,32}$/.test(appId ?? "")) {
-    throw new Error("publish: no app id, so a user could not find this app's data in its tree");
+  try {
+    sdk.ids.app(appId ?? "");
+  } catch (e) {
+    throw new Error(`publish: no app id, so a user could not find this app's data in its tree (${e?.message ?? e})`);
   }
   const code = bytesOf(await read("sdk/webapp.wasm"));
   const put = state => session.put_contract(code, sdk.webapp.params(state), state);

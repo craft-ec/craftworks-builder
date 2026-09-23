@@ -15,6 +15,7 @@ import { loadSdk } from "../sdk-loader.js";
 import { savingLabel } from "../runtime-logic.js";
 import { publish } from "../publish.js";
 import { createProjectRuntime } from "../project-runtime.js";
+const { ids } = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
 
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
 const tick = () => new Promise(r => setTimeout(r, 0));
@@ -47,7 +48,7 @@ await t("publish hands every count the session reports to onSaving, in order", a
   let emit;
   const seen = [];
   await publish({}, {
-    appId: "proj1",
+    appId: "proj1", ids,
     port: 18080,
     onSaving: n => seen.push(n),
     open: async ({ onEvent }) => { emit = onEvent; onEvent({ kind: "open" }); return { provisioned: () => true, db: {}, close() {} }; },

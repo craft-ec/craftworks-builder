@@ -108,16 +108,21 @@ export const RESERVED_PORTS = [7509, 7609];
  * empty or missing id) is REFUSED by name rather than bent into something
  * that fits, because a bent id could be another project's.
  */
-export const appIdOf = projectId => {
+export const appIdOf = (projectId, ids) => {
   const id = String(projectId ?? "").slice(0, 32);
-  if (!/^[a-z0-9_-]{1,32}$/.test(id)) {
-    throw new Error(`publish: project id \`${projectId}\` gives no app id (1–32 of a-z 0-9 _ -)`);
+  // The rule is the SDK's one statement (`sdk.ids.app`, craftworks-sdk#340),
+  // refused in its words; the builder never writes it again.
+  if (!ids?.app) throw new Error("publish: the SDK is not loaded, so no app id can be checked");
+  try {
+    ids.app(id);
+  } catch (e) {
+    throw new Error(`publish: project id \`${projectId}\` gives no app id: ${e?.message ?? e}`);
   }
   return id;
 };
 
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 0, onSaving, appId } = deps;
+  const { open, artefacts, port = 0, onSaving, appId, ids } = deps;
   const phase = p => { onPhase(p); return p; };
 
   // NO DEFAULT (builder#73). Without a listener the session's "saving N"
@@ -133,8 +138,14 @@ export async function publish(app, deps, onPhase = () => {}) {
   // WHICH APP (craftworks-sdk#267): `open()` refuses without one, and a
   // refusal from inside the SDK would arrive as "could not connect". Said
   // here, by name, before anything is opened.
-  if (typeof appId !== "string" || !/^[a-z0-9_-]{1,32}$/.test(appId)) {
-    const why = `publish: no app id for this project (${JSON.stringify(appId)}) — its data would have no place in the person's tree`;
+  // By the SDK's one rule (`ids.app`), refused here by name.
+  let bad = null;
+  if (!ids?.app) bad = "the SDK is not loaded, so the app id cannot be checked";
+  else {
+    try { ids.app(appId ?? ""); } catch (e) { bad = e?.message ?? String(e); }
+  }
+  if (bad) {
+    const why = `publish: no app id for this project (${JSON.stringify(appId)}) — its data would have no place in the person's tree: ${bad}`;
     onPhase("failed", why);
     throw new Error(why);
   }

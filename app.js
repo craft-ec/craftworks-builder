@@ -1,5 +1,6 @@
 import { loadSdk } from "./sdk-loader.js";
 import { publishApp } from "./publish-app.js";
+import { readBuilderFile, readSdkManifest } from "./builder-files.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
 import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
@@ -264,12 +265,6 @@ loadSdk().then(
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
 );
 
-/** A file the builder serves, for the app container: text, or bytes for wasm and containers. */
-async function readBuilderFile(path) {
-  const r = await fetch(`./${path}`);
-  if (!r.ok) throw new Error(`the builder could not read ${path} (${r.status})`);
-  return /\.(js|html|json)$/.test(path) ? r.text() : new Uint8Array(await r.arrayBuffer());
-}
 
 /** The published app's address, once its container is on the network. */
 let appAddress = null;
@@ -370,7 +365,7 @@ async function doPublish() {
     await rt.publish(app, {
       // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's
       // tree this project's data lives in.
-      appId: appIdOf(openedProject?.id),
+      appId: appIdOf(openedProject?.id, sdkReady?.ids), ids: sdkReady?.ids,
       open: sdkReady.open,
       artefacts: sdkReady.SHIPPED_ARTEFACTS,
       // NAMED, never defaulted. The node to publish to is a decision: it
@@ -417,8 +412,8 @@ async function doPublish() {
         let put = null;
         try {
           put = await publishApp(app, {
-            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id),
-            manifest: await (await fetch("./sdk/artefacts.json")).json(),
+            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
+            manifest: await readSdkManifest(),
             read: readBuilderFile, subtle: crypto.subtle,
             // Unchanged since the last acknowledged publication (same app
             // address, same SDK): nothing is PUT again.
@@ -431,7 +426,7 @@ async function doPublish() {
           // and the remount right after a publish replaces it — the field
           // written onto it was gone before a tool polling every 500 ms
           // could read it (builder#104's open-by-address acceptance, on this branch).
-          globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id) };
+          globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id, sdkReady?.ids) };
         } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
           const rec = await projects?.published?.({
