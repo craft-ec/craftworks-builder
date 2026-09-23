@@ -403,8 +403,12 @@ async function doPublish() {
             read: readBuilderFile, subtle: crypto.subtle,
           });
           appAddress = put.address;
-          // The acceptance seam: what was PUT, for the tools that open it elsewhere.
-          if (globalThis.__craftworks) globalThis.__craftworks.published = { ...put, head: res.session.headId() };
+          // The acceptance seam: what was PUT, for the tools that open it
+          // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT,
+          // and the remount right after a publish replaces it — the field
+          // written onto it was gone before a tool polling every 500 ms
+          // could read it (builder#104's visitor acceptance, on this branch).
+          globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id) };
         } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
         try {
           await projects?.published?.({

@@ -53,7 +53,7 @@ try {
   }
   const tPublish = Date.now();
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
-  const pub = await until(builder, `const p = window.__craftworks?.published; return p ? p : null;`, 180_000, 500);
+  const pub = await until(builder, `const p = window.__craftworksPublished; return p ? p : null;`, 180_000, 500);
   const publishMs = Date.now() - tPublish;
   check(!!pub?.address, `Publish on A put the app on the network, in ${publishMs} ms (click → both containers acknowledged)`, pub?.address ? { address: pub.address, head: pub.head?.slice(0, 16) } : pub);
   if (!pub?.address) throw new Error("nothing to open");
@@ -124,8 +124,10 @@ try {
     const bad = { ...m, sdk: { ...m.sdk, sha256: "0".repeat(64) } };
     const missing = { ...m, sdk: { ...m.sdk, file: "no-such-artefact.wasm" } };
     const app = ${JSON.stringify(APP)};
-    const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), manifest: bad, read, subtle: crypto.subtle });
-    const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), manifest: missing, read, subtle: crypto.subtle });
+    // The SAME app id the real publication used (one project, one app).
+    const appId = window.__craftworksPublished.app;
+    const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: bad, read, subtle: crypto.subtle });
+    const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: missing, read, subtle: crypto.subtle });
     return { mismatch: a.address, missing: b.address, sha: m.sdk.sha256 };`);
   for (const [kind, addr, expect] of [["mismatch", tampered.mismatch, /sha256|hash|mismatch|does not match/i], ["missing", tampered.missing, /no-such-artefact\.wasm/]]) {
     const tab = await fresh.tab(`visitor-${kind}`);
