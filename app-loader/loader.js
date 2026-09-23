@@ -26,6 +26,7 @@ const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
 
 try {
+  // Ends on !r.ok ONLY because these files ship in this SAME container: never reuse it for anything from another container.
   const json = async f => {
     const r = await fetch(`./${f}`);
     if (!r.ok) throw new Error(`this app's ${f} could not be read (${r.status})`);
