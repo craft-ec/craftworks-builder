@@ -116,3 +116,16 @@ console.log("ok publish-state");
     assert.strictEqual(rowState("published", null), UNPUBLISHED);
   });
 }
+
+// A PUBLISHED PROJECT REOPENS CONNECTED (the owner's report: the builder said
+// "not published" about an app that was). The decision is its newest
+// publication naming the app's address; a project never published, or one
+// whose record predates addresses, opens in preview as before.
+{
+  const { reconnectsOnOpen } = await import("../publish-state.js");
+  assert.equal(reconnectsOnOpen({ publication: { app_contract_id: "8HZdrJy3WKaHUYsAiLwoD4DmDJb3N8zqdA7B2GLcV3di" } }), true,
+    "a published project reopened in preview");
+  for (const p of [{}, { publication: null }, { publication: { app_contract_id: null } }, { publication: { app_contract_id: "" } }, null]) {
+    assert.equal(reconnectsOnOpen(p), false, `reconnected a project that was never published: ${JSON.stringify(p)}`);
+  }
+}

@@ -144,6 +144,15 @@ export const isLive = inst => inst?.live === true;
 export const bindsLive = (inst, readOnly) => readOnly === true || isLive(inst);
 
 /**
+ * Does opening this project CONNECT it to its published tree? Yes when it has
+ * been published (its newest publication names the app's address): the
+ * builder reopens it on the node through the same path Publish takes, so a
+ * row added after a reload lands in the published tree — never an in-memory
+ * preview that says "not published" about an app that is (the owner's report).
+ */
+export const reconnectsOnOpen = project => typeof project?.publication?.app_contract_id === "string" && project.publication.app_contract_id !== "";
+
+/**
  * The SDK's row-state code, as one of the states above.
  *
  * The SDK says what a write is DOING; this file says what a person reads.
