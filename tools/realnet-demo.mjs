@@ -66,6 +66,15 @@ const step = (ok, what, evidence) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${stepN}. ${what}${evidence === undefined ? "" : `  — ${typeof evidence === "string" ? evidence : JSON.stringify(evidence)}`}`);
   return ok;
 };
+/**
+ * WHERE AN OPEN WENT: the loader's own phase stamps (app-loader/loader.js
+ * `__craftworksOpen`, ms since the app frame's navigation began), printed
+ * beside the step, whose one number cannot split a slow open.
+ */
+async function phases(tab, frame, who) {
+  const p = await tab.evaluateIn(frame, `return globalThis.__craftworksOpen ?? null;`).catch(e => ({ unreadable: e.message }));
+  console.log(`TIME  ${who} open, ms since its app frame began: ${p ? Object.entries(p).map(([k, v]) => `${k} ${typeof v === "number" ? v : JSON.stringify(v)}`).join(", ") : "no phases recorded (a loader from before them)"}`);
+}
 async function until(tab, expr, ms, every = 500, frame = null) {
   const end = Date.now() + ms; let v;
   do { v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(e => ({ error: e.message })); if (v && !v.error) return v; await sleep(every); } while (Date.now() < end);
@@ -109,6 +118,7 @@ try {
   const t2 = Date.now();
   await vis.navigate(url(A.ws));
   const seen = await until(vis, has(["alpha", "beta"]), STEP_MS, 500, frameOf(A.ws));
+  await phases(vis, frameOf(A.ws), `${A.label}'s view`);
   // The APP's components are a view here: no notes form, and the notes
   // table carries no writing button. (The guestbook is the user's own and
   // may be writable; nothing is typed on A.)
@@ -121,6 +131,7 @@ try {
   const t3 = Date.now();
   await own.navigate(url(B.ws));
   const editable = await until(own, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, STEP_MS, 500, frameOf(B.ws));
+  await phases(own, frameOf(B.ws), `the owner's site on ${B.label}`);
   if (!step(!!editable, `the app owner's site on ${B.label} opens EDITABLE (${Date.now() - t3} ms)`, editable ? undefined : await own.evaluateIn(frameOf(B.ws), `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message))) throw new Error("no editable site to write from");
   const onSite = js => own.evaluateIn(frameOf(B.ws), js);
   const add = t => onSite(addTo("notes", t));
@@ -190,6 +201,7 @@ try {
     return null;
   };
   const vReady = await until(vt, `return (${comp("Form", "guests")}?.querySelector("input[name=title]") && !${comp("Form", "notes")} && ${JSON.stringify(["alpha", "beta"])}.every(t => [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].some(td => td.textContent === t)) && 1) || null;`, STEP_MS, 500, frameOf(V.ws));
+  await phases(vt, frameOf(V.ws), V.label);
   if (vReady && MUTANT) console.log(`MUTANT ${MUTANT}: ${JSON.stringify(await mutate().catch(e => e.message))}`);
   if (!step(!!vReady, `${V.label} opens it: the app's rows as a view, and the guestbook writable (${Date.now() - t9} ms)`, vReady ? undefined : await vt.evaluateIn(frameOf(V.ws), `return { status: document.getElementById("status")?.textContent?.slice(0, 300), mounted: document.querySelectorAll(".rt-comp").length, headings: [...document.querySelectorAll(".rt-comp h4")].map(h => h.textContent), body: document.body?.innerText?.slice(0, 200) };`).catch(e => e.message))) throw new Error("no guestbook to write");
   const t10 = Date.now();
@@ -200,6 +212,7 @@ try {
   const t11 = Date.now();
   await vt.reload();
   const kept = await until(vt, hasIn("guests", [GUEST]), STEP_MS, 500, frameOf(V.ws));
+  await phases(vt, frameOf(V.ws), `${V.label} reloaded`);
   step(!!kept, `the user's entry survives a RELOAD of ${V.label} (${Date.now() - t11} ms)`, kept ? undefined : await vt.evaluateIn(frameOf(V.ws), titles("guests")).catch(e => e.message));
   // The app's data is untouched: B's own notes and A's view of them
   // hold exactly the app's rows, and the guest entry is in neither.

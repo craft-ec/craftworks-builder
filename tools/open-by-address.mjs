@@ -137,6 +137,11 @@ try {
   const shown = await visitor.evaluateIn(`${pub.address}/?__sandbox=1`, `return { status: document.getElementById("status")?.textContent, view: document.querySelector(".rt-view")?.textContent ?? null, inputs: document.querySelectorAll("input").length, writing: [...document.querySelectorAll("button")].map(b => b.textContent).filter(t => ["Add","Save changes","Edit","Delete","Cancel"].includes(t)) };`);
   check(Array.isArray(seen) && ["alpha", "beta"].every(x => seen.includes(x)), `B (fresh profile) shows A's ${Array.isArray(seen) ? seen.length : 0} rows; first load ${firstLoadMs} ms (navigate → rows painted)`, seen);
   check(shown.inputs === 0 && shown.writing.length === 0 && !!shown.view, "B renders a VIEW: no input, no writing button", shown);
+  // WHERE THE OPEN WENT (the loader's phase stamps): recorded, each once, in the order the loader runs them.
+  const ph = await visitor.evaluateIn(`${pub.address}/?__sandbox=1`, `return globalThis.__craftworksOpen ?? null;`);
+  const order = ["loader", "files", "sdk", "opened", "rows"];
+  check(!!ph && order.every(k => Number.isInteger(ph[k])) && order.every((k, i) => i === 0 || ph[order[i - 1]] <= ph[k]) && Number.isInteger(ph.head),
+    `B's first load says where it went (ms since its app frame began): ${ph ? Object.entries(ph).map(([k, v]) => `${k} ${v}`).join(", ") : "no phases"}`, ph);
 
   // ---- 3. A WRITES; B sees it after a reload --------------------------------
   // THE PROBE ON (core dev): if the write is slow, the trace says what it is

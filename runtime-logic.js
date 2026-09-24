@@ -204,6 +204,8 @@ export async function openPublished(sdk, { head, seq = 0, app, port, artefacts, 
     asked,
     backends: { publisher: ownsApp ? asked.db : view.db, mine: ownData ? asked.db : null },
     waitingFor: () => view?.waitingFor?.() ?? "",
+    // The app's tree's head, "" until it has one (for timing an open).
+    headId: () => (ownsApp ? asked.headId?.() : view.headId?.()) ?? "",
     canWrite: source => asked.canWrite(source === "mine" ? "" : head),
     why: ownsApp ? "this node holds the key to the app's data" : asked.why ?? "another person's node",
   };
