@@ -87,9 +87,12 @@ function nodeLog(node) {
 }
 export function ringAt(lines, t) {
   const gateways = new Set(lines.flatMap(l => [...l.text.matchAll(/gateway=([\d.]+:\d+)/g)].map(m => m[1])));
+  // A gateway HOST serves more than one port (5.9.111.215 :31337 and :31338, measured): any connection to a
+  // gateway's IP is a gateway connection, never the first PEER.
+  const gatewayIps = new Set([...gateways].map(a => a.split(":")[0]));
   const empties = lines.filter(l => /ring empty/.test(l.text));
   const conns = lines.filter(l => /connection established peer_addr=/.test(l.text)).map(l => ({ t: l.t, addr: l.text.match(/peer_addr=([\d.]+:\d+)/)?.[1] }));
-  const firstPeer = conns.find(c => c.addr && !gateways.has(c.addr)) ?? null;
+  const firstPeer = conns.find(c => c.addr && !gatewayIps.has(c.addr.split(":")[0])) ?? null;
   return {
     gateways: [...gateways],
     ring_empty_last_before: empties.filter(l => l.t <= t).at(-1)?.t ?? null,
@@ -101,14 +104,21 @@ export function ringAt(lines, t) {
 }
 export function classify503({ body, t, ring }) {
   const afterPeer = ring.first_peer !== null && ring.first_peer <= t;
-  const joinBody = /has not joined/i.test(body ?? "");
-  if (joinBody && !afterPeer) return { cls: "join window (F60)", flagged: false };
+  // Two bodies of the join window, measured: F60's text, and the node's own "Connecting to Freenet" recovery
+  // page (freenet-core server/errors/assets/connecting.html: "served (503) while the peer is up but not yet
+  // rejoined to the ring").
+  if (!afterPeer && /has not joined/i.test(body ?? "")) return { cls: "join window (F60 body)", flagged: false };
+  if (!afterPeer && /Recovery redirect|not yet\s+rejoined/i.test(body ?? "")) return { cls: "join window (the node's recovery page)", flagged: false };
   return { cls: afterPeer ? "FLAGGED: 503 AFTER a peer connected" : "FLAGGED: another body", flagged: true };
 }
 const got503 = [];
 function record503(ctx, node, { source, t, body }) {
   const listenAt = node.started_ms + (node.ready_ms ?? 0);
-  got503.push({ node, source, t, body: (body ?? "").replace(/\s+/g, " ").trim().slice(0, 160), since_listen_ms: t - listenAt });
+  // The WHOLE body is kept in the run's logs; the table shows its start.
+  const { appendFileSync, mkdirSync } = ctx.fs;
+  mkdirSync(ctx.logsOf(node.label), { recursive: true });
+  appendFileSync(join(ctx.logsOf(node.label), "503-bodies.txt"), `==== ${new Date(t).toISOString()} ${source}\n${body ?? ""}\n`);
+  got503.push({ node, source, t, full: body ?? "", body: (body ?? "").replace(/\s+/g, " ").trim().slice(0, 160), since_listen_ms: t - listenAt });
 }
 function report503(ctx) {
   if (!got503.length) { ctx.say("503   none: no node answered 503 this run"); return 0; }
@@ -117,7 +127,7 @@ function report503(ctx) {
   for (const r of got503) {
     const listenAt = r.node.started_ms + (r.node.ready_ms ?? 0);
     const ring = ringAt(nodeLog(r.node), r.t);
-    const c = classify503({ body: r.body, t: r.t, ring });
+    const c = classify503({ body: r.full, t: r.t, ring });
     if (c.flagged) flagged += 1;
     const rel = v => (v === null ? "none" : `${v - listenAt}`);
     ctx.say(`503   ${r.node.label} | ${r.source} | ${r.since_listen_ms} | ${JSON.stringify(r.body)} | ${rel(ring.ring_empty_last_before)} | ${rel(ring.first_peer)}${ring.first_peer_addr ? ` (${ring.first_peer_addr})` : ""} | ${c.cls}`);
@@ -188,6 +198,8 @@ export async function run(ctx) {
     const stamps = await tab.evaluateIn(frameOf(O.ws), `return globalThis.__craftworksOpen ?? null;`).catch(() => null);
     // A dead open says what the page SHOWED (the node's own error page, when that is what came back).
     const shown = rows ? null : await tab.evaluate(`return document.body?.innerText?.slice(0, 300) ?? null;`).catch(e => `(unreadable: ${e.message})`);
+    // Where the tab ENDED UP: the node's recovery page sends a top-level tab to its dashboard `/`.
+    const ended_at = rows ? null : await tab.evaluate(`return location.href;`).catch(e => `(unreadable: ${e.message})`);
     const served = await fetch(`${appUrl(O.ws)}artefacts.json`, { signal: AbortSignal.timeout(30_000) }).then(r => r.json()).then(j => j?.sdk?.sha256 ?? null, () => null);
     const ran = ctx.sdkRan({ header: ctx.header, served, stamps });
     cap.stop();
@@ -206,13 +218,13 @@ export async function run(ctx) {
     if (doc?.response?.status === 503) record503(ctx, O, { source: "navigation", t: doc.response.t, body: shown });
     const sample = {
       opener: name, ok: !!rows, open_ms: rows ? t1 - t0 : null, node_ready_ms: O.ready_ms, stamps,
-      document_status: doc?.response?.status ?? null, ...(rows ? {} : { shown }),
+      document_status: doc?.response?.status ?? null, ...(rows ? {} : { shown, ended_at }),
       sdk_ran: ran.ok, ...(ran.ok ? {} : { refused: ran.why }),
       pieces: { asked: pieces.length, ok: ok.length, cancelled: pieces.filter(r => r.failed?.canceled).length, median_ms: ms.length ? ms[ms.length >> 1] : null },
     };
     opens.push({ ...sample, t0, t1, keys: [addr, ...new Set(pieces.map(r => r.url.match(piece)[1]))], prior: [...prior] });
     prior.push(O);
-    say(`OPEN  ${name}: ${rows ? `${t1 - t0} ms` : `rows not within ${STEP_MS / 1000} s (the app's URL answered ${sample.document_status ?? "nothing"}; the page showed ${JSON.stringify(shown)})`}; node ready ${O.ready_ms} ms; pieces asked ${sample.pieces.asked}, 200 ${sample.pieces.ok}, cancelled ${sample.pieces.cancelled}, median ${sample.pieces.median_ms} ms; sdk ${ran.ok ? "is the header's" : `REFUSED: ${ran.why}`}; stamps ${JSON.stringify(stamps)}`);
+    say(`OPEN  ${name}: ${rows ? `${t1 - t0} ms` : `rows not within ${STEP_MS / 1000} s (the app's URL answered ${sample.document_status ?? "nothing"}; the tab ended at ${ended_at}; it showed ${JSON.stringify(shown)})`}; node ready ${O.ready_ms} ms; pieces asked ${sample.pieces.asked}, 200 ${sample.pieces.ok}, cancelled ${sample.pieces.cancelled}, median ${sample.pieces.median_ms} ms; sdk ${ran.ok ? "is the header's" : `REFUSED: ${ran.why}`}; stamps ${JSON.stringify(stamps)}`);
     return sample;
   });
 

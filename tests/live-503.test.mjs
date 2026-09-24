@@ -9,17 +9,19 @@ const lines = [
   { t: 1000, text: "GET client: ring empty — initial target falls back to configured gateway instance_id=X gateway=5.9.111.215:31337" },
   { t: 1500, text: "NAT traversal connection established peer_addr=5.9.111.215:31337" },
   { t: 4000, text: "GET relay advance: ring empty — forwarding to configured gateway gateway=5.9.111.215:31337" },
+  { t: 2000, text: "NAT traversal connection established peer_addr=5.9.111.215:31338" },
   { t: 5000, text: "NAT traversal connection established peer_addr=10.0.0.9:4000" },
 ];
 const ring = ringAt(lines, 3000);
 assert.deepEqual(ring.gateways, ["5.9.111.215:31337"]);
 assert.equal(ring.first_connection, 1500, "the first connection (to the gateway) was not read");
-assert.equal(ring.first_peer, 5000, "a GATEWAY connection was counted as the first peer");
+assert.equal(ring.first_peer, 5000, "a GATEWAY connection (the gateway's host on another port) was counted as the first peer");
 assert.equal(ring.ring_empty_last_before, 1000);
 assert.equal(ring.ring_empty_after, true);
 console.log("ok the ring state: gateways from the ring-empty lines, and the first peer is the first NON-gateway connection");
 
-assert.deepEqual(classify503({ body: JOIN, t: 3000, ring }), { cls: "join window (F60)", flagged: false });
+assert.deepEqual(classify503({ body: JOIN, t: 3000, ring }), { cls: "join window (F60 body)", flagged: false });
+assert.deepEqual(classify503({ body: "<!doctype html><!-- Recovery redirect. This page is served (503) while the peer is up but not\n yet rejoined to the ring. -->", t: 3000, ring }), { cls: "join window (the node's recovery page)", flagged: false });
 assert.equal(classify503({ body: JOIN, t: 6000, ring: ringAt(lines, 6000) }).flagged, true, "a 503 AFTER a peer was folded into the join window");
 assert.match(classify503({ body: JOIN, t: 6000, ring: ringAt(lines, 6000) }).cls, /AFTER a peer connected/);
 assert.equal(classify503({ body: "service unavailable: timeout", t: 3000, ring }).flagged, true, "a 503 with another body was folded into the join window");

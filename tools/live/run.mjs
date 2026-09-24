@@ -5,7 +5,7 @@
 // Exit: 0 the scenario passed; 1 it failed (its own lines say where); 2 REFUSED (a header field unreadable,
 // TMPDIR not the run's own); 3 NOT RUN (the box stayed busy for the whole wait); 130/143 interrupted.
 // A scenario is `tools/live/scenarios/<name>.mjs` exporting `run(ctx)`, resolving to `{ failed }`.
-import { writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as eventlog from "./eventlog.mjs";
@@ -69,6 +69,7 @@ for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
 const ctx = {
   dir, header: head, args, nodes, say, eventlog, sdkRan, summarize, resolvable, budgetLeftMs,
   logsOf: label => join(dir, "logs", label),
+  fs: { appendFileSync, mkdirSync },
   /** Register a SYNCHRONOUS clean-up (kill by recorded pid) run on every exit, a signal included. */
   onEnd: fn => ends.push(fn),
   /** Run one arm; every sample is streamed to samples.jsonl as it completes. */
