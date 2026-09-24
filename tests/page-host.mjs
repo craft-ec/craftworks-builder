@@ -229,6 +229,11 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
  * says nothing about WHY, and what the page showed is the answer nearly every
  * time.
  */
+/** The browser-level DevTools WebSocket URL of the Chrome on `debug` (its `/json/version`): Chrome's own debug endpoint, never a node. */
+export async function browserDebuggerUrl(debug) {
+  return (await (await fetch(`http://127.0.0.1:${debug}/json/version`)).json()).webSocketDebuggerUrl;
+}
+
 /** Evaluate `expr` in the out-of-process iframe target whose URL contains `urlPart`; undefined if there is none. */
 async function evaluateInTarget(debug, urlPart, expr, label) {
   const t = (await (await fetch(`http://127.0.0.1:${debug}/json/list`)).json()).find(x => x.type === "iframe" && (x.url ?? "").includes(urlPart));
@@ -250,12 +255,24 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
   const ws = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
   let seq = 0; const waiting = new Map();
+  // Each frame's DEFAULT (main-world) execution context, by frame id: where the
+  // page's own JavaScript and its globals live. Kept from Runtime's events.
+  const mainWorld = new Map();
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+    if (m.method === "Runtime.executionContextCreated") {
+      const c = m.params?.context;
+      if (c?.auxData?.isDefault && c.auxData.frameId) mainWorld.set(c.auxData.frameId, c.id);
+    } else if (m.method === "Runtime.executionContextDestroyed") {
+      for (const [f, id] of mainWorld) if (id === m.params?.executionContextId) mainWorld.delete(f);
+    } else if (m.method === "Runtime.executionContextsCleared") {
+      mainWorld.clear();
+    }
   };
   const send = (method, params = {}) =>
     new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  await send("Runtime.enable");
   const evaluate = async expr => {
     const r = await send("Runtime.evaluate", {
       expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true,
@@ -288,9 +305,20 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
     // OUT OF PROCESS: Chrome isolates a sandboxed iframe into its own process,
     // and then it is not in this page's frame tree but a TARGET of its own.
     if (!f) return evaluateInTarget(debug, urlPart, expr, label);
-    const w = await send("Page.createIsolatedWorld", { frameId: f.id, worldName: "page-host-probe" });
-    const contextId = w.result?.executionContextId;
-    if (!contextId) throw new Error(`${label}: no context in frame ${f.url}: ${JSON.stringify(w).slice(0, 200)}`);
+    // The frame's MAIN world, never an isolated one: an isolated world shares
+    // the DOM but not the page's globals, so a probe of the page's own state
+    // (`globalThis.__cwSessions`) read EMPTY there — a non-measurement that
+    // looked like "no sessions" (engineer2's sampler). Not known yet (a frame
+    // just navigated): Runtime is re-enabled, which announces every live
+    // context again; still unknown is an error naming the frame, never a
+    // silent fallback.
+    let contextId = mainWorld.get(f.id);
+    if (!contextId) {
+      await send("Runtime.disable");
+      await send("Runtime.enable");
+      contextId = mainWorld.get(f.id);
+    }
+    if (!contextId) throw new Error(`${label}: no main-world context in frame ${f.url}`);
     const r = await send("Runtime.evaluate", {
       expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true, contextId,
     });

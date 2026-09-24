@@ -16,6 +16,9 @@
 // owner's standing permission for these runs.
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
+import { captureWire } from "./wire-capture.mjs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Every CLIENT connected to the node on `port` now: `{ pid, command, peer }` (lsof, read-only). */
 function clientsOn(port) {
@@ -46,6 +49,15 @@ if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
 // tail is long (block arrival p90 ~31 s), and said as "not within T" if hit.
 const STEP_MS = Number(process.env.STEP_MS ?? 180_000);
 const host = await openPageHost("realnet-demo", { budgetMs: Number(process.env.BUDGET_MS ?? 1_500_000) });
+// THE A-SIDE CHECK (no user-data writes through a view): every frame A's and
+// V's browsers send their node, raw (wire-capture.mjs), classified afterwards
+// by the SDK's ONE decoder (`probe classify-frames`, RN_CLASSIFY) — the step
+// in progress names each frame's window. MUTANT (V only, never through A):
+// REALNET_MUTANT=view-write | view-register-put.
+const WIRE_DIR = process.env.RN_WIRE_DIR;
+const MUTANT = process.env.REALNET_MUTANT ?? "";
+const windowOf = () => String(stepN + 1);
+const wires = [];
 let pubBrowser = null, visBrowser = null, vBrowser = null, failed = 0, stepN = 0;
 const step = (ok, what, evidence) => {
   stepN += 1;
@@ -91,6 +103,7 @@ try {
 
   // 2. OPEN BY ADDRESS THROUGH A, in a fresh profile: the rows, as a view.
   visBrowser = await openFreshBrowser("realnet-demo: another user on A");
+  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await vis.evaluate(`window.location.href = ${JSON.stringify(url(A.ws))}; return 1;`);
@@ -156,10 +169,23 @@ try {
   const strays = clientsOn(V.ws);
   step(strays.length === 0, `no client is connected to ${V.label} before its page opens (${strays.length} found)`, strays.length ? strays.map(c => ({ ...c, command: spawnSync("ps", ["-o", "command=", "-p", String(c.pid)], { encoding: "utf8" }).stdout.trim().slice(0, 200) })) : undefined);
   vBrowser = await openFreshBrowser("realnet-demo: a user who writes their own data, on V");
+  wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), windowOf, label: "V" }) });
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();
   await vt.evaluate(`window.location.href = ${JSON.stringify(url(V.ws))}; return 1;`);
+  // THE MUTANTS, inside V's OPEN window (step 9), never on A: the check must SEE them.
+  const mutate = async () => {
+    if (MUTANT === "view-write") return vt.evaluateIn(frameOf(V.ws), addTo("guests", `mutant ${tag}`));
+    if (MUTANT === "view-register-put") {
+      const framed = spawnSync(process.env.RN_FRAME_PUT, [process.env.RN_REGISTER_WASM, "01", "02"], { encoding: "utf8" });
+      if (framed.status !== 0) throw new Error(`frame-put: ${framed.stderr}`);
+      const b64 = framed.stdout.trim().split("\n");
+      return vt.evaluateIn(frameOf(V.ws), `const ws = new WebSocket("ws://127.0.0.1:${V.ws}/v1/contract/command?encodingProtocol=native"); ws.binaryType = "arraybuffer"; await new Promise(ok => ws.onopen = ok); for (const f of ${JSON.stringify(b64)}) ws.send(Uint8Array.from(atob(f), c => c.charCodeAt(0))); await new Promise(ok => setTimeout(ok, 1000)); ws.close(); return "sent";`);
+    }
+    return null;
+  };
   const vReady = await until(vt, `return (${comp("Form", "guests")}?.querySelector("input[name=title]") && !${comp("Form", "notes")} && ${JSON.stringify(["alpha", "beta"])}.every(t => [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].some(td => td.textContent === t)) && 1) || null;`, STEP_MS, 500, frameOf(V.ws));
+  if (vReady && MUTANT) console.log(`MUTANT ${MUTANT}: ${JSON.stringify(await mutate().catch(e => e.message))}`);
   if (!step(!!vReady, `${V.label} opens it: the app's rows as a view, and the guestbook writable (${Date.now() - t9} ms)`, vReady ? undefined : await vt.evaluateIn(frameOf(V.ws), `return { status: document.getElementById("status")?.textContent?.slice(0, 300), mounted: document.querySelectorAll(".rt-comp").length, headings: [...document.querySelectorAll(".rt-comp h4")].map(h => h.textContent), body: document.body?.innerText?.slice(0, 200) };`).catch(e => e.message))) throw new Error("no guestbook to write");
   const t10 = Date.now();
   const typed = await vt.evaluateIn(frameOf(V.ws), addTo("guests", GUEST));
@@ -176,6 +202,7 @@ try {
   const want = ["alpha", "beta", ADDED, EDIT_TO].sort();
   step(JSON.stringify([...(pubNotes ?? [])].sort()) === JSON.stringify(want) && JSON.stringify([...(aNotes ?? [])].sort()) === JSON.stringify(want),
     `the app's notes are untouched by the user's write (on ${B.label}'s site and ${A.label}'s view)`, { ownerSite: pubNotes, onA: aNotes });
+  wireCheck();
 } catch (e) {
   console.log(`FAIL  the run stopped after step ${stepN}: ${e.message}`);
   failed += 1;
@@ -185,4 +212,40 @@ try {
   if (vBrowser) await vBrowser.stop();
   console.log(failed ? `DEMO: breaks — ${failed} step(s) failed` : `DEMO: passes — all ${stepN} steps`);
   await host.done(failed ? 1 : 0);
+}
+
+// THE A-SIDE CHECK's verdicts, from the SDK's one decoder: A's browser only ever READS, so every frame it sent is a
+// view step's; V's step 9 is a view window (the mutants' target), step 10 the control (a write must be SEEN).
+function classified(file) {
+  let input = "";
+  try { input = readFileSync(file, "utf8"); } catch { return []; }
+  const r = spawnSync(process.env.RN_CLASSIFY, ["--block-code", process.env.RN_BLOCK_WASM], { input, encoding: "utf8", maxBuffer: 1 << 30 });
+  if (r.status !== 0) throw new Error(`classify-frames failed: ${r.stderr}`);
+  return r.stdout.split("\n").filter(Boolean).map(l => JSON.parse(l));
+}
+function wireCheck() {
+  for (const w of wires) w.cap.stop();
+  const byLabel = Object.fromEntries(wires.map(w => [w.label, { stats: w.cap.stats(), rows: classified(w.file) }]));
+  const A = byLabel.A ?? { rows: [], stats: {} }, Vw = byLabel.V ?? { rows: [], stats: {} };
+  const fails = A.rows.filter(r => r.verdict === "fail");
+  const repairs = A.rows.filter(r => r.verdict === "report").length;
+  const unpaused = [...(A.stats.unpaused ?? []), ...(Vw.stats.unpaused ?? [])];
+  if (unpaused.length) step(false, `a frame or worker started UNPAUSED: a socket it opened at once could be unseen by the capture`, unpaused);
+  step(A.rows.length > 0 && fails.length === 0,
+    // The BOUNDARY (architect): this proves every target in THIS run's browser sent no user-data write through A;
+    // it cannot see a writer outside that browser (an earlier orphan, another harness, a native tool).
+    `A view steps: ${fails.length ? `${fails.length} user-data write(s) through A` : "no write through A"} from this run's browser (${repairs} repair PUTs)`,
+    fails.length ? fails.slice(0, 8) : A.rows.length ? { requests: A.rows.length, sockets: A.stats.sockets, targets: A.stats.targets } : "NOTHING was captured from A: the check saw no frame at all");
+  const v9 = Vw.rows.filter(r => r.window === "9" && r.verdict === "fail");
+  // V's OPEN window (open → before its first user write). REPORT-ONLY until sdk#350 (opening commits nothing on a
+  // key-holding node); REALNET_V_OPEN_ENFORCE=1 makes it a step. A MUTANT run is the proof the capture and the decoder
+  // SEE a view's write: its count must be non-zero, or the run fails.
+  const v9line = `V open window (9): ${v9.length} user-data writes${MUTANT ? ` [MUTANT ${MUTANT}]` : ""}`;
+  if (MUTANT) step(v9.length > 0, `${v9line}: the mutant's write is SEEN`, v9.length ? v9.slice(0, 4) : "the mutant wrote and NOTHING was seen");
+  else if (process.env.REALNET_V_OPEN_ENFORCE === "1") step(v9.length === 0, v9line, v9.length ? v9.slice(0, 8) : undefined);
+  else console.log(`NOTE  ${v9line} (report-only until sdk#350)${v9.length ? ": " + JSON.stringify(v9.slice(0, 4)) : ""}`);
+  const v10 = Vw.rows.filter(r => r.window === "10");
+  const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
+  step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step 10) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
+  console.log(`WIRE  frames kept in ${WIRE_DIR}`);
 }
