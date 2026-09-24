@@ -73,7 +73,7 @@ const SHOTS = [
   },
   {
     name: "publish-no-node",
-    what: "What a person sees when there is no node running. It names the cause and what to do about it, and the button invites another try — the delegate refuses a second install on its own, so pressing it again cannot cost a signing key. A bare 'failed' here would be unfixable.",
+    what: "What a person sees when there is no node running. It names the cause and what to do about it, and the button invites another try. A bare 'failed' here would be unfixable.",
     // A REAL failure, not a mocked one: nothing is listening on NODE_PORT,
     // which this run checks before starting. The first version of this shot
     // named no port at all, so it used a default — and the default was a
