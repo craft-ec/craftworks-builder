@@ -11,7 +11,8 @@
 //   5. THE CONTROL: no file opens a DevTools socket of its own — the one
 //      connection is page-host's `cdpConnect`, so none can lack the deadline.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { trackedFiles } from "./tracked-files.mjs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openFreshBrowser, cdpConnect, ownTmp } from "./page-host.mjs";
@@ -30,18 +31,10 @@ const NEVER = "await new Promise(() => {}); return 1;";
 /** Lines that open a WebSocket to anything but a node's `ws://` address: a DevTools socket of their own. */
 const ownSockets = text => text.split("\n").filter(l => !l.trim().startsWith("//") && /new WebSocket\((?!\s*["'`]ws:\/\/)/.test(l));
 const root = fileURLToPath(new URL("..", import.meta.url));
-const SKIP = new Set(["node_modules", "sdk", ".git", "docs", ".sdk-build", ".test-tmp"]);
-const files = (d, out = []) => {
-  for (const n of readdirSync(d)) {
-    const p = join(d, n);
-    if (statSync(p).isDirectory()) { if (!SKIP.has(n) && !n.startsWith(".")) files(p, out); }
-    else if (/\.m?js$/.test(n)) out.push(p);
-  }
-  return out;
-};
 
 await t("**no file opens a DevTools socket of its own: every CDP call goes through page-host's one connection** (and its deadline)", () => {
-  const all = files(root);
+  // The builder's code, tests included: what git TRACKS (one lister, tests/tracked-files.mjs).
+  const all = trackedFiles(root, { skip: ["docs/"] }).map(f => join(root, f));
   assert.ok(all.length > 40, `the scan found only ${all.length} files: it is not looking at the builder`);
   const found = all.filter(f => relative(root, f) !== "tests/page-host.mjs").flatMap(f => ownSockets(readFileSync(f, "utf8")).map(l => `${relative(root, f)}: ${l.trim()}`));
   assert.deepEqual(found, [], `open CDP through cdpConnect / openTab (tests/page-host.mjs):\n${found.join("\n")}`);
