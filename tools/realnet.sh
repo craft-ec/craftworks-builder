@@ -171,6 +171,7 @@ RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
   RN_O1="$O1WS" RN_O2="$O2WS" RN_PAIR_REGISTER="${regs[0]}" \
   RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
   RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
+  RN_PIECES="$here/sdk/pieces.json" RN_WEBAPP_WASM="$here/sdk/webapp.wasm" \
   RN_WIRE_DIR="$run" \
   node tools/realnet-demo.mjs
 fail=$?
