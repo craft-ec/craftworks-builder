@@ -82,7 +82,7 @@ cleanup() {
   # signalled): page-host kills them on every exit IT sees; this is the rest.
   [ -f "$PAGE_HOST_PIDFILE" ] && sweep "$PAGE_HOST_PIDFILE"
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
-  for p in "${npids[@]}"; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null; done
+  for p in ${npids[@]+"${npids[@]}"}; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null; done
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -178,7 +178,7 @@ fail=$?
 # ---- cleanup, proven ----------------------------------------------------------
 echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
-for i in "${!npids[@]}"; do
+for i in ${npids[@]+"${!npids[@]}"}; do
   p=${npids[$i]}; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
   if kill -0 "$p" 2>/dev/null || lsof -nP -iTCP:"${nws[$i]}" -sTCP:LISTEN >/dev/null; then echo "FAIL  ${nlabels[$i]}'s node (pid $p) is still up"; fail=1
   else echo "PASS  ${nlabels[$i]}'s node (pid $p) is gone; port ${nws[$i]} free"; rm -rf "${ndirs[$i]}"; fi
