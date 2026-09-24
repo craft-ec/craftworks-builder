@@ -224,7 +224,8 @@ export async function run(ctx) {
     // Where the tab ENDED UP: the node's recovery page sends a top-level tab to its dashboard `/`.
     const ended_at = rows ? null : await tab.evaluate(`return location.href;`).catch(e => `(unreadable: ${e.message})`);
     // Through the SDK's one fetch (re-asked until answered); the harness's deadline is the cancel.
-    const served = await servedText({ url: `${appUrl(O.ws)}artefacts.json` }, { signal: AbortSignal.timeout(30_000) }).then(t => JSON.parse(t)?.sdk?.sha256 ?? null, () => null);
+    // A miss is "not within 30 s" (a per-wait deadline, never "failed").
+    const served = await servedText({ url: `${appUrl(O.ws)}artefacts.json` }, { signal: AbortSignal.timeout(30_000) }).then(t => JSON.parse(t)?.sdk?.sha256 ?? null, () => ({ notWithin: 30 }));
     const ran = ctx.sdkRan({ header: ctx.header, served, stamps });
     cap.stop();
     await b.stop();

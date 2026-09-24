@@ -177,7 +177,8 @@ export async function runArm({ name, repeats, sample, loadAt = () => machine(), 
  */
 export function sdkRan({ header: h, served, stamps }) {
   if (!stamps || typeof stamps.sdk !== "number") return { ok: false, why: "the loader never stamped `sdk`: no SDK was loaded" };
-  if (!served) return { ok: false, why: "the opener's node served no artefacts.json" };
+  if (served?.notWithin) return { ok: false, why: `the opener's node's artefacts.json: not within ${served.notWithin} s` };
+  if (!served) return { ok: false, why: "the opener's node's artefacts.json names no SDK wasm" };
   if (served !== h.sdk_wasm_sha256) return { ok: false, why: `the page ran SDK wasm ${served.slice(0, 16)}, not the header's ${h.sdk_wasm_sha256.slice(0, 16)}` };
   return { ok: true };
 }

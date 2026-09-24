@@ -59,6 +59,7 @@ await t("**a sample whose page ran ANOTHER SDK than the header's is refused and 
   assert.match(other.why, /the page ran SDK wasm eeeeeeeeeeeeeeee, not the header's aaaaaaaaaaaaaaaa/);
   assert.equal(sdkRan({ header: h, served: "a".repeat(64), stamps: {} }).ok, false, "a page that never loaded the SDK was kept");
   assert.equal(sdkRan({ header: h, served: null, stamps: { sdk: 1 } }).ok, false, "a node that served no artefacts.json was kept");
+  assert.match(sdkRan({ header: h, served: { notWithin: 30 }, stamps: { sdk: 1 } }).why, /artefacts\.json: not within 30 s/, "a wait past its deadline was not said as 'not within 30 s'");
 });
 
 // ---- contamination ----------------------------------------------------------------------------------
