@@ -13,6 +13,7 @@
 // Each line: {"t": ms, "window": the step label at the time, "socket":
 // "<session>:<requestId>", "url": the socket's URL, "opcode", "data": base64}.
 import { appendFileSync } from "node:fs";
+import { browserDebuggerUrl } from "../tests/page-host.mjs";
 
 /**
  * Start capturing on the Chrome whose DevTools port is `debug`. `windowOf()`
@@ -20,8 +21,7 @@ import { appendFileSync } from "node:fs";
  * Returns `{ stop(), stats() }`.
  */
 export async function captureWire(debug, { out, windowOf, label }) {
-  const version = await (await fetch(`http://127.0.0.1:${debug}/json/version`)).json();
-  const ws = new WebSocket(version.webSocketDebuggerUrl);
+  const ws = new WebSocket(await browserDebuggerUrl(debug));
   await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
   let id = 0;
   const pending = new Map();

@@ -229,6 +229,11 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
  * says nothing about WHY, and what the page showed is the answer nearly every
  * time.
  */
+/** The browser-level DevTools WebSocket URL of the Chrome on `debug` (its `/json/version`): Chrome's own debug endpoint, never a node. */
+export async function browserDebuggerUrl(debug) {
+  return (await (await fetch(`http://127.0.0.1:${debug}/json/version`)).json()).webSocketDebuggerUrl;
+}
+
 /** Evaluate `expr` in the out-of-process iframe target whose URL contains `urlPart`; undefined if there is none. */
 async function evaluateInTarget(debug, urlPart, expr, label) {
   const t = (await (await fetch(`http://127.0.0.1:${debug}/json/list`)).json()).find(x => x.type === "iframe" && (x.url ?? "").includes(urlPart));
