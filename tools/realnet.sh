@@ -103,7 +103,7 @@ if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --releas
   echo "FAIL  the SDK's classify-frames did not build: $(tail -3 "$run/probe-build.log")"; exit 1
 fi
 probe_bin="$here/.sdk-build/$pinned/target/release"
-echo "RAN   sdk ${built:0:12} (sdk/REV), wasm sha256 $(shasum -a 256 sdk/craftworks_sdk_bg.wasm | cut -c1-16), artefacts container $(node -e 'console.log(require("./sdk/artefacts.json").container.address)')"
+echo "RAN   sdk ${built:0:12} (sdk/REV), wasm sha256 $(shasum -a 256 sdk/craftworks_sdk_bg.wasm | cut -c1-16), load pieces $(node -e 'const p=require("./sdk/pieces.json");console.log(Object.entries(p).map(([b,s])=>`${b} k=${s.k}+m=${s.m} first ${s.pieces[0].address}`).join(", "))')"
 
 # ---- B, read-only, and the tunnel --------------------------------------------
 remote() { perl -e 'alarm 60; exec @ARGV' ssh -o BatchMode=yes "$HOST" "$@"; }

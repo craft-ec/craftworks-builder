@@ -29,8 +29,9 @@
 // definition and the SDK's manifest, which is what lets it be tested for
 // determinism at all.
 
-/** Files whose bytes an app must carry: the SDK's JavaScript, never its wasm. */
-export const CARRIED = /\.(js|html|json)$/;
+/** Files whose bytes an app's STARTER carries: JavaScript and static files, and the one decode-only wasm
+ * (craftworks-sdk#347) that turns the pieces back into the SDK. Never the SDK's other wasm. */
+export const CARRIED = /(\.(js|html|json)|^decoder\.wasm)$/;
 
 /** The artefacts an app NAMES rather than carries. */
 export const NAMED = ["sdk", "signer", "block", "register"];
@@ -53,6 +54,8 @@ export const PLATFORM = {
   // index.js): what goes into the container, never fetched by hash. Each a
   // file beside index.js by the SDK's one rule (`sdk.ids.module`).
   modules: (e, ids) => Array.isArray(e) && e.length > 0 && e.every(m => typeof m === "string" && ids.module(m)),
+  // The decode-only wasm a starter CARRIES (craftworks-sdk#347): run before the SDK exists, so never named by hash.
+  decoder: (e, ids) => e?.file === "decoder.wasm" && ids.hex32(e?.sha256 ?? ""),
 };
 
 /**
@@ -70,28 +73,31 @@ const hex = bytes =>
   [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, "0")).join("");
 
 /**
- * The bundle for one app.
+ * The STARTER for one app (craftworks-sdk#347).
  *
- * `sdkFiles` is `{ path: contents }` for the SDK's shipped JavaScript —
- * whatever `build.sh` put beside the page, filtered by the caller to the
- * files an app actually needs. `manifest` is the SDK's `artefacts.json`,
- * which already carries every artefact's hash (sdk#107), so the names are
- * GENERATED from the build rather than written down a second time.
+ * `carried` is `{ path: contents }` for what the starter carries — the loader,
+ * the decoder and the SDK JavaScript that runs before the SDK exists.
+ * `pieces` is the build's `sdk/pieces.json`: the load pieces the starter
+ * NAMES by address and sha256 (the SDK, the runtime and the provisioning
+ * artefacts, as k + m parity pieces). `manifest` is the SDK's
+ * `artefacts.json`, which carries every artefact's hash (sdk#107), so the
+ * names are GENERATED from the build rather than written down a second time.
  *
  * Returns the files, their total size, and the bundle hash.
  */
-export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle, ids }) {
+export async function packageApp(app, { carried, manifest, pieces, subtle, ids }) {
   // The SDK's id rules (`sdk.ids`): the manifest's shapes are checked by them.
   if (!ids?.hex32 || !ids?.module) throw new Error("packageApp: no sdk.ids, so the SDK's manifest cannot be checked");
-  if (!artefactsKey) {
-    // An app that names no contract has nowhere to fetch its artefacts from
-    // and carries none of them, so it would be a bundle that cannot open.
-    // The same reasoning as the SDK refusing a key with no origin: naming
-    // them is a requirement, not a preference.
-    throw new Error(
-      "no artefacts contract key. A packaged app carries none of the four " +
-        "artefacts, so it must name the contract that holds them.",
-    );
+  // An app that names no pieces carries no SDK and has nothing to rebuild one
+  // from: a starter that cannot open.
+  for (const b of ["core", "provisioning"]) {
+    const shape = pieces?.[b];
+    const ok = shape && Number.isInteger(shape.k) && Number.isInteger(shape.m) && Array.isArray(shape.pieces) &&
+      shape.pieces.length === shape.k + shape.m &&
+      shape.pieces.every(p => typeof p?.address === "string" && p.address.length > 0 && ids.hex32(p?.sha256 ?? ""));
+    if (!ok) {
+      throw new Error(`no well-formed ${b} pieces: a starter carries no SDK, so it must name the k + m pieces it is rebuilt from (by address and sha256)`);
+    }
   }
   // THE KEY SET MUST EQUAL `NAMED`, not merely contain it.
   //
@@ -112,16 +118,6 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
         "this build cannot tell it from an app artefact — refused rather than guessed.",
     );
   }
-  // THE ARTEFACTS KEY IS THE CONTAINER'S ADDRESS when the SDK names one: an
-  // app naming any other key would fetch its artefacts from somewhere this
-  // SDK build never published them.
-  if (manifest?.container && artefactsKey !== manifest.container.address) {
-    throw new Error(
-      `artefacts key ${artefactsKey} is not this SDK build's artefacts container ` +
-        `(${manifest.container.address}): the app would fetch its artefacts from an ` +
-        "address this build never published.",
-    );
-  }
   if (missing.length) {
     throw new Error(
       `the SDK manifest has no hash for: ${missing.join(", ")}. ` +
@@ -137,14 +133,14 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
   }
 
   const files = {};
-  for (const [path, contents] of Object.entries(sdkFiles)) {
+  for (const [path, contents] of Object.entries(carried)) {
     if (!CARRIED.test(path)) {
       // NOT SILENTLY DROPPED. A caller handing this a wasm file believes the
       // app will carry it; saying so is the difference between a smaller
       // bundle and a broken one.
       throw new Error(
         `${path} is not a file an app carries. The four wasm artefacts are ` +
-          "NAMED by hash — pass only the JavaScript and static files.",
+          "in the load pieces, NAMED by hash — pass only the JavaScript, static files and the decoder.",
       );
     }
     files[path] = contents;
@@ -152,17 +148,16 @@ export async function packageApp(app, { sdkFiles, manifest, artefactsKey, subtle
 
   // WHAT THE APP IS, and what it needs. One file, so a reader can see an
   // app's whole dependency surface without unpacking anything.
-  files["app.json"] = JSON.stringify(app, null, 2);
+  // Compact: the starter is the one fetch nothing races (craftworks-sdk#347), so no byte is spent on layout.
+  files["app.json"] = JSON.stringify(app);
   files["artefacts.json"] = JSON.stringify(
     {
-      contract: artefactsKey,
+      pieces: { core: pieces.core, provisioning: pieces.provisioning },
       ...Object.fromEntries(
         NAMED.map(n => [n, { file: manifest[n].file, sha256: manifest[n].sha256 }]),
       ),
-      note: "named by hash, carried by nobody: the network hosts them (ARCHITECTURE §19)",
+      note: "carried by nobody: rebuilt from any k of the pieces, each verified by sha256, then each artefact by its own (craftworks-sdk#347)",
     },
-    null,
-    2,
   );
 
   // DETERMINISTIC. Sorted paths, and each entry contributes its path, its

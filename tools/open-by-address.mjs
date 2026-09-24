@@ -110,11 +110,11 @@ try {
   // 3), and each retry is printed as a finding, not hidden.
   const { pub, retries } = await watchPublish("publish", tPublish);
   const publishMs = Date.now() - tPublish;
-  check(!!pub?.address, `Publish on A put the app on the network, in ${publishMs} ms (click → both containers acknowledged)`, pub?.address ? { address: pub.address, head: pub.head?.slice(0, 16) } : pub);
+  check(!!pub?.address, `Publish on A put the app on the network, in ${publishMs} ms (click → every piece and the starter acknowledged)`, pub?.address ? { address: pub.address, head: pub.head?.slice(0, 16) } : pub);
   if (!pub?.address) throw new Error("nothing to open");
   const addrLine = await builder.evaluate(`return document.getElementById("app-address")?.title ?? null;`);
   check(addrLine === pub.address, "the builder SHOWS the address", addrLine);
-  console.log(`SIZES  app container ${pub.containerBytes} B (bundle ${pub.bundleBytes} B, stored xz); artefacts container ${pub.artefactsBytes} B, once per SDK build`);
+  console.log(`SIZES  starter container ${pub.containerBytes} B (bundle ${pub.bundleBytes} B, stored xz); ${pub.pieces} load piece containers ${pub.piecesBytes} B, the same for every app of this build`);
   // DIAGNOSIS: HOLD_MS keeps both nodes up after the publish, the address
   // printed, so a person can probe them directly.
   if (process.env.HOLD_MS) {

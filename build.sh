@@ -46,14 +46,17 @@ fi
 # copy is a glob rather than a list — a list is correct on the day it is
 # written and silently wrong afterwards. One list up here, both loops read
 # it, and they cannot drift.
-# builder#104: publishing PUTs the SDK's artefacts container (artefacts.webapp)
-# and the app's under the `webapp` contract (webapp.wasm). The signer is the
-# one delegate (the switch-over deleted the engine delegate). All are checked
-# and copied like the rest.
-WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+# builder#104: publishing PUTs an app's containers under the `webapp` contract
+# (webapp.wasm); since craftworks-sdk#347 those are its load pieces and its
+# starter, which carries the decode-only wasm (decoder.wasm) — no longer the
+# SDK's artefacts container. The signer is the one delegate (the switch-over
+# deleted the engine delegate). All are checked and copied like the rest.
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm decoder.wasm"
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
-COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm artefacts.webapp"
+COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm decoder.wasm"
+# The SDK's LOAD PIECES tool (craftworks-sdk#347), from the same build: it cuts a published app's pieces.
+LOAD_PIECES=target/release/load-pieces
 
 out=.sdk-build/$rev
 
@@ -99,6 +102,7 @@ cache_is_sound() {
     [ -n "$recorded" ] || return 1
     [ "$(wc -c < "$f" | tr -d ' ')" = "$recorded" ] || return 1
   done
+  [ -x "$out/$LOAD_PIECES" ] || return 1
   return 0
 }
 
@@ -121,6 +125,7 @@ if ! cache_is_sound; then
       exit 1
     }
   done
+  [ -x "$out/$LOAD_PIECES" ] || { echo "the SDK build for $rev exited 0 without its $LOAD_PIECES" >&2; exit 1; }
   # LAST, and it records what it verified so a later run can check rather
   # than assume. Anything that fails above leaves no marker at all.
   : > "$complete"
@@ -194,6 +199,11 @@ for a in $COPIED_ARTEFACTS; do
 done
 
 echo "$rev" > sdk/REV
+
+# THE LOAD PIECES (craftworks-sdk#347): a published app's starter carries only what runs before the SDK exists; the
+# SDK, the runtime and the provisioning artefacts are cut into k + m parity pieces the loader races. Cut here, from
+# this build, by the SDK's own tool; `sdk/pieces.json` names each piece by address and sha256.
+node tools/cut-pieces.mjs "$out/$LOAD_PIECES" || { echo "cutting the load pieces failed" >&2; exit 1; }
 
 # And it IS importable. `tests/sdk-load.test.mjs` imports `sdk/index.js` and
 # would fail on a broken package, but it runs after this and only if someone
