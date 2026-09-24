@@ -83,12 +83,16 @@ run=$(mktemp -d "$TMPDIR/realnet-run.XXXXXX")
 export PAGE_HOST_PIDFILE="$run/browsers.pids"
 : > "$PAGE_HOST_PIDFILE"
 tunnel=""; npids=(); ndirs=(); nws=(); nlabels=()
+# shellcheck source=tools/realnet-nodes.sh
+. "$here/tools/realnet-nodes.sh"
 cleanup() {
   # This run's browsers, whatever ended it (the demo killed, this script
   # signalled): page-host kills them on every exit IT sees; this is the rest.
   [ -f "$PAGE_HOST_PIDFILE" ] && sweep "$PAGE_HOST_PIDFILE"
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
-  for p in ${npids[@]+"${npids[@]}"}; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null; done
+  # Still here on the EXIT trap only when the run ended EARLY -- never a pass: stop every
+  # node for certain and KEEP its dirs (the logs are why it ended).
+  end_nodes 1
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -185,12 +189,9 @@ fail=$?
 # ---- cleanup, proven ----------------------------------------------------------
 echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
-for i in ${npids[@]+"${!npids[@]}"}; do
-  p=${npids[$i]}; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-  if kill -0 "$p" 2>/dev/null || lsof -nP -iTCP:"${nws[$i]}" -sTCP:LISTEN >/dev/null; then echo "FAIL  ${nlabels[$i]}'s node (pid $p) is still up"; fail=1
-  else echo "PASS  ${nlabels[$i]}'s node (pid $p) is gone; port ${nws[$i]} free"; rm -rf "${ndirs[$i]}"; fi
-done
-npids=()
+# Every node TERM -> bounded wait -> KILL -> proven gone; its dirs (the logs) KEPT and
+# named when the run failed, removed only on a pass.
+end_nodes "$fail" || fail=1
 if lsof -nP -iTCP:"$T" -sTCP:LISTEN >/dev/null; then echo "FAIL  port $T still listening"; fail=1; else echo "PASS  tunnel closed; port $T free"; fi
 after=$(state)
 if [ "$after" != "$before" ]; then echo "STOP  B changed during the run: before [$(tr '\n' ' ' <<<"$before")] after [$(tr '\n' ' ' <<<"$after")]"; fail=1
