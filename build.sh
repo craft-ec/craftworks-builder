@@ -55,8 +55,8 @@ WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm weba
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
 COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm decoder.wasm"
-# The SDK's LOAD PIECES tool (craftworks-sdk#347), from the same build: it cuts a published app's pieces.
-LOAD_PIECES=target/release/load-pieces
+# The SDK's LOAD PIECES tool (craftworks-sdk#347), shipped in its pkg/tools/ (never read from a target dir): it cuts a published app's pieces.
+LOAD_PIECES=pkg/tools/load-pieces
 
 out=.sdk-build/$rev
 
