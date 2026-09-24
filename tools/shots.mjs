@@ -73,7 +73,7 @@ const SHOTS = [
   },
   {
     name: "publish-no-node",
-    what: "What a person sees when there is no node running. It names the cause and what to do about it, and the button invites another try — the delegate refuses a second install on its own, so pressing it again cannot cost a signing key. A bare 'failed' here would be unfixable.",
+    what: "What a person sees when there is no node running. It names the cause and what to do about it, and the button invites another try. A bare 'failed' here would be unfixable.",
     // A REAL failure, not a mocked one: nothing is listening on NODE_PORT,
     // which this run checks before starting. The first version of this shot
     // named no port at all, so it used a default — and the default was a
@@ -113,14 +113,14 @@ const SHOTS = [
   },
   {
     name: "live-switch-off",
-    what: "The LIVE switch in its default state: off, with the line that says what it costs.",
+    what: "The LIVE switch in its default state, off: a binding on the app author's own screens updates by itself only when they turn it on, and the line says what it costs. A published app opened by address is always live, whatever this switch says (the owner's rule).",
     hash: () => `#app=${encodeURIComponent(JSON.stringify(APP))}`,
     setup: `document.querySelectorAll('.comp')[1].click();`,
     wait: `!!document.getElementById("live")`,
   },
   {
     name: "live-switch-on",
-    what: "The same switch turned on — the one thing an app author changes to make a component update by itself.",
+    what: "The same switch turned on — the one thing an app author changes to make a component on their own screens update by itself.",
     hash: () => `#app=${encodeURIComponent(JSON.stringify(APP))}`,
     setup: `document.querySelectorAll('.comp')[1].click(); await new Promise(r=>setTimeout(r,100)); document.getElementById("live").click();`,
     wait: `document.getElementById("live")?.checked === true`,
