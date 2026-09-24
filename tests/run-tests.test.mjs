@@ -10,7 +10,9 @@ import { fileURLToPath } from "node:url";
 const runner = fileURLToPath(new URL("../tools/run-tests.mjs", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "cw-runner-"));
 const file = (name, body) => { const p = join(dir, name); writeFileSync(p, body); return p; };
-const run = files => spawnSync(process.execPath, [runner, ...files], { encoding: "utf8" });
+// The disk guard is not what this file tests (disk-guard-wired does): a guard
+// that always finds room.
+const run = files => spawnSync(process.execPath, [runner, ...files], { encoding: "utf8", env: { ...process.env, DISK_GUARD: "/usr/bin/true" } });
 
 const red = file("red.test.mjs", "process.exit(3);");
 const after = file("after.test.mjs", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(dir, "ran"))}, "yes");`);

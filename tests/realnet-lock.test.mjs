@@ -19,7 +19,7 @@ const holder = spawn("sleep", ["60"]);
 try {
   mkdirSync(LOCK);
   writeFileSync(`${LOCK}/owner`, `pid=${holder.pid}\nbranch=realnet-lock-test\n`);
-  const r = spawnSync("bash", [tool], { encoding: "utf8", env: { ...process.env, TMPDIR: dir, REALNET_LOCK: LOCK, REALNET_HOST: "nobody@127.0.0.1" }, timeout: 20_000 });
+  const r = spawnSync("bash", [tool], { encoding: "utf8", env: { ...process.env, TMPDIR: dir, REALNET_LOCK: LOCK, REALNET_HOST: "nobody@127.0.0.1", DISK_GUARD: "/usr/bin/true" }, timeout: 20_000 });
   assert.strictEqual(r.status, 3, `a second run was not refused (exit ${r.status}): ${r.stdout}${r.stderr}`);
   assert.match(r.stdout, /REFUSED {2}another real-network run holds .*branch=realnet-lock-test/);
   assert.doesNotMatch(r.stdout, /== build|tunnel pid/, "the refused run went on to build or tunnel");
