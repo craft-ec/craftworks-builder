@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
 import { openFreshBrowser } from "../../../tests/page-host.mjs";
 import { ROOT } from "../runner.mjs";
+import { servedText } from "../../../sdk/served.js";
 import { LIMIT, touches, touchedIn } from "../eventlog.mjs";
 
 const STEP_MS = Number(process.env.LIVE_STEP_MS ?? 180_000);
@@ -52,6 +53,14 @@ async function builderServer(ctx) {
     for (const s of [child.stdout, child.stderr]) s.on("data", d => { seen += d; const m = seen.match(/port (\d+)/); if (m) { clearTimeout(timer); ok(Number(m[1])); } });
   });
   return port;
+}
+
+/** The LAST answer the page got for `url`, from a requests.jsonl the wire capture wrote: `{ status, t }`. */
+function documentAnswer(requestsFile, url) {
+  const rows = readFileSync(requestsFile, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l));
+  const ids = new Set(rows.filter(r => r.event === "sent" && r.url === url).map(r => `${r.target}:${r.id}`));
+  const answers = rows.filter(r => r.event === "response" && ids.has(`${r.target}:${r.id}`));
+  return answers.length ? { status: answers.at(-1).status, t: answers.at(-1).t } : null;
 }
 
 /** A fresh browser whose pid is killed at the end whatever happens. */
@@ -159,16 +168,29 @@ export async function run(ctx) {
   const frameOf = ws => `127.0.0.1:${ws}/v1/contract/web/${addr}/?__sandbox=1`;
 
   // ---- the READABILITY precheck: P touched the app at publish, R touches it on its GET; each dated ----
+  // Through a BROWSER, as a person opens it: the answer's status from the recorded requests, a 503's body
+  // from the page as it first arrived (outerHTML, comments included: the node's recovery page names itself
+  // there), before its own script moves the tab.
   const R = await ctx.nodes.start("R");
+  const { mkdirSync } = ctx.fs;
+  mkdirSync(ctx.logsOf("R"), { recursive: true });
+  const rb = await browser(ctx, "live: precheck R");
+  const rReq = join(ctx.logsOf("R"), "requests.jsonl");
+  const rCap = await captureWire(rb.debug, { out: join(ctx.logsOf("R"), "wire.jsonl"), requests: rReq, windowOf: () => "precheck", label: "R" });
+  const rTab = await rb.tab("R");
   const tGet = Date.now();
   let status = 0;
   while (Date.now() - tGet < STEP_MS && status !== 200) {
-    const res = await fetch(appUrl(R.ws), { signal: AbortSignal.timeout(30_000) }).then(async r => ({ status: r.status, body: await r.text().catch(() => ""), t: Date.now() }), () => ({ status: 0 }));
-    status = res.status;
-    if (status === 503) record503(ctx, R, { source: "precheck GET", t: res.t, body: res.body });
+    await rTab.navigate(appUrl(R.ws)).catch(() => {});
+    const html = await rTab.evaluate("return document.documentElement?.outerHTML ?? null;").catch(() => null);
+    const answer = documentAnswer(rReq, appUrl(R.ws));
+    status = answer?.status ?? 0;
+    if (status === 503) record503(ctx, R, { source: "precheck navigation", t: answer.t, body: html });
     if (status !== 200) await sleep(2000);
   }
   const tGetEnd = Date.now();
+  rCap.stop();
+  await rb.stop();
   const pTouch = await touchedEventually(join(P.dir, "data"), addr, tPub - 60_000, tPubEnd + 60_000);
   const rTouch = await touchedEventually(join(R.dir, "data"), addr, tGet - 1000, tGetEnd + 5000);
   if (status !== 200 || !pTouch.readable || !pTouch.n || !rTouch.readable || !rTouch.n) {
@@ -193,6 +215,7 @@ export async function run(ctx) {
     const tab = await b.tab(name);
     const t0 = Date.now();
     await tab.navigate(appUrl(O.ws)).catch(e => say(`WARN  ${name}: navigate: ${e.message}`));
+    const firstHtml = await tab.evaluate("return document.documentElement?.outerHTML ?? null;").catch(() => null);
     const rows = await until(tab, hasRows, STEP_MS, frameOf(O.ws), 250);
     const t1 = Date.now();
     const stamps = await tab.evaluateIn(frameOf(O.ws), `return globalThis.__craftworksOpen ?? null;`).catch(() => null);
@@ -200,7 +223,8 @@ export async function run(ctx) {
     const shown = rows ? null : await tab.evaluate(`return document.body?.innerText?.slice(0, 300) ?? null;`).catch(e => `(unreadable: ${e.message})`);
     // Where the tab ENDED UP: the node's recovery page sends a top-level tab to its dashboard `/`.
     const ended_at = rows ? null : await tab.evaluate(`return location.href;`).catch(e => `(unreadable: ${e.message})`);
-    const served = await fetch(`${appUrl(O.ws)}artefacts.json`, { signal: AbortSignal.timeout(30_000) }).then(r => r.json()).then(j => j?.sdk?.sha256 ?? null, () => null);
+    // Through the SDK's one fetch (re-asked until answered); the harness's deadline is the cancel.
+    const served = await servedText({ url: `${appUrl(O.ws)}artefacts.json` }, { signal: AbortSignal.timeout(30_000) }).then(t => JSON.parse(t)?.sdk?.sha256 ?? null, () => null);
     const ran = ctx.sdkRan({ header: ctx.header, served, stamps });
     cap.stop();
     await b.stop();
@@ -215,7 +239,7 @@ export async function run(ctx) {
     const ms = ok.map(r => r.finished.t - r.sent.t).sort((a, b) => a - b);
     // The app document's own answer: the first response to the app's URL.
     const doc = [...byId.values()].find(r => r.url === appUrl(O.ws));
-    if (doc?.response?.status === 503) record503(ctx, O, { source: "navigation", t: doc.response.t, body: shown });
+    if (doc?.response?.status === 503) record503(ctx, O, { source: "navigation", t: doc.response.t, body: firstHtml });
     const sample = {
       opener: name, ok: !!rows, open_ms: rows ? t1 - t0 : null, node_ready_ms: O.ready_ms, stamps,
       document_status: doc?.response?.status ?? null, ...(rows ? {} : { shown, ended_at }),
