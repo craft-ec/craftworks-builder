@@ -50,6 +50,9 @@ try {
   }
   const opened = await openPublished(sdk, {
     head,
+    // The version it was published at (craftworks-sdk#349); an app.json from
+    // before it names none, and is read at whatever head the node has.
+    seq: app.publisher.seq ?? 0,
     app: appId,
     port: Number(location.port),
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
@@ -59,7 +62,9 @@ try {
   // shown on its component by the runtime, by name.
   const t0 = Date.now();
   say("Reading…");
-  const counting = setInterval(() => say(`Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
+  // Below the published version the status says so, in the SDK's words
+  // (craftworks-sdk#349): the view waits for it, never shows an older one.
+  const counting = setInterval(() => say(opened.waitingFor() || `Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
   const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }
   // Mounted: a component whose read ENDED says so on the page (the runtime);

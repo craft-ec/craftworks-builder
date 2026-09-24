@@ -412,7 +412,7 @@ async function doPublish() {
         let put = null;
         try {
           put = await publishApp(app, {
-            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
+            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), headSeq: res.session.headSeq(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
             manifest: await readSdkManifest(),
             read: readBuilderFile, subtle: crypto.subtle,
             // Unchanged since the last acknowledged publication (same app
@@ -432,9 +432,9 @@ async function doPublish() {
           const rec = await projects?.published?.({
             sourceRoot: db.root?.() ?? null,
             sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-            ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId() } : {}),
+            ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId(), headSeq: put.seq } : {}),
           });
-          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null };
+          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.seq };
         } catch (e) { warn = warn || `history: ${e.message}`; }
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }

@@ -185,8 +185,13 @@ export function pageView(page, more, size) {
  *   (`ownData`).
  * `canWrite(source)` is asked of the session every time and kept nowhere
  * (one owner: the SDK's decision).
+ *
+ * `seq` is the version the app was published at (`app.json`, craftworks-sdk#349):
+ * the view reads no older head, and `waitingFor()` says, while it waits, which
+ * version it waits for and what the node answered ("" once it has it). The
+ * owner's own node reads its own tree, which is that version or newer.
  */
-export async function openPublished(sdk, { head, app, port, artefacts, ownData }) {
+export async function openPublished(sdk, { head, seq = 0, app, port, artefacts, ownData }) {
   const asked = await sdk.openAsked({ app, port, artefacts });
   const ownsApp = asked.canWrite(head).answer === "yes";
   const own = ownData || ownsApp ? await asked.openOwn() : null;
@@ -194,10 +199,11 @@ export async function openPublished(sdk, { head, app, port, artefacts, ownData }
   // SAID, never quietly shown as a view (a user's own tree that does not open
   // is said on each of its components: "View only: <why>").
   if (ownsApp && own.answer !== "yes") throw new Error(`this node holds the key to the app's data, but its tree did not open: ${own.why}`);
-  const publisher = ownsApp ? asked.db : (await asked.tree(head)).db;
+  const view = ownsApp ? null : await asked.tree(head, { seq });
   return {
     asked,
-    backends: { publisher, mine: ownData ? asked.db : null },
+    backends: { publisher: ownsApp ? asked.db : view.db, mine: ownData ? asked.db : null },
+    waitingFor: () => view?.waitingFor?.() ?? "",
     canWrite: source => asked.canWrite(source === "mine" ? "" : head),
     why: ownsApp ? "this node holds the key to the app's data" : asked.why ?? "another person's node",
   };
