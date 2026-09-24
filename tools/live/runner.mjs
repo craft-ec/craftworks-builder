@@ -147,6 +147,9 @@ export function resolvable(a, b) {
  * arm reports "contaminated: not resolvable" and stops. Never a loop.
  */
 export async function runArm({ name, repeats, sample, loadAt = () => machine(), maxReruns = 2, budgetLeftMs = () => Infinity, onSample = () => {} }) {
+  // EVERY attempt's samples, kept: a failure inside a contaminated attempt is still a failure, and the
+  // verdict must see it (the first live run called 3 dead opens a pass by reading the last attempt only).
+  const all = [];
   for (let attempt = 0; attempt <= maxReruns; attempt++) {
     const got = [];
     let dirty = 0;
@@ -156,11 +159,12 @@ export async function runArm({ name, repeats, sample, loadAt = () => machine(), 
       const rec = { arm: name, attempt, i, ...s, load1: m.load1, cores: m.cores, contaminated: m.load1 >= m.cores };
       onSample(rec);
       got.push(rec);
+      all.push(rec);
       if (rec.contaminated) dirty += 1;
     }
-    if (!dirty) return { name, attempts: attempt + 1, samples: got, contaminated: false };
+    if (!dirty) return { name, attempts: attempt + 1, samples: got, all, contaminated: false };
     if (attempt === maxReruns || budgetLeftMs() <= 0) {
-      return { name, attempts: attempt + 1, samples: got, contaminated: true, verdict: `contaminated: not resolvable (${dirty} of ${repeats} samples at load >= cores after ${attempt + 1} attempt(s))` };
+      return { name, attempts: attempt + 1, samples: got, all, contaminated: true, verdict: `contaminated: not resolvable (${dirty} of ${repeats} samples at load >= cores after ${attempt + 1} attempt(s))` };
     }
   }
   throw new Error("unreachable");

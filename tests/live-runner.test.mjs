@@ -79,6 +79,16 @@ await t("**a CONTAMINATED arm is re-run at most TWICE, then reported `contaminat
   assert.equal(clean.samples[0].load1, 3);
 });
 
+await t("**an arm keeps EVERY attempt's samples: a failure inside a contaminated attempt is still in `all`**", async () => {
+  let n = 0;
+  const loads = [30, 30, 3, 3]; // attempt 0 contaminated, attempt 1 clean
+  const r = await runArm({ name: "mixed", repeats: 2, sample: async () => ({ ok: n++ >= 2 }), loadAt: () => ({ load1: loads.shift() ?? 3, cores: 14 }) });
+  assert.deepEqual([r.contaminated, r.attempts], [false, 2]);
+  assert.equal(r.samples.length, 2, "the last attempt's samples");
+  assert.equal(r.all.length, 4, "the earlier attempt's samples were dropped");
+  assert.equal(r.all.filter(s => !s.ok).length, 2, "the failures of the contaminated attempt are not in `all`");
+});
+
 // ---- the load gate ----------------------------------------------------------------------------------
 await t("**the load gate waits for the box with a BUDGET and says how long and at what load**", async () => {
   let clock = 0;

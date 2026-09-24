@@ -60,8 +60,9 @@ const connect = async (url, label, opts) => {
 const browser = await openFreshBrowser("wire-capture test");
 const out = join(dir, "wire.jsonl");
 const received = join(dir, "wire.received.jsonl");
+const requests = join(dir, "requests.jsonl");
 try {
-  const cap = await captureWire(browser.debug, { out, received, windowOf: () => "w", label: "T", connect });
+  const cap = await captureWire(browser.debug, { out, received, requests, windowOf: () => "w", label: "T", connect });
   emit({ method: "Target.attachedToTarget", params: { sessionId: "planted-other", waitingForDebugger: true, targetInfo: { type: "other", url: "" } } });
   emit({ method: "Target.attachedToTarget", params: { sessionId: "planted-closed", waitingForDebugger: true, targetInfo: { type: "iframe", url: "about:blank" } } });
   const tab = await browser.tab("wire-capture page");
@@ -88,6 +89,14 @@ try {
     assert.equal(stats.received >= 1, true);
     const sent = readFileSync(out, "utf8").trim().split("\n").filter(Boolean).map(l => Buffer.from(JSON.parse(l).data, "base64").toString("hex"));
     assert.ok(!sent.includes("09080706"), "a received frame is among the frames the decoder reads as requests");
+  });
+  await t("**with `requests`, every HTTP request is recorded: the page's own load is sent, answered 200 and finished**", () => {
+    const rows = (existsSync(requests) ? readFileSync(requests, "utf8") : "").trim().split("\n").filter(Boolean).map(l => JSON.parse(l));
+    const page = rows.filter(r => r.url === `http://127.0.0.1:${port}/` || rows.some(x => x.id === r.id && x.url === `http://127.0.0.1:${port}/`));
+    const events = new Set(page.map(r => r.event));
+    for (const e of ["sent", "response", "finished"]) assert.ok(events.has(e), `the page's request has no "${e}" line: ${JSON.stringify(page)}`);
+    assert.ok(page.some(r => r.event === "response" && r.status === 200), "the page's response status was not recorded");
+    assert.ok(!rows.some(r => (r.url ?? "").startsWith("ws://")), "a WebSocket was recorded as an HTTP request");
   });
 } finally {
   await browser.stop();

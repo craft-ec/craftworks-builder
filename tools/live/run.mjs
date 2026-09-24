@@ -52,9 +52,13 @@ const budgetLeftMs = () => t0 + args.budgetMin * 60_000 - Date.now();
 const nodes = new Nodes(dir);
 const samples = new Samples(join(dir, "samples.jsonl"));
 let ended = false;
+// What a scenario started besides nodes (a page server, browsers): ended here on EVERY exit, a signal
+// included, before the nodes. Synchronous (a signal handler cannot wait): each kills by recorded pid.
+const ends = [];
 const finish = (failed, how) => {
   if (ended) return;
   ended = true;
+  for (const fn of ends.splice(0).reverse()) { try { fn(); } catch (e) { say(`END   a scenario's clean-up failed: ${e.message}`); } }
   for (const l of nodes.end(failed).lines) say(`NODE  ${l}`);
   say(`${how} after ${samples.n} sample(s), ${Math.round((Date.now() - t0) / 1000)} s; results in ${dir}`);
 };
@@ -65,6 +69,8 @@ for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
 const ctx = {
   dir, header: head, args, nodes, say, eventlog, sdkRan, summarize, resolvable, budgetLeftMs,
   logsOf: label => join(dir, "logs", label),
+  /** Register a SYNCHRONOUS clean-up (kill by recorded pid) run on every exit, a signal included. */
+  onEnd: fn => ends.push(fn),
   /** Run one arm; every sample is streamed to samples.jsonl as it completes. */
   arm: (name, repeats, sample) => runArm({ name, repeats, sample, budgetLeftMs, onSample: s => samples.add(s), loadAt: process.env.LIVE_READERS ? () => head.machine : machine }),
 };
