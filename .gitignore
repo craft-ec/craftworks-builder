@@ -12,3 +12,6 @@ shots/
 # Nonce files written by page tests to prove a page is served from THIS tree
 # (tests/page-host.mjs, builder#70). Removed at the end of each run.
 .page-nonce/
+# Each test's own TMPDIR (tests/page-host.mjs ownTmp): the system default is
+# refused by the live tools, so tests make theirs here. Removed by each test.
+.test-tmp/

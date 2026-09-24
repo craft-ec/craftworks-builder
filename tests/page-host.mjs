@@ -224,63 +224,147 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
 }
 
 /**
+ * THE ONE CDP CONNECTION every tool and page test drives Chrome through: no
+ * call waits for ever. A batch-1 realnet hung ten minutes on ONE unanswered
+ * call (step 7's reload: a Runtime.evaluate whose context the navigation
+ * destroyed, or a dying iframe target), outside every `until` loop, printing
+ * nothing. So here:
+ *   - the socket opens within `callMs`, or rejects naming the URL;
+ *   - EVERY `send` rejects after its deadline, naming the method (`ms` per call
+ *     for the rare call that is meant to take long);
+ *   - a protocol error rejects naming the method, never resolves as a value;
+ *   - the socket closing rejects every call still waiting, naming it;
+ *   - `next(event, ms)` waits for one event, on the same deadline rule.
+ * `onEvent` gets every message that is not a reply.
+ */
+export const CDP_CALL_MS = Number(process.env.CDP_CALL_MS ?? 30_000);
+export async function cdpConnect(url, label, { callMs = CDP_CALL_MS, onEvent = null } = {}) {
+  const ws = new WebSocket(url);
+  await deadline(new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = () => bad(new Error(`${label}: the CDP socket ${url} failed to open`)); }), callMs, () => { ws.close(); return `${label}: the CDP socket ${url} did not open within ${callMs} ms`; });
+  let seq = 0;
+  const waiting = new Map();
+  const listeners = new Set();
+  let closed = null;
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.id && waiting.has(m.id)) {
+      const w = waiting.get(m.id);
+      waiting.delete(m.id);
+      clearTimeout(w.timer);
+      if (m.error) w.bad(new Error(`${label}: CDP ${w.method}: ${m.error.message ?? JSON.stringify(m.error)}`));
+      else w.ok(m);
+      return;
+    }
+    for (const l of [...listeners]) l(m);
+    onEvent?.(m);
+  };
+  ws.onclose = () => {
+    closed = "the CDP socket closed";
+    for (const w of waiting.values()) { clearTimeout(w.timer); w.bad(new Error(`${label}: CDP ${w.method}: ${closed} before it answered`)); }
+    waiting.clear();
+  };
+  const send = (method, params = {}, { ms = callMs, sessionId } = {}) =>
+    new Promise((ok, bad) => {
+      if (closed) return bad(new Error(`${label}: CDP ${method}: ${closed}`));
+      const id = ++seq;
+      const timer = setTimeout(() => { waiting.delete(id); bad(new Error(`${label}: CDP ${method} unanswered after ${ms} ms`)); }, ms);
+      waiting.set(id, { ok, bad, timer, method });
+      ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const next = (method, ms = callMs) =>
+    new Promise((ok, bad) => {
+      const l = m => { if (m.method === method) { listeners.delete(l); clearTimeout(timer); ok(m); } };
+      const timer = setTimeout(() => { listeners.delete(l); bad(new Error(`${label}: CDP event ${method} did not come within ${ms} ms`)); }, ms);
+      listeners.add(l);
+    });
+  return { send, next, close: () => ws.close() };
+}
+
+/** `p`, or a rejection naming `what()` once `ms` have passed. */
+function deadline(p, ms, what) {
+  let timer;
+  return Promise.race([p, new Promise((_, bad) => { timer = setTimeout(() => bad(new Error(what())), ms); })]).finally(() => clearTimeout(timer));
+}
+
+/** Chrome's own debug HTTP endpoint (`/json/...`), on the same deadline rule as a CDP call. */
+async function chromeJson(debug, path, init = {}) {
+  return (await fetch(`http://127.0.0.1:${debug}${path}`, { ...init, signal: AbortSignal.timeout(CDP_CALL_MS) })).json();
+}
+
+/** The browser-level DevTools WebSocket URL of the Chrome on `debug` (its `/json/version`): Chrome's own debug endpoint, never a node. */
+export async function browserDebuggerUrl(debug) {
+  return (await chromeJson(debug, "/json/version")).webSocketDebuggerUrl;
+}
+
+/**
+ * Evaluate `expr` in the out-of-process iframe target whose URL contains
+ * `urlPart`; undefined if there is none. RESOLVED ON EVERY CALL: after a
+ * reload the old target is gone and a new one serves the frame.
+ */
+async function evaluateInTarget(debug, urlPart, expr, label, ms) {
+  const t = (await chromeJson(debug, "/json/list")).find(x => x.type === "iframe" && (x.url ?? "").includes(urlPart));
+  if (!t) return undefined;
+  const cdp = await cdpConnect(t.webSocketDebuggerUrl, `${label} (iframe target)`);
+  try {
+    const r = await cdp.send("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true }, { ms });
+    if (r.result?.exceptionDetails) throw new Error(`${label} (iframe target): ${JSON.stringify(r.result).slice(0, 300)}`);
+    return r.result?.result?.value;
+  } finally { cdp.close(); }
+}
+
+/**
  * One CDP-driven tab on the Chrome at `debug`. `dump` is an expression whose
  * value is printed when a wait times out: a timeout names the condition and
  * says nothing about WHY, and what the page showed is the answer nearly every
- * time.
+ * time. `evaluate(expr, { ms })` / `evaluateIn(urlPart, expr, { ms })` take a
+ * deadline of their own for an expression meant to run long.
  */
-/** The browser-level DevTools WebSocket URL of the Chrome on `debug` (its `/json/version`): Chrome's own debug endpoint, never a node. */
-export async function browserDebuggerUrl(debug) {
-  return (await (await fetch(`http://127.0.0.1:${debug}/json/version`)).json()).webSocketDebuggerUrl;
-}
-
-/** Evaluate `expr` in the out-of-process iframe target whose URL contains `urlPart`; undefined if there is none. */
-async function evaluateInTarget(debug, urlPart, expr, label) {
-  const t = (await (await fetch(`http://127.0.0.1:${debug}/json/list`)).json()).find(x => x.type === "iframe" && (x.url ?? "").includes(urlPart));
-  if (!t) return undefined;
-  const ws = new WebSocket(t.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  try {
-    const r = await new Promise(ok => {
-      ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id === 1) ok(m); };
-      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true } }));
-    });
-    if (r.result?.exceptionDetails) throw new Error(`${label} (iframe target): ${JSON.stringify(r.result).slice(0, 300)}`);
-    return r.result?.result?.value;
-  } finally { ws.close(); }
-}
-
 export async function openTab(debug, label, { dump = `return document.body?.innerText?.slice(0, 400);`, pollMs = 25 } = {}) {
-  const t = await (await fetch(`http://127.0.0.1:${debug}/json/new?about:blank`, { method: "PUT" })).json();
-  const ws = new WebSocket(t.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
+  const t = await chromeJson(debug, "/json/new?about:blank", { method: "PUT" });
   // Each frame's DEFAULT (main-world) execution context, by frame id: where the
   // page's own JavaScript and its globals live. Kept from Runtime's events.
   const mainWorld = new Map();
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-    if (m.method === "Runtime.executionContextCreated") {
-      const c = m.params?.context;
-      if (c?.auxData?.isDefault && c.auxData.frameId) mainWorld.set(c.auxData.frameId, c.id);
-    } else if (m.method === "Runtime.executionContextDestroyed") {
-      for (const [f, id] of mainWorld) if (id === m.params?.executionContextId) mainWorld.delete(f);
-    } else if (m.method === "Runtime.executionContextsCleared") {
-      mainWorld.clear();
-    }
-  };
-  const send = (method, params = {}) =>
-    new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  const cdp = await cdpConnect(t.webSocketDebuggerUrl, label, {
+    onEvent: m => {
+      if (m.method === "Runtime.executionContextCreated") {
+        const c = m.params?.context;
+        if (c?.auxData?.isDefault && c.auxData.frameId) mainWorld.set(c.auxData.frameId, c.id);
+      } else if (m.method === "Runtime.executionContextDestroyed") {
+        for (const [f, id] of mainWorld) if (id === m.params?.executionContextId) mainWorld.delete(f);
+      } else if (m.method === "Runtime.executionContextsCleared") {
+        mainWorld.clear();
+      }
+    },
+  });
+  const send = cdp.send;
   await send("Runtime.enable");
-  const evaluate = async expr => {
+  await send("Page.enable");
+  const evaluate = async (expr, { ms } = {}) => {
     const r = await send("Runtime.evaluate", {
       expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true,
-    });
+    }, { ms });
     if (r.result?.exceptionDetails || r.result?.result?.subtype === "error") {
       throw new Error(`${label}: ${JSON.stringify(r.result).slice(0, 300)}`);
     }
     return r.result?.result?.value;
+  };
+  // A RELOAD is Page.reload and the new document's load, never an evaluate of
+  // `location.reload()`: that evaluate's context is destroyed by the very
+  // navigation it starts, so its answer is not something to wait on.
+  const reload = async ({ ms } = {}) => {
+    const loaded = cdp.next("Page.loadEventFired", ms);
+    await send("Page.reload", {});
+    await loaded;
+  };
+  // A NAVIGATION likewise: Page.navigate and the new document's load, never
+  // an evaluate of `location.href = …`.
+  const navigate = async (url, { ms } = {}) => {
+    const loaded = cdp.next("Page.loadEventFired", ms);
+    const r = await send("Page.navigate", { url });
+    if (r.result?.errorText) throw new Error(`${label}: navigating to ${url}: ${r.result.errorText}`);
+    // No loader: a same-document navigation (a hash change), which loads nothing.
+    if (!r.result?.loaderId) { loaded.catch(() => {}); return; }
+    await loaded;
   };
   const until = async (expr, what, ms = 30_000) => {
     const deadline = now() + ms;
@@ -292,11 +376,11 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
     try { page = JSON.stringify(await evaluate(dump)); } catch (_) {}
     throw new Error(`${label}: timed out waiting for ${what}\n      page: ${page}`);
   };
-  // EVALUATE IN A CHILD FRAME, found by a part of its URL. A node serves a
-  // web app inside a SANDBOXED iframe (opaque origin), so the page's own
-  // `document` is the node's shell and never the app; this reads the app's
-  // DOM through an isolated world in that frame.
-  const evaluateIn = async (urlPart, expr) => {
+  // EVALUATE IN A CHILD FRAME, found by a part of its URL — looked up on EVERY
+  // call, so a reloaded frame is found anew. A node serves a web app inside a
+  // SANDBOXED iframe (opaque origin), so the page's own `document` is the
+  // node's shell and never the app.
+  const evaluateIn = async (urlPart, expr, { ms } = {}) => {
     const tree = (await send("Page.getFrameTree")).result?.frameTree;
     const frames = [];
     const walk = n => { if (!n) return; frames.push(n.frame); (n.childFrames ?? []).forEach(walk); };
@@ -304,7 +388,7 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
     const f = frames.find(x => (x.url ?? "").includes(urlPart));
     // OUT OF PROCESS: Chrome isolates a sandboxed iframe into its own process,
     // and then it is not in this page's frame tree but a TARGET of its own.
-    if (!f) return evaluateInTarget(debug, urlPart, expr, label);
+    if (!f) return evaluateInTarget(debug, urlPart, expr, label, ms);
     // The frame's MAIN world, never an isolated one: an isolated world shares
     // the DOM but not the page's globals, so a probe of the page's own state
     // (`globalThis.__cwSessions`) read EMPTY there — a non-measurement that
@@ -321,11 +405,11 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
     if (!contextId) throw new Error(`${label}: no main-world context in frame ${f.url}`);
     const r = await send("Runtime.evaluate", {
       expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true, contextId,
-    });
+    }, { ms });
     if (r.result?.exceptionDetails) throw new Error(`${label} (frame): ${JSON.stringify(r.result).slice(0, 300)}`);
     return r.result?.result?.value;
   };
-  return { label, send, evaluate, evaluateIn, until, close: () => ws.close() };
+  return { label, send, evaluate, evaluateIn, navigate, reload, until, close: cdp.close };
 }
 
 /** Resolve with the first match of `re` in a child's output, or fail naming the child. */
@@ -412,6 +496,18 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     console.error(`${label} FAILED: ${e.message}`);
     done(1);
   }
+}
+
+/**
+ * A directory THIS TEST owns, to be its TMPDIR: under the repo's own
+ * `.test-tmp/` (git-ignored), never the caller's temp dir — the system default
+ * is refused by `openFreshBrowser` and tools/realnet.sh, and a test must pass
+ * from any shell, not only one that set TMPDIR. The caller removes it.
+ */
+export function ownTmp(prefix) {
+  const root = fileURLToPath(new URL("../.test-tmp/", import.meta.url));
+  mkdirSync(root, { recursive: true });
+  return mkdtempSync(join(root, prefix));
 }
 
 /**

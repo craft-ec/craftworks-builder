@@ -127,7 +127,7 @@ const url = live =>
  * before its first tab loads the app.
  */
 async function freshProfile(tab) {
-  await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${PAGE_PORT}/about-blank-for-storage`)}; return 1;`);
+  await tab.navigate(`http://127.0.0.1:${PAGE_PORT}/about-blank-for-storage`);
   await sleep(300);
   const left = await tab.evaluate(`localStorage.clear(); sessionStorage.clear(); return localStorage.length + sessionStorage.length;`);
   if (left !== 0) throw new Error(`the profile's storage did not clear (${left} keys left), so this arm would inherit the last one's project`);
@@ -135,7 +135,7 @@ async function freshProfile(tab) {
 
 /** Publish a tab and wait until the NODE has confirmed it. */
 async function publish(tab, live) {
-  await tab.evaluate(`window.location.href = ${JSON.stringify(url(live))}; return 1;`);
+  await tab.navigate(url(live));
   await sleep(500);
   await tab.until(`document.getElementById("publish")`, "the page to load");
   await tab.evaluate(`document.getElementById("publish").click(); return 1;`);
@@ -576,7 +576,7 @@ async function reload() {
   // THE HEAD BEFORE, so "the same head" is a comparison and not a hope.
   const headBefore = await a.evaluate(`return window.__craftworks?.db?.root?.() ?? null;`);
 
-  await a.evaluate(`window.location.reload(); return 1;`);
+  await a.reload();
   await sleep(1000);
   await a.until(`document.getElementById("publish")`, "the page to come back", 60_000);
   // A SECOND PUBLISH after the reload must not install anything again: the

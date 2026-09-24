@@ -10,7 +10,7 @@
 // must inherit nothing. The "app definition" panel is read because it is what
 // the page shows a person as the definition.
 import assert from "node:assert";
-import { openPageHost } from "./page-host.mjs";
+import { openPageHost, cdpConnect } from "./page-host.mjs";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,11 +31,8 @@ try {
     try { target = (await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json()).find(t => t.type === "page"); } catch (_) {}
   }
   assert.ok(target, "chrome did not start");
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
-  const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  // Through the ONE CDP connection (page-host): every call has a deadline.
+  const { send } = await cdpConnect(target.webSocketDebuggerUrl, "definition-page");
   const within = (p, ms, what) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(`no answer in ${ms} ms: ${what}`)), ms))]);
   const evaluate = async expr => {
     const r = await within(send("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true }), 5000, expr.slice(0, 60));

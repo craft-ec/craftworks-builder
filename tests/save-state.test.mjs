@@ -3,7 +3,7 @@
 // localStorage — `app.js` used to discard exactly this rejection with
 // `.catch(() => {})`, so no unit test of LocalDb could see the UI half.
 import assert from "node:assert";
-import { openPageHost } from "./page-host.mjs";
+import { openPageHost, cdpConnect } from "./page-host.mjs";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,19 +23,14 @@ try {
     try { target = (await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json()).find(t => t.type === "page"); } catch (_) {}
   }
   assert.ok(target, "chrome did not start");
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
   // Uncaught PAGE exceptions are kept, and a timed-out wait names the last one:
   // a page whose module threw at load shows nothing in the DOM, so without this
   // the failure says only what never appeared, not why.
   const pageErrors = [];
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.method === "Runtime.exceptionThrown") pageErrors.push(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? "an exception");
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  };
-  const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  // Through the ONE CDP connection (page-host): every call has a deadline.
+  const { send } = await cdpConnect(target.webSocketDebuggerUrl, "save-state", {
+    onEvent: m => { if (m.method === "Runtime.exceptionThrown") pageErrors.push(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? "an exception"); },
+  });
   const within = (p, ms, what) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(`no answer in ${ms} ms: ${what}`)), ms))]);
   const evaluate = async expr => {
     const r = await within(send("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true }), 5000, expr.slice(0, 60));

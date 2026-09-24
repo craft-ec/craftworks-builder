@@ -97,7 +97,7 @@ try {
   builderTab = builder;
   const APP = { name: "Notes", components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
     schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } } };
-  await builder.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${host.port}/#node=${A.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)))}; return 1;`);
+  await builder.navigate(`http://127.0.0.1:${host.port}/#node=${A.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)));
   await until(builder, `return document.querySelectorAll(".rt-comp input[name=title]").length > 0;`, 30_000);
   for (const title of ["alpha", "beta"]) {
     await builder.evaluate(`const i = document.querySelector(".rt-comp input[name=title]"); i.value = ${JSON.stringify(title)}; document.querySelector(".rt-comp button.pri").click(); return 1;`);
@@ -129,7 +129,7 @@ try {
   const visitor = await fresh.tab("visitor");
   const url = `http://127.0.0.1:${B.ws}/v1/contract/web/${pub.address}/`;
   const t0 = Date.now();
-  await visitor.evaluate(`window.location.href = ${JSON.stringify(url)}; return 1;`);
+  await visitor.navigate(url);
   const seen = await untilIn(visitor, `const r = [...document.querySelectorAll("tbody tr td:first-child")].map(td => td.textContent); return r.length >= 2 ? r : null;`, 150_000, 250, `${pub.address}/?__sandbox=1`);
   const firstLoadMs = Date.now() - t0;
   // WHAT THE VISITOR'S PAGE SAID — the evidence when it shows nothing.
@@ -173,7 +173,7 @@ try {
   const tSaved = Date.now();
   for (let i = 0; i < 8 && !onB; i += 1) {
     reloads += 1;
-    await visitor.evaluate(`location.reload(); return 1;`);
+    await visitor.reload();
     onB = await untilIn(visitor, `return [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === "gamma") || null;`, 20_000, 250, `${pub.address}/?__sandbox=1`);
   }
   check(!!onB, `B sees A's new row after a reload: ${Date.now() - tSaved} ms after A's store had it published (${reloads} reload(s))`);
@@ -191,7 +191,7 @@ try {
   const owner = await ownerBrowser.tab("owner");
   const ownFrame = `127.0.0.1:${A.ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
   const tOwner = Date.now();
-  await owner.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${A.ws}/v1/contract/web/${pub.address}/`)}; return 1;`);
+  await owner.navigate(`http://127.0.0.1:${A.ws}/v1/contract/web/${pub.address}/`);
   const ownerUi = await untilIn(owner, `return document.querySelectorAll(".rt-comp input[name=title]").length > 0 ? { buttons: [...document.querySelectorAll("button")].map(b => b.textContent).filter(t => ["Add","Edit","Delete"].includes(t)), view: !!document.querySelector(".rt-view") } : null;`, 120_000, 500, ownFrame);
   check(!!ownerUi && ownerUi.buttons.includes("Add") && !ownerUi.view, `the publisher's own site on ${A.label} opens EDITABLE (in ${Date.now() - tOwner} ms)`, ownerUi ?? await owner.evaluateIn(ownFrame, `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message));
   const visUi = await visitor.evaluateIn(visFrame, `return { inputs: document.querySelectorAll("input").length, view: !!document.querySelector(".rt-view") };`);
@@ -211,7 +211,7 @@ try {
   // click — and a row added there reaches B's open view. It is a publish too,
   // counted with the rest.
   const tReload = Date.now();
-  await builder.evaluate(`location.reload(); return 1;`);
+  await builder.reload();
   await sleep(1500);
   const again = await watchPublish("reopen", tReload);
   const addrNow = await builder.evaluate(`return document.getElementById("tree-addr")?.textContent ?? "";`);
@@ -253,10 +253,10 @@ try {
     // Published at a version no node has yet (craftworks-sdk#349): a view of it WAITS.
     const ahead = h.headSeq() + 1000;
     const c = await publishApp({ ...app, name: "Notes (ahead)" }, { sdk, session: h.session, headId: h.headId(), headSeq: ahead, appId, manifest: m, read, subtle: crypto.subtle });
-    return { mismatch: a.address, missing: b.address, ahead: c.address, aheadSeq: ahead, sha: m.sdk.sha256 };`);
+    return { mismatch: a.address, missing: b.address, ahead: c.address, aheadSeq: ahead, sha: m.sdk.sha256 };`, { ms: BUDGET_MS });
   for (const [kind, addr, expect] of [["mismatch", tampered.mismatch, /sha256|hash|mismatch|does not match/i], ["missing", tampered.missing, /no-such-artefact\.wasm/]]) {
     const tab = await fresh.tab(`visitor-${kind}`);
-    await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`)}; return 1;`);
+    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`);
     const st = await untilIn(tab, `const s = document.getElementById("status"); return s?.className === "bad" ? s.textContent : null;`, 90_000, 2000, `${addr}/?__sandbox=1`);
     const rows = await tab.evaluateIn(`${addr}/?__sandbox=1`, `return document.querySelectorAll("tbody tr").length;`);
     check(typeof st === "string" && expect.test(st) && rows === 0,
@@ -270,7 +270,7 @@ try {
   {
     const tab = await fresh.tab("visitor-ahead");
     const frame = `${tampered.ahead}/?__sandbox=1`;
-    await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${tampered.ahead}/`)}; return 1;`);
+    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${tampered.ahead}/`);
     const said = await untilIn(tab, `const s = document.getElementById("status")?.textContent ?? ""; return s.includes("waiting for the published version") ? s : null;`, 90_000, 1000, frame);
     await sleep(30_000);
     const after = await tab.evaluateIn(frame, `return { status: document.getElementById("status")?.textContent ?? null, rows: document.querySelectorAll("tbody tr").length };`);

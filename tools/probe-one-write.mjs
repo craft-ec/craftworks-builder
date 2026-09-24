@@ -27,7 +27,7 @@ const ev = expr => tab.evaluate(expr);
 const APP = { name: "Two tabs",
   components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned", live: true }],
   schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } } };
-await ev(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${PAGE}/#node=${WS}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)))}; return 1;`);
+await tab.navigate(`http://127.0.0.1:${PAGE}/#node=${WS}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)));
 await sleep(5000);
 console.log("before publish:", JSON.stringify(await ev(`return { btn: document.getElementById("publish")?.textContent, phase: window.__craftworks?.phase, comps: document.querySelectorAll(".rt-comp").length };`)));
 await ev(`document.getElementById("publish").click(); return 1;`);

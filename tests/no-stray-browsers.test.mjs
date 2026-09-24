@@ -11,10 +11,10 @@
 //      browser either: each browser's watchdog ends it.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ownTmp } from "./page-host.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -26,7 +26,9 @@ const t = async (name, fn) => {
   try { await fn(); process.stdout.write(`  ok  ${name}\n`); }
   catch (e) { failures += 1; process.stdout.write(`  FAIL ${name}\n    ${e.stack}\n`); }
 };
-const dir = mkdtempSync(join(tmpdir(), "no-stray-"));
+// ITS OWN directory, the TMPDIR its page-host runs are given: the system
+// default is refused, and this test must pass from any shell.
+const dir = ownTmp("no-stray-");
 
 await t("**the sweep kills a browser a run recorded, verified gone — and leaves a PID the record no longer names**", async () => {
   const profile = mkdtempSync(join(dir, "cw-fresh-"));
@@ -102,4 +104,5 @@ await t("**a page-host run SIGKILLed (nothing of it runs) still leaves no browse
   assert.ok(gone, `a browser outlived its SIGKILLed page-host: ${left}`);
 });
 
+rmSync(dir, { recursive: true, force: true });
 if (failures) { process.stdout.write(`${failures} failed\n`); process.exit(1); }
