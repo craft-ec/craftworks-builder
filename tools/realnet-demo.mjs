@@ -232,7 +232,9 @@ function wireCheck() {
   const unpaused = [...(A.stats.unpaused ?? []), ...(Vw.stats.unpaused ?? [])];
   if (unpaused.length) step(false, `a frame or worker started UNPAUSED: a socket it opened at once could be unseen by the capture`, unpaused);
   step(A.rows.length > 0 && fails.length === 0,
-    `A view steps: ${fails.length} user-data writes (${repairs} repair PUTs)`,
+    // The BOUNDARY (architect): this proves every target in THIS run's browser sent no user-data write through A;
+    // it cannot see a writer outside that browser (an earlier orphan, another harness, a native tool).
+    `A view steps: ${fails.length ? `${fails.length} user-data write(s) through A` : "no write through A"} from this run's browser (${repairs} repair PUTs)`,
     fails.length ? fails.slice(0, 8) : A.rows.length ? { requests: A.rows.length, sockets: A.stats.sockets, targets: A.stats.targets } : "NOTHING was captured from A: the check saw no frame at all");
   const v9 = Vw.rows.filter(r => r.window === "9" && r.verdict === "fail");
   // V's OPEN window (open → before its first user write). REPORT-ONLY until sdk#350 (opening commits nothing on a
