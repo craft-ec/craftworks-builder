@@ -104,7 +104,7 @@ try {
 
   // 2. OPEN BY ADDRESS THROUGH A, in a fresh profile: the rows, as a view.
   visBrowser = await openFreshBrowser("realnet-demo: another user on A");
-  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), windowOf, label: "A" }) });
+  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await vis.navigate(url(A.ws));
@@ -170,7 +170,7 @@ try {
   const strays = clientsOn(V.ws);
   step(strays.length === 0, `no client is connected to ${V.label} before its page opens (${strays.length} found)`, strays.length ? strays.map(c => ({ ...c, command: spawnSync("ps", ["-o", "command=", "-p", String(c.pid)], { encoding: "utf8" }).stdout.trim().slice(0, 200) })) : undefined);
   vBrowser = await openFreshBrowser("realnet-demo: a user who writes their own data, on V");
-  wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), windowOf, label: "V" }) });
+  wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), received: join(WIRE_DIR, "wire-V.received.jsonl"), windowOf, label: "V" }) });
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();
   // V's two windows, taken from the step counter WHEN THEY START, never
