@@ -23,11 +23,25 @@ import { openPublished } from "./runtime-logic.js";
 const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
 
+// THE OPEN'S PHASES, for the tools that time it (a realnet step time is one
+// number from navigate to rows, and cannot say where a slow open went): ms
+// since this page's navigation began, stamped once as each phase ends —
+// loader (the container served, this module running), files (app.json and
+// artefacts.json), sdk (its wasm fetched, verified, loaded), opened (this
+// node's signer asked, the app's tree and the user's own opened: the signer,
+// block and register artefacts load in here), head (the app's tree has a head
+// by the time the first rows came: stamped with them), rows (every
+// component's first read answered). Read, never acted on.
+const phases = (globalThis.__craftworksOpen = {});
+const mark = k => { phases[k] ??= Math.round(performance.now()); };
+mark("loader");
+
 try {
   // This container's own files, through the SDK's one fetch: waited on (and
   // named while waiting), never ended by a status (rule 8, craftworks-sdk#340).
   const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
   const [art, app] = await Promise.all([json("artefacts.json"), json("app.json")]);
+  mark("files");
   const head = app?.publisher?.head;
   // Every artefact from the SDK's artefacts container on THIS node, by hash.
   // From `location.href`, never `location.origin`: a node serves an app in a
@@ -36,6 +50,7 @@ try {
   const from = e => ({ urls: [new URL(`/v1/contract/web/${art.contract}/${e.file}`, location.href).href], sha256: e.sha256 });
   say("Loading the SDK…");
   const sdk = await load(await artefactBytes(from(art.sdk)));
+  mark("sdk");
   say("Connecting…");
   // The APP's id (craftworks-sdk#267): the space its data was written
   // under, which this view reads. Absent, the app predates app ids and names
@@ -58,6 +73,7 @@ try {
     artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
     ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
   });
+  mark("opened");
   // "Reading…" is never SILENT: it says how long, and a read that ENDS is
   // shown on its component by the runtime, by name.
   const t0 = Date.now();
@@ -67,6 +83,10 @@ try {
   const counting = setInterval(() => say(opened.waitingFor() || `Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
   const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }
+  // No event says when the head arrives, and no timer watches for it (every
+  // published app runs this): the head is stamped as known BY the first rows.
+  if (opened.headId()) mark("head");
+  mark("rows");
   // Mounted: a component whose read ENDED says so on the page (the runtime);
   // the status names it too, so the page is never quietly half-empty.
   const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
