@@ -113,14 +113,14 @@ const SHOTS = [
   },
   {
     name: "live-switch-off",
-    what: "The LIVE switch in its default state: off, with the line that says what it costs.",
+    what: "The LIVE switch in its default state, off: a binding on the app author's own screens updates by itself only when they turn it on, and the line says what it costs. A published app opened by address is always live, whatever this switch says (the owner's rule).",
     hash: () => `#app=${encodeURIComponent(JSON.stringify(APP))}`,
     setup: `document.querySelectorAll('.comp')[1].click();`,
     wait: `!!document.getElementById("live")`,
   },
   {
     name: "live-switch-on",
-    what: "The same switch turned on — the one thing an app author changes to make a component update by itself.",
+    what: "The same switch turned on — the one thing an app author changes to make a component on their own screens update by itself.",
     hash: () => `#app=${encodeURIComponent(JSON.stringify(APP))}`,
     setup: `document.querySelectorAll('.comp')[1].click(); await new Promise(r=>setTimeout(r,100)); document.getElementById("live").click();`,
     wait: `document.getElementById("live")?.checked === true`,
