@@ -94,7 +94,7 @@ try {
   await sleep(3000);
   window_ = "done";
   cap.stop();
-  const r = spawnSync(process.env.RN_CLASSIFY, ["--block-code", join(process.cwd(), "sdk/block.wasm")], { input: readFileSync(wire, "utf8"), encoding: "utf8", maxBuffer: 1 << 30 });
+  const r = spawnSync(process.env.RN_CLASSIFY, ["--block-code", join(process.cwd(), "sdk/block.wasm"), "--pieces", join(process.cwd(), "sdk/pieces.json"), "--webapp-code", join(process.cwd(), "sdk/webapp.wasm")], { input: readFileSync(wire, "utf8"), encoding: "utf8", maxBuffer: 1 << 30 });
   if (r.status !== 0) throw new Error(`classify-frames: ${r.stderr}`);
   const rows = r.stdout.split("\n").filter(Boolean).map(l => JSON.parse(l));
   const writes = w => rows.filter(x => x.window === w && x.verdict === "fail");

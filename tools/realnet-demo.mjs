@@ -44,6 +44,8 @@ const V = { ws: Number(process.env.RN_V), label: process.env.RN_V_LABEL ?? "V (a
 const O1 = { ws: Number(process.env.RN_O1), label: "O1" };
 const O2 = { ws: Number(process.env.RN_O2), label: "O2" };
 for (const n of [A, B, V, O1, O2]) if (!Number.isInteger(n.ws) || n.ws <= 0) { console.log("FAIL  RN_B, RN_A, RN_V, RN_O1 and RN_O2 must each name a ws port"); process.exit(2); }
+// The A-check's inputs: the Block code, and the SDK's load-piece list with the webapp code (sdk#347's repair).
+for (const e of ["RN_CLASSIFY", "RN_BLOCK_WASM", "RN_PIECES", "RN_WEBAPP_WASM"]) if (!process.env[e]) { console.log(`FAIL  ${e} is required: the A-check cannot judge a PUT without it`); process.exit(2); }
 if ([7509, 7609].includes(V.ws)) { console.log(`FAIL  ${V.ws} is the owner's node: the user who WRITES is never on it`); process.exit(2); }
 if ([7509, 7609].includes(B.ws)) { console.log(`FAIL  ${B.ws} is the owner's node: the demo never PUBLISHES there`); process.exit(2); }
 if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
@@ -320,7 +322,9 @@ try {
 function classified(file) {
   let input = "";
   try { input = readFileSync(file, "utf8"); } catch { return []; }
-  const r = spawnSync(process.env.RN_CLASSIFY, ["--block-code", process.env.RN_BLOCK_WASM], { input, encoding: "utf8", maxBuffer: 1 << 30 });
+  // The SDK's load pieces are judged against its published list (sdk#347's
+  // repair after load): a verified piece re-PUT is a repair, never user data.
+  const r = spawnSync(process.env.RN_CLASSIFY, ["--block-code", process.env.RN_BLOCK_WASM, "--pieces", process.env.RN_PIECES, "--webapp-code", process.env.RN_WEBAPP_WASM], { input, encoding: "utf8", maxBuffer: 1 << 30 });
   if (r.status !== 0) throw new Error(`classify-frames failed: ${r.stderr}`);
   return r.stdout.split("\n").filter(Boolean).map(l => JSON.parse(l));
 }
