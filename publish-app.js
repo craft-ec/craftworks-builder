@@ -116,6 +116,11 @@ export async function publishApp(app, {
   }
   const code = bytesOf(await read("sdk/webapp.wasm"));
   const put = state => session.put_contract(code, sdk.webapp.params(state), state);
+  // THE APP'S LINK (builder#117): the starter is published as the app's SITE,
+  // under the person's own authority relabelled `site:<app>` — the same link
+  // for every publication, whatever the app's structure. Derived by the SDK.
+  const siteCode = bytesOf(await read("sdk/site.wasm"));
+  const link = session.site_link(appId, siteCode);
 
   // 1. The PIECES, as this build cut them: every one's address must be the one the pieces manifest names, or an
   // app would race pieces nobody published. COMPUTED, not learned from a PUT: content-addressed.
@@ -139,37 +144,63 @@ export async function publishApp(app, {
   const piecesBytes = pieceStates.reduce((n, p) => n + p.state.length, 0);
   const build = async seq => {
     const s = await starterOf(app, { sdk, headId, appId, seq, manifest, pieces, read, subtle, code });
-    return { state: s.state, result: { address: s.address, bundleHash: s.bundleHash, bundleBytes: s.bundleBytes, containerBytes: s.state.length, pieces: pieceStates.length, piecesBytes, seq } };
+    return { web: s.web, result: { address: link, bundleHash: s.bundleHash, bundleBytes: s.bundleBytes, containerBytes: s.state.length, pieces: pieceStates.length, piecesBytes, seq } };
   };
 
-  // NOTHING CHANGED, NOTHING SENT: the same starter address on the same SDK means every container is already the
-  // same contract on the network (content-addressed). Re-PUTting them was measured to make the node serve a
-  // container 404 for a moment (1 run in 3), which the owner hit as "could not resolve artefact".
+  // NOTHING CHANGED, NOTHING SENT: the same starter BUNDLE at the same link on the same SDK means the pieces
+  // (content-addressed) and the site are already on the network. Re-PUTting a container was measured to make the
+  // node serve it 404 for a moment (1 run in 3), which the owner hit as "could not resolve artefact"; a site
+  // published again would be a new version of the same bytes.
   //
   // THE SAME APP is compared at the LAST publication's seq, never this one's (craftworks-sdk#349, the core dev's
-  // ruling): the address is the app's stable link and changes when the APP changes, never when its data does. The
-  // seq is refreshed only by a publication that PUTs.
-  if (last?.app_contract_id && !!sdkVersion && last?.sdk_version === sdkVersion) {
+  // ruling): the bundle changes when the APP changes, never when its data does. The seq is refreshed only by a
+  // publication that PUTs. The LINK never changes (builder#117).
+  if (last?.app_contract_id === link && !!last?.bundle_hash && !!sdkVersion && last?.sdk_version === sdkVersion) {
     const same = await build(last.head_seq ?? null);
-    if (same.result.address === last.app_contract_id) return { ...same.result, put: false };
+    if (same.result.bundleHash === last.bundle_hash) return { ...same.result, put: false };
   }
-  const { state, result } = await build(headSeq);
-  const address = result.address;
+  const { web, result } = await build(headSeq);
 
-  // 4. PUT, every piece and then the starter, each acknowledged and matched by KEY.
-  const all = [...pieceStates, { what: "the app's starter container", key: address, state }];
-  for (const { what, key, state: bytes } of all) {
+  // 4. PUT every piece, each acknowledged and matched by KEY; and publish the starter as the app's SITE: read,
+  // signed as the next version, PUT and read back by the SDK -- ended by the read-back, a refusal or a cancel.
+  for (const { what, key, state: bytes } of pieceStates) {
     const k = put(bytes);
     if (k !== key) throw new Error(`the node keyed ${what} ${k}, not the ${key} its content names`);
   }
-  await Promise.all(all.map(({ what, key }) => settled(session, key, what, { everyMs, sleep, signal })));
-  return { ...result, put: true };
+  const published = session.publish_site(appId, siteCode, web);
+  if (published !== link) throw new Error(`the SDK published the site at ${published}, not the ${link} it links`);
+  const [, version] = await Promise.all([
+    Promise.all(pieceStates.map(({ what, key }) => settled(session, key, what, { everyMs, sleep, signal }))),
+    sited(session, appId, { everyMs, sleep, signal }),
+  ]);
+  return { ...result, version, put: true };
 }
 
 /**
- * The STARTER container of `app` whose data is the tree `headId` names under `appId`: built by the SDK
- * (deterministic: the same app is the same address), never PUT here. What publish PUTs, and what the build measures
- * against `STARTER_LIMIT`.
+ * Wait until the SITE's publication of `appId` ENDS on the network's answer:
+ * `published` (the read-back shows this version: resolves to it), or
+ * `superseded` (another publication of this site is live — reported, never
+ * overwritten: publishing again is the person's act), `refused` in the
+ * signer's or node's words, or a person's cancel (`signal`). No time ends it
+ * (rule 8); while it waits the SDK says on what (`said`).
+ */
+export async function sited(session, appId, { everyMs, sleep, signal = null }) {
+  for (;;) {
+    if (signal?.aborted) session.cancel_site?.(appId);
+    const { state, version, said } = JSON.parse(session.site_status(appId));
+    if (state === "published") return version;
+    if (state === "superseded") throw new Error(`another publication of this app is live: version ${version} — publish again to replace it`);
+    if (state === "refused") throw new Error(`the app's site was refused: ${said}`);
+    if (state === "cancelled") throw new Error("cancelled: the app's site was not published");
+    if (state === "none") throw new Error("the app's site was never sent");
+    await sleep(everyMs);
+  }
+}
+
+/**
+ * The STARTER of `app` whose data is the tree `headId` names under `appId`: built by the SDK (deterministic: the same
+ * app is the same bytes), never PUT here. Its WEB part is what publish publishes as the app's site (builder#117); its
+ * framed `state` is what the build measures against `STARTER_LIMIT`.
  */
 export async function starterOf(app, { sdk, headId, appId, seq = null, manifest, pieces, read, subtle, code }) {
   const carried = {};
@@ -179,7 +210,7 @@ export async function starterOf(app, { sdk, headId, appId, seq = null, manifest,
   const c = new sdk.webapp.AppContainer();
   for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
   const state = c.finish();
-  return { state, address: sdk.webapp.address(code, state), bundleHash, bundleBytes };
+  return { state, web: c.web(), address: sdk.webapp.address(code, state), bundleHash, bundleBytes };
 }
 
 /**

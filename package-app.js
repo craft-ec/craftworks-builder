@@ -39,8 +39,9 @@ export const NAMED = ["sdk", "signer", "block", "register"];
 /**
  * Manifest entries that are the SDK's PUBLISHING tools, not an app's
  * artefacts (builder#104): the artefacts CONTAINER (the one web container
- * holding the app artefacts, with the address the node serves it under) and the
- * `webapp` contract's CODE a builder PUTs containers with. The node runs
+ * holding the app artefacts, with the address the node serves it under), the
+ * `webapp` contract's CODE a builder PUTs containers with, and the `site`
+ * contract's CODE the app is published under (builder#117). The node runs
  * them; an app never fetches them, so an app never names them.
  *
  * Kept apart from NAMED on purpose, and each by its SHAPE: an entry that
@@ -50,6 +51,9 @@ export const NAMED = ["sdk", "signer", "block", "register"];
 export const PLATFORM = {
   container: (e, ids) => typeof e?.address === "string" && e.address.length > 0 && ids.hex32(e?.sha256 ?? ""),
   webapp: (e, ids) => e?.file === "webapp.wasm" && ids.hex32(e?.sha256 ?? ""),
+  // The `site` contract's CODE (builder#117): the app itself is published as
+  // its site under it — the node runs it, an app never fetches it.
+  site: (e, ids) => e?.file === "site.wasm" && ids.hex32(e?.sha256 ?? ""),
   // The SDK's JavaScript an app CARRIES (its build's reachable set from
   // index.js): what goes into the container, never fetched by hash. Each a
   // file beside index.js by the SDK's one rule (`sdk.ids.module`).

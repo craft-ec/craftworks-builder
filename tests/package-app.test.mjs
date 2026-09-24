@@ -166,7 +166,7 @@ const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), con
 
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
   assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
-  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "decoder", "modules", "webapp"]);
+  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "decoder", "modules", "site", "webapp"]);
   const { files } = await packageApp(APP, { carried: SDK_JS, manifest: withTools, pieces: PIECES, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", ...NAMED].sort(),

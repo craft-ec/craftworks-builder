@@ -169,6 +169,27 @@ try {
   const rows = again ? await until(builder, has([ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS) : null;
   step(!!again && !!rows && again.address === pub.address, `the builder RELOADED reopens connected at the same address, with the rows (${Date.now() - t8} ms)`, { address: again?.address === pub.address ? "same" : again?.address, put: again?.put, rows: !!rows });
 
+  // 8b. THE APP'S STRUCTURE CHANGES, ITS LINK DOES NOT (builder#117; the owner's
+  // "google.com doesn't change when its structure changes"). The builder adds a
+  // component — a Table, from the palette — and presses "Publish changes": the
+  // site is published again at the SAME address (its next version), and A,
+  // RELOADED, opens the new structure there with the same rows. (The promise
+  // is a reload: an open page keeps the app it loaded.)
+  const t8b = Date.now();
+  const TABLES = `return [...document.querySelectorAll(".rt-comp h4")].filter(h => h.textContent.startsWith("Table ·")).length;`;
+  const beforeTables = await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null);
+  await builder.evaluate(`window.__craftworksPublished = null; return 1;`);
+  await builder.evaluate(`[...document.querySelectorAll("#palette .chip")].find(b => b.textContent.startsWith("Table"))?.click(); return 1;`);
+  const pressable = await until(builder, `return (document.getElementById("publish")?.textContent === "Publish changes" && 1) || null;`, 30_000);
+  await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
+  const re = pressable ? await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3) : null;
+  await vis.reload();
+  const grew = re ? await until(vis, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) > ${Number(beforeTables ?? 0)} && 1) || null;`, STEP_MS, 500, frameOf(A.ws)) : null;
+  const rowsKept = grew ? await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws)) : null;
+  step(!!re && re.address === pub.address && re.put === true && !!grew && !!rowsKept,
+    `the builder changes the app's STRUCTURE and publishes the changes: the SAME address (version ${re?.version ?? "?"}), and ${A.label} RELOADED shows the new structure with the rows (${Date.now() - t8b} ms)`,
+    { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
+
   // 9. A USER WRITES THEIR OWN TREE (Phase 3 item 5): on V — a node that
   // is neither the app owner's nor the machine owner's — the app's rows are a
   // view, and the guestbook (source: mine) takes the user's entry into

@@ -49,12 +49,14 @@ fi
 # builder#104: publishing PUTs an app's containers under the `webapp` contract
 # (webapp.wasm); since craftworks-sdk#347 those are its load pieces and its
 # starter, which carries the decode-only wasm (decoder.wasm) — no longer the
-# SDK's artefacts container. The signer is the one delegate (the switch-over
-# deleted the engine delegate). All are checked and copied like the rest.
-WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm decoder.wasm"
+# SDK's artefacts container. builder#117: the starter is published as the
+# app's SITE, under the `site` contract (site.wasm). The signer is the one
+# delegate (the switch-over deleted the engine delegate). All are checked and
+# copied like the rest.
+WASM_ARTEFACTS="craftworks_sdk_bg.wasm signer.wasm block.wasm register.wasm webapp.wasm site.wasm decoder.wasm"
 # The three copied as files beside the SDK bundle. `craftworks_sdk_bg.wasm`
 # is copied by the bundle step above, so it is checked but not re-copied.
-COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm decoder.wasm"
+COPIED_ARTEFACTS="signer.wasm block.wasm register.wasm webapp.wasm site.wasm decoder.wasm"
 # The SDK's LOAD PIECES tool (craftworks-sdk#347), shipped in its pkg/tools/ (never read from a target dir): it cuts a published app's pieces.
 LOAD_PIECES=pkg/tools/load-pieces
 
