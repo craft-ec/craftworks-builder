@@ -59,6 +59,7 @@ const MUTANT = process.env.REALNET_MUTANT ?? "";
 const windowOf = () => String(stepN + 1);
 const wires = [];
 let pubBrowser = null, visBrowser = null, vBrowser = null, failed = 0, stepN = 0;
+let vOpenWindow = null, vWriteWindow = null;
 const step = (ok, what, evidence) => {
   stepN += 1;
   if (!ok) failed += 1;
@@ -91,7 +92,7 @@ try {
   const APP = { name: `Notes ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" },
     { type: "form", domain: "guests", source: "mine" }, { type: "table", domain: "guests", source: "mine" }],
     schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] }, guests: { type: "Guest", fields: [{ name: "title", kind: "text", required: true }] } } };
-  await builder.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${host.port}/#node=${B.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)))}; return 1;`);
+  await builder.navigate(`http://127.0.0.1:${host.port}/#node=${B.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)));
   await until(builder, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 30_000);
   for (const t of ["alpha", "beta"]) { await builder.evaluate(addTo("notes", t)); await sleep(500); }
   const t1 = Date.now();
@@ -106,7 +107,7 @@ try {
   wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
-  await vis.evaluate(`window.location.href = ${JSON.stringify(url(A.ws))}; return 1;`);
+  await vis.navigate(url(A.ws));
   const seen = await until(vis, has(["alpha", "beta"]), STEP_MS, 500, frameOf(A.ws));
   // The APP's components are a view here: no notes form, and the notes
   // table carries no writing button. (The guestbook is the user's own and
@@ -118,7 +119,7 @@ try {
   pubBrowser = await openFreshBrowser("realnet-demo: the app owner's site on B");
   const own = await pubBrowser.tab("owner");
   const t3 = Date.now();
-  await own.evaluate(`window.location.href = ${JSON.stringify(url(B.ws))}; return 1;`);
+  await own.navigate(url(B.ws));
   const editable = await until(own, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, STEP_MS, 500, frameOf(B.ws));
   if (!step(!!editable, `the app owner's site on ${B.label} opens EDITABLE (${Date.now() - t3} ms)`, editable ? undefined : await own.evaluateIn(frameOf(B.ws), `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message))) throw new Error("no editable site to write from");
   const onSite = js => own.evaluateIn(frameOf(B.ws), js);
@@ -145,13 +146,13 @@ try {
 
   // 7. A RELOADED reader reads all three from the network.
   const t7 = Date.now();
-  await vis.evaluate(`location.reload(); return 1;`);
+  await vis.reload();
   const reread = await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws));
   step(!!reread, `${A.label} RELOADED reads the add, the edit and the delete (${Date.now() - t7} ms)`, reread ? undefined : await vis.evaluateIn(frameOf(A.ws), TITLES).catch(e => e.message));
 
   // 8. The builder RELOADED reopens connected, and the rows are still there.
   const t8 = Date.now();
-  await builder.evaluate(`location.reload(); return 1;`);
+  await builder.reload();
   await sleep(1500);
   const again = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS);
   const rows = again ? await until(builder, has([ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS) : null;
@@ -172,7 +173,11 @@ try {
   wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), windowOf, label: "V" }) });
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();
-  await vt.evaluate(`window.location.href = ${JSON.stringify(url(V.ws))}; return 1;`);
+  // V's two windows, taken from the step counter WHEN THEY START, never
+  // written as numbers: a step added before them (#133's stray check) shifted
+  // both, and the control then read V's OPEN window for V's write — 0 seen.
+  vOpenWindow = windowOf();
+  await vt.navigate(url(V.ws));
   // THE MUTANTS, inside V's OPEN window (step 9), never on A: the check must SEE them.
   const mutate = async () => {
     if (MUTANT === "view-write") return vt.evaluateIn(frameOf(V.ws), addTo("guests", `mutant ${tag}`));
@@ -188,11 +193,12 @@ try {
   if (vReady && MUTANT) console.log(`MUTANT ${MUTANT}: ${JSON.stringify(await mutate().catch(e => e.message))}`);
   if (!step(!!vReady, `${V.label} opens it: the app's rows as a view, and the guestbook writable (${Date.now() - t9} ms)`, vReady ? undefined : await vt.evaluateIn(frameOf(V.ws), `return { status: document.getElementById("status")?.textContent?.slice(0, 300), mounted: document.querySelectorAll(".rt-comp").length, headings: [...document.querySelectorAll(".rt-comp h4")].map(h => h.textContent), body: document.body?.innerText?.slice(0, 200) };`).catch(e => e.message))) throw new Error("no guestbook to write");
   const t10 = Date.now();
+  vWriteWindow = windowOf();
   const typed = await vt.evaluateIn(frameOf(V.ws), addTo("guests", GUEST));
   const vSaved = await until(vt, savedIn("guests", GUEST), STEP_MS, 500, frameOf(V.ws));
   step(typed === "ok" && !!vSaved, `the user on ${V.label} adds a guestbook entry to their OWN tree: saved and shown (${Date.now() - t10} ms)`, vSaved ? undefined : { typed, guests: await vt.evaluateIn(frameOf(V.ws), titles("guests")).catch(() => null), body: await vt.evaluateIn(frameOf(V.ws), `return document.body?.innerText?.slice(0, 300);`).catch(e => e.message) });
   const t11 = Date.now();
-  await vt.evaluate(`location.reload(); return 1;`);
+  await vt.reload();
   const kept = await until(vt, hasIn("guests", [GUEST]), STEP_MS, 500, frameOf(V.ws));
   step(!!kept, `the user's entry survives a RELOAD of ${V.label} (${Date.now() - t11} ms)`, kept ? undefined : await vt.evaluateIn(frameOf(V.ws), titles("guests")).catch(e => e.message));
   // The app's data is untouched: B's own notes and A's view of them
@@ -231,21 +237,28 @@ function wireCheck() {
   const repairs = A.rows.filter(r => r.verdict === "report").length;
   const unpaused = [...(A.stats.unpaused ?? []), ...(Vw.stats.unpaused ?? [])];
   if (unpaused.length) step(false, `a frame or worker started UNPAUSED: a socket it opened at once could be unseen by the capture`, unpaused);
+  const unresumed = [...(A.stats.unresumed ?? []), ...(Vw.stats.unresumed ?? [])];
+  if (unresumed.length) step(false, `a target the capture paused was NOT resumed: it never ran, and its network is unseen`, unresumed);
+  // SAID, not failed: targets that closed while being attached, and Chrome's
+  // own targets that carry no page's sockets.
+  for (const [w, st] of [["A", A.stats], ["V", Vw.stats]]) {
+    if (st.gone?.length || st.notOurs?.length) console.log(`NOTE  capture ${w}: ${st.gone?.length ?? 0} target(s) closed while attached, ${st.notOurs?.length ?? 0} not ours (${[...new Set((st.notOurs ?? []).map(x => x.type))].join(", ")}), network not captured`);
+  }
   step(A.rows.length > 0 && fails.length === 0,
     // The BOUNDARY (architect): this proves every target in THIS run's browser sent no user-data write through A;
     // it cannot see a writer outside that browser (an earlier orphan, another harness, a native tool).
     `A view steps: ${fails.length ? `${fails.length} user-data write(s) through A` : "no write through A"} from this run's browser (${repairs} repair PUTs)`,
     fails.length ? fails.slice(0, 8) : A.rows.length ? { requests: A.rows.length, sockets: A.stats.sockets, targets: A.stats.targets } : "NOTHING was captured from A: the check saw no frame at all");
-  const v9 = Vw.rows.filter(r => r.window === "9" && r.verdict === "fail");
+  const v9 = Vw.rows.filter(r => r.window === vOpenWindow && r.verdict === "fail");
   // V's OPEN window (open → before its first user write). REPORT-ONLY until sdk#350 (opening commits nothing on a
   // key-holding node); REALNET_V_OPEN_ENFORCE=1 makes it a step. A MUTANT run is the proof the capture and the decoder
   // SEE a view's write: its count must be non-zero, or the run fails.
-  const v9line = `V open window (9): ${v9.length} user-data writes${MUTANT ? ` [MUTANT ${MUTANT}]` : ""}`;
+  const v9line = `V open window (${vOpenWindow}): ${v9.length} user-data writes${MUTANT ? ` [MUTANT ${MUTANT}]` : ""}`;
   if (MUTANT) step(v9.length > 0, `${v9line}: the mutant's write is SEEN`, v9.length ? v9.slice(0, 4) : "the mutant wrote and NOTHING was seen");
   else if (process.env.REALNET_V_OPEN_ENFORCE === "1") step(v9.length === 0, v9line, v9.length ? v9.slice(0, 8) : undefined);
   else console.log(`NOTE  ${v9line} (report-only until sdk#350)${v9.length ? ": " + JSON.stringify(v9.slice(0, 4)) : ""}`);
-  const v10 = Vw.rows.filter(r => r.window === "10");
+  const v10 = Vw.rows.filter(r => r.window === vWriteWindow);
   const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
-  step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step 10) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
+  step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step ${vWriteWindow}) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
   console.log(`WIRE  frames kept in ${WIRE_DIR}`);
 }

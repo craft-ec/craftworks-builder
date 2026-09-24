@@ -4,21 +4,22 @@
 // Nothing here reaches the network: the refusal is the first thing it does.
 import assert from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ownTmp } from "./page-host.mjs";
 
 // ITS OWN lock path, never the shared one: a real run may hold that now, and
-// this test must neither wait on it nor touch it.
-const dir = mkdtempSync(join(tmpdir(), "realnet-lock-"));
+// this test must neither wait on it nor touch it. And its OWN TMPDIR: the
+// tool refuses the system default, and this test must pass from any shell.
+const dir = ownTmp("realnet-lock-");
 const LOCK = join(dir, "lock");
 const tool = fileURLToPath(new URL("../tools/realnet.sh", import.meta.url));
 const holder = spawn("sleep", ["60"]);
 try {
   mkdirSync(LOCK);
   writeFileSync(`${LOCK}/owner`, `pid=${holder.pid}\nbranch=realnet-lock-test\n`);
-  const r = spawnSync("bash", [tool], { encoding: "utf8", env: { ...process.env, REALNET_LOCK: LOCK, REALNET_HOST: "nobody@127.0.0.1" }, timeout: 20_000 });
+  const r = spawnSync("bash", [tool], { encoding: "utf8", env: { ...process.env, TMPDIR: dir, REALNET_LOCK: LOCK, REALNET_HOST: "nobody@127.0.0.1" }, timeout: 20_000 });
   assert.strictEqual(r.status, 3, `a second run was not refused (exit ${r.status}): ${r.stdout}${r.stderr}`);
   assert.match(r.stdout, /REFUSED {2}another real-network run holds .*branch=realnet-lock-test/);
   assert.doesNotMatch(r.stdout, /== build|tunnel pid/, "the refused run went on to build or tunnel");

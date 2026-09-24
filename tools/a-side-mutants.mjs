@@ -47,7 +47,7 @@ const schemas = { notes: { type: "Note", fields: [{ name: "title", kind: "text",
 // one project — a second publish from the same profile would update the first app in place.
 async function publish(app, browser) {
   const tab = await browser.tab(`builder ${app.name}`);
-  await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${host.port}/#node=${WS}&preview=1&app=` + encodeURIComponent(JSON.stringify(app)))}; return 1;`);
+  await tab.navigate(`http://127.0.0.1:${host.port}/#node=${WS}&preview=1&app=` + encodeURIComponent(JSON.stringify(app)));
   await until(tab, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 60_000);
   await tab.evaluate(`const f = ${comp("Form", "notes")}; const i = f.querySelector("input[name=title]"); i.value = "alpha"; i.dispatchEvent(new Event("input", { bubbles: true })); f.querySelector("button.pri").click(); return 1;`);
   await sleep(1500);
@@ -67,7 +67,7 @@ try {
   const view = await fresh.tab("view");
   const frameOf = addr => `127.0.0.1:${WS}/v1/contract/web/${addr}/?__sandbox=1`;
   const open = async addr => {
-    await view.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${WS}/v1/contract/web/${addr}/`)}; return 1;`);
+    await view.navigate(`http://127.0.0.1:${WS}/v1/contract/web/${addr}/`);
     return until(view, `return [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].some(td => td.textContent === "alpha") || null;`, 180_000, frameOf(addr));
   };
   // THE CONTROL: open and read — nothing but reads.
@@ -99,6 +99,7 @@ try {
   const rows = r.stdout.split("\n").filter(Boolean).map(l => JSON.parse(l));
   const writes = w => rows.filter(x => x.window === w && x.verdict === "fail");
   const stats = cap.stats();
+  line(stats.unresumed.length === 0, `every target the capture paused was resumed`, stats.unresumed.length ? stats.unresumed : undefined);
   line(stats.unpaused.length === 0, `no frame or worker started unpaused (${stats.targets} target(s), ${stats.sockets} socket(s))`, stats.unpaused.length ? stats.unpaused : undefined);
   line(rows.some(x => x.window === "read") && writes("read").length === 0, `THE CONTROL — read: ${writes("read").length} user-data writes over ${rows.filter(x => x.window === "read").length} request(s)`, writes("read").slice(0, 4));
   line(writes("write").length > 0, `MUTANT view-write — write: ${writes("write").length} user-data write(s) SEEN`, writes("write").slice(0, 4).map(x => `${x.op}${x.signer ? ":" + x.signer : ""}${x.code ? ":" + x.code : ""}`));

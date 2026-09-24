@@ -1,7 +1,7 @@
 // Drives the real page in headless Chrome over the DevTools protocol (no deps):
 // build an app, preview it, add / edit / delete through the UI, watch the tree count.
 import assert from "node:assert";
-import { openPageHost } from "./page-host.mjs";
+import { openPageHost, cdpConnect } from "./page-host.mjs";
 import { join } from "node:path";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -16,11 +16,8 @@ try {
     try { target = (await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json()).find(t => t.type === "page"); } catch (_) {}
   }
   assert.ok(target, "chrome did not start");
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
-  const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  // Through the ONE CDP connection (page-host): every call has a deadline.
+  const { send } = await cdpConnect(target.webSocketDebuggerUrl, "e2e");
   const evaluate = async expr => {
     const r = await send("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true });
     if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "page error");

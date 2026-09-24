@@ -14,7 +14,7 @@
 // Screenshots are written beside each assertion (SHOTS dir printed at the end)
 // because a screenshot caught a data-losing bug here that no test could.
 import assert from "node:assert";
-import { openPageHost } from "./page-host.mjs";
+import { openPageHost, cdpConnect } from "./page-host.mjs";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,11 +34,8 @@ try {
     try { target = (await (await fetch(`http://127.0.0.1:${DEBUG}/json`)).json()).find(t => t.type === "page"); } catch (_) {}
   }
   assert.ok(target, "chrome did not start");
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-  let seq = 0; const waiting = new Map();
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
-  const send = (method, params = {}) => new Promise(ok => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
+  // Through the ONE CDP connection (page-host): every call has a deadline.
+  const { send } = await cdpConnect(target.webSocketDebuggerUrl, "owner-page");
   // A DEADLINE ON EVERY CALL. `awaitPromise` waits for the page's promise, and
   // a page that stalls never settles it — which hung the first control run of
   // this file past ten minutes with no output. A stall is a failure to report,
