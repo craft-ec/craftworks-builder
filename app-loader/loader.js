@@ -29,8 +29,9 @@ const say = (text, bad = false) => { status.textContent = text; status.className
 // loader (the container served, this module running), files (app.json and
 // artefacts.json), sdk (its wasm fetched, verified, loaded), opened (this
 // node's signer asked, the app's tree and the user's own opened: the signer,
-// block and register artefacts load in here), head (the app's tree has a
-// head), rows (every component's first read answered). Read, never acted on.
+// block and register artefacts load in here), head (the app's tree has a head
+// by the time the first rows came: stamped with them), rows (every
+// component's first read answered). Read, never acted on.
 const phases = (globalThis.__craftworksOpen = {});
 const mark = k => { phases[k] ??= Math.round(performance.now()); };
 mark("loader");
@@ -73,7 +74,6 @@ try {
     ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
   });
   mark("opened");
-  const headKnown = setInterval(() => { if (opened.headId()) { mark("head"); clearInterval(headKnown); } }, 50);
   // "Reading…" is never SILENT: it says how long, and a read that ENDS is
   // shown on its component by the runtime, by name.
   const t0 = Date.now();
@@ -83,6 +83,9 @@ try {
   const counting = setInterval(() => say(opened.waitingFor() || `Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
   const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }
+  // No event says when the head arrives, and no timer watches for it (every
+  // published app runs this): the head is stamped as known BY the first rows.
+  if (opened.headId()) mark("head");
   mark("rows");
   // Mounted: a component whose read ENDED says so on the page (the runtime);
   // the status names it too, so the page is never quietly half-empty.
