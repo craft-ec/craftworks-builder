@@ -8,7 +8,7 @@
 // the lock, the tunnel, the user's node and the cleanup proof; this script
 // starts NO node.
 //
-//   RN_B=<B's ws, through the tunnel> RN_A=<A's ws> RN_V=<V's ws> node tools/realnet-demo.mjs
+//   RN_B=<B's ws, through the tunnel> RN_A=<A's ws> RN_V=<V's ws> RN_O1=<ws> RN_O2=<ws> node tools/realnet-demo.mjs
 //
 // A is only READ: its page GETs, subscribes and asks A's signer whose node it
 // is — nothing is ever typed on A. The user who WRITES does it on V, a
@@ -38,7 +38,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const B = { ws: Number(process.env.RN_B), label: process.env.RN_B_LABEL ?? "B (the app owner's node)" };
 const A = { ws: Number(process.env.RN_A), label: process.env.RN_A_LABEL ?? "A (another user's node)" };
 const V = { ws: Number(process.env.RN_V), label: process.env.RN_V_LABEL ?? "V (a user who writes their own data)" };
-for (const n of [A, B, V]) if (!Number.isInteger(n.ws) || n.ws <= 0) { console.log("FAIL  RN_B, RN_A and RN_V must each name a ws port"); process.exit(2); }
+// THE SAME-KEY PAIR (#117's convergence, main's ruling (B)): two harness nodes
+// realnet.sh pre-provisioned with ONE throwaway key (sdk#375's provision-signer),
+// so they sign for ONE Register. NOT how a person adds a device (Phase 6).
+const O1 = { ws: Number(process.env.RN_O1), label: "O1" };
+const O2 = { ws: Number(process.env.RN_O2), label: "O2" };
+for (const n of [A, B, V, O1, O2]) if (!Number.isInteger(n.ws) || n.ws <= 0) { console.log("FAIL  RN_B, RN_A, RN_V, RN_O1 and RN_O2 must each name a ws port"); process.exit(2); }
 if ([7509, 7609].includes(V.ws)) { console.log(`FAIL  ${V.ws} is the owner's node: the user who WRITES is never on it`); process.exit(2); }
 if ([7509, 7609].includes(B.ws)) { console.log(`FAIL  ${B.ws} is the owner's node: the demo never PUBLISHES there`); process.exit(2); }
 if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
@@ -58,7 +63,7 @@ const WIRE_DIR = process.env.RN_WIRE_DIR;
 const MUTANT = process.env.REALNET_MUTANT ?? "";
 const windowOf = () => String(stepN + 1);
 const wires = [];
-let pubBrowser = null, visBrowser = null, vBrowser = null, failed = 0, stepN = 0;
+let pubBrowser = null, visBrowser = null, vBrowser = null, o1Browser = null, o2Browser = null, failed = 0, stepN = 0;
 let vOpenWindow = null, vWriteWindow = null;
 const step = (ok, what, evidence) => {
   stepN += 1;
@@ -190,6 +195,60 @@ try {
     `the builder changes the app's STRUCTURE and publishes the changes: the SAME address (version ${re?.version ?? "?"}), and ${A.label} RELOADED shows the new structure with the rows (${Date.now() - t8b} ms)`,
     { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
 
+  // 8c. SAME KEY, SECOND NODE: THE SITE CONVERGES (#117, the architect). Two
+  // HARNESS nodes, O1 and O2, hold ONE throwaway key (realnet.sh pre-provisioned
+  // both through the SDK's own provisioning), so they sign for ONE Register.
+  // O1's builder publishes an app; O2's page republishes it CHANGED -- through
+  // the real publishApp (the path "Publish changes" takes), with O1's app id,
+  // because builder PROJECTS do not travel between browser profiles -- and the
+  // link is the SAME, the publish completes (Published, never stuck), and A,
+  // opening that link, shows the new structure. It proves same-key convergence
+  // across two nodes; it is NOT how a person adds a device (Phase 6's keyset).
+  const t8c = Date.now();
+  const PAIR = { name: `Pair ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
+    schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } } };
+  const PAIR_CHANGED = { ...PAIR, components: [...PAIR.components, { type: "table", domain: "notes", mode: "owned" }] };
+  const builderOn = async (browser, ws, app, label) => {
+    const tab = await browser.tab(label);
+    await tab.navigate(`http://127.0.0.1:${host.port}/#node=${ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(app)));
+    await until(tab, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 30_000);
+    return tab;
+  };
+  o1Browser = await openFreshBrowser("realnet-demo: the pair's first node, O1");
+  const o1 = await builderOn(o1Browser, O1.ws, PAIR, "pair O1");
+  await o1.evaluate(addTo("notes", `pair ${tag}`));
+  await sleep(500);
+  await o1.evaluate(`document.getElementById("publish").click(); return 1;`);
+  const first = await until(o1, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
+  // O2's builder opens its session the way the builder does, by publishing (a
+  // project of its own: projects are per browser profile); then its page
+  // publishes the PAIR's app, changed, under O1's app id.
+  o2Browser = await openFreshBrowser("realnet-demo: the pair's second node, O2");
+  const o2 = await builderOn(o2Browser, O2.ws, PAIR_CHANGED, "pair O2");
+  await o2.evaluate(`document.getElementById("publish").click(); return 1;`);
+  const o2own = await until(o2, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
+  const sameHead = first && o2own ? first.head === o2own.head : null;
+  const re2 = first && o2own ? await o2.evaluate(`
+    const { publishApp } = await import("./publish-app.js");
+    const { loadSdk } = await import("./sdk-loader.js");
+    const { readBuilderFile: read, readSdkManifest } = await import("./builder-files.js");
+    const sdk = await loadSdk();
+    const h = window.__craftworks.session;
+    const r = await publishApp(${JSON.stringify(PAIR_CHANGED)}, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId: ${JSON.stringify(first.app)}, manifest: await readSdkManifest(), read, subtle: crypto.subtle });
+    return { address: r.address, version: r.version, put: r.put };`, { ms: STEP_MS * 3 }).catch(async e => ({ error: e.message, site: await o2.evaluate(`return window.__craftworks.session.session.site_status(${JSON.stringify(first?.app ?? "")});`).catch(() => null) })) : null;
+  const pairUrl = first ? `http://127.0.0.1:${A.ws}/v1/contract/web/${first.address}/` : null;
+  const pairFrame = first ? `127.0.0.1:${A.ws}/v1/contract/web/${first.address}/?__sandbox=1` : null;
+  let aSees = null;
+  // Its OWN tab on A's browser: `vis` keeps showing the main app for the steps after this.
+  const pairView = re2?.address ? await visBrowser.tab("user-a: the pair's app") : null;
+  if (pairView) {
+    await pairView.navigate(pairUrl);
+    aSees = await until(pairView, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) >= 2 && [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === ${JSON.stringify(`pair ${tag}`)}) && 1) || null;`, STEP_MS, 500, pairFrame);
+  }
+  step(!!first?.address && sameHead === true && !!re2?.address && re2.address === first.address && re2.put === true && !!aSees,
+    `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms) -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
+    { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, aSees: !!aSees, aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
+
   // 9. A USER WRITES THEIR OWN TREE (Phase 3 item 5): on V — a node that
   // is neither the app owner's nor the machine owner's — the app's rows are a
   // view, and the guestbook (source: mine) takes the user's entry into
@@ -250,6 +309,8 @@ try {
   if (visBrowser) await visBrowser.stop();
   if (pubBrowser) await pubBrowser.stop();
   if (vBrowser) await vBrowser.stop();
+  if (o1Browser) await o1Browser.stop();
+  if (o2Browser) await o2Browser.stop();
   console.log(failed ? `DEMO: breaks — ${failed} step(s) failed` : `DEMO: passes — all ${stepN} steps`);
   await host.done(failed ? 1 : 0);
 }
