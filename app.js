@@ -320,7 +320,7 @@ function nodePort() {
 let handoffProgress = null;
 
 function renderPublish() {
-  const b = buttonFor(rt.phase, { error: rt.error, progress: handoffProgress });
+  const b = buttonFor(rt.phase, { error: rt.error, progress: handoffProgress, changed: appChanged(), republishing });
   const btn = $("publish");
   btn.textContent = b.label;
   btn.disabled = !b.enabled;
@@ -331,9 +331,69 @@ function renderPublish() {
   // which renders as nothing in a screenshot and needs a hover to find — so
   // the one thing that makes a failure fixable was the one thing invisible.
   const note = $("publish-note");
-  if (note) note.textContent = rt.phase === "failed" ? rt.error : "";
+  if (note) note.textContent = rt.phase === "failed" ? rt.error : republishError;
 }
 
+/** The app as it was last put on the network (its JSON): what "Publish changes" compares against. */
+let publishedApp = null;
+/** A "Publish changes" in flight, and what the last one said went wrong ("" when nothing). */
+let republishing = false, republishError = "";
+
+/**
+ * PUT THE APP ON THE NETWORK at its one link (builder#117) through `handle`
+ * (the runtime's publish session), and record the publication. Returns what
+ * went wrong, in words, or "" — never throws: the data is on the node either
+ * way. The ONE path for a first publish's `after` and for "Publish changes".
+ */
+async function putOnNetwork(handle, db) {
+  let warn = "", put = null;
+  try {
+    put = await publishApp(app, {
+      sdk: sdkReady, session: handle.session, headId: handle.headId(), headSeq: handle.headSeq(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
+      manifest: await readSdkManifest(),
+      read: readBuilderFile, subtle: crypto.subtle,
+      // Unchanged since the last acknowledged publication (same bundle at
+      // the same link, same SDK): nothing is published again.
+      last: openedProject?.publication ?? null,
+      sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+    });
+    appAddress = put.address;
+    publishedApp = JSON.stringify(app);
+    // The acceptance seam: what was published, for the tools that open it
+    // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT, and the
+    // remount right after a publish replaces it (builder#104's
+    // open-by-address acceptance).
+    globalThis.__craftworksPublished = { ...put, head: handle.headId(), app: appIdOf(openedProject?.id, sdkReady?.ids) };
+  } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
+  try {
+    const rec = await projects?.published?.({
+      sourceRoot: db?.root?.() ?? null,
+      sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
+      ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: handle.headId(), headSeq: put.seq } : {}),
+    });
+    if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.seq };
+  } catch (e) { warn = warn || `history: ${e.message}`; }
+  return warn;
+}
+
+/** The app's STRUCTURE changed since it was last put on the network. */
+const appChanged = () => rt.phase === "published" && publishedApp !== null && JSON.stringify(app) !== publishedApp;
+
+/**
+ * PUBLISH CHANGES (builder#117): a published project whose structure changed
+ * puts the new app at the SAME link — the site's next version. Nothing else
+ * of the publish runs again: the data is already on the node.
+ */
+async function publishChanges() {
+  const handle = rt.session;
+  if (!handle || !appChanged()) return;
+  republishing = true;
+  renderPublish();
+  const warn = await putOnNetwork(handle, rt.db);
+  republishing = false;
+  republishError = warn;
+  renderPublish(); renderAddr();
+}
 /**
  * Publish this project: move it off this tab and onto the node.
  *
@@ -344,6 +404,7 @@ function renderPublish() {
  */
 async function doPublish() {
   if (!sdkReady) return;
+  if (rt.phase === "published") return publishChanges();
   // NO PROJECT OPEN — an app opened from a link, say. A publish is keyed by
   // its project (builder#83), so the app on screen is kept as one first, and
   // published under its id. Pressing Publish on an app you can see should not
@@ -404,38 +465,11 @@ async function doPublish() {
       // is, is the SDK's business (craftworks-sdk#66). A preload that fails is
       // not a failed publish; the first read simply pays for it.
       after: async (db, res) => {
-        let warn = "";
-        // THE APP ON THE NETWORK (builder#104): its web container, opened by
-        // address from any node as a VIEW of this project's data. A failure
-        // here is not a failed publish — the data is on the node — so it is
-        // reported, and the publication is recorded without an address.
-        let put = null;
-        try {
-          put = await publishApp(app, {
-            sdk: sdkReady, session: res.session.session, headId: res.session.headId(), headSeq: res.session.headSeq(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
-            manifest: await readSdkManifest(),
-            read: readBuilderFile, subtle: crypto.subtle,
-            // Unchanged since the last acknowledged publication (same app
-            // address, same SDK): nothing is PUT again.
-            last: openedProject?.publication ?? null,
-            sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-          });
-          appAddress = put.address;
-          // The acceptance seam: what was PUT, for the tools that open it
-          // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT,
-          // and the remount right after a publish replaces it — the field
-          // written onto it was gone before a tool polling every 500 ms
-          // could read it (builder#104's open-by-address acceptance, on this branch).
-          globalThis.__craftworksPublished = { ...put, head: res.session.headId(), app: appIdOf(openedProject?.id, sdkReady?.ids) };
-        } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
-        try {
-          const rec = await projects?.published?.({
-            sourceRoot: db.root?.() ?? null,
-            sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-            ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: res.session.headId(), headSeq: put.seq } : {}),
-          });
-          if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.seq };
-        } catch (e) { warn = warn || `history: ${e.message}`; }
+        // THE APP ON THE NETWORK (builder#104, #117): its site at the app's
+        // one link, opened from any node as a VIEW of this project's data. A
+        // failure here is not a failed publish — the data is on the node — so
+        // it is reported, and the publication is recorded without an address.
+        let warn = await putOnNetwork(res.session, db);
         try { await db.preload(preloadManifest(app)); }
         catch (e) { warn = `preload: ${e.message}`; }
         if (warn) throw new Error(warn);

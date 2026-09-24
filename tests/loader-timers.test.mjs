@@ -35,12 +35,23 @@ function page(name, { rows, head }) {
   const dir = join(ownTmp(`loader-timers-${name}-`));
   mkdirSync(join(dir, "sdk"));
   copyFileSync(join(ROOT, "app-loader/loader.js"), join(dir, "loader.js"));
+  // The SDK and the runtime as the loader now reaches them (craftworks-sdk#347): the STARTER's modules (served.js,
+  // pieces.js) beside it, and the rest through `linkModules` -- stubbed to hand back file URLs of these stubs.
   writeFileSync(join(dir, "sdk/index.js"), `export const load = async () => ({ ids: { hex32: s => /^[0-9a-f]{64}$/.test(s), app: () => true } });\n`);
-  writeFileSync(join(dir, "sdk/artefacts.js"), `export const artefactBytes = async () => new Uint8Array(0);
-export const servedText = async ({ url }) => url.endsWith("app.json") ? JSON.stringify({ name: "T", components: [], publisher: { head: "a".repeat(64), app: "t" } }) : JSON.stringify({ contract: "c", sdk: { file: "s", sha256: "0" }, signer: {}, block: {}, register: {} });\n`);
+  writeFileSync(join(dir, "sdk/artefacts.js"), `export const artefactBytes = async () => new Uint8Array(0);\n`);
+  const shape = { k: 1, m: 0, payload: 1, bundle_len: 1, pieces: [{ address: "p", sha256: "0" }] };
+  writeFileSync(join(dir, "sdk/served.js"), `export const served = async () => new Uint8Array(0);
+export const raceK = async () => ({ pieces: [new Uint8Array(0)], verified: 1, asked: [0] });
+export const servedText = async ({ url }) => url.endsWith("app.json") ? JSON.stringify({ name: "T", components: [], publisher: { head: "a".repeat(64), app: "t" } }) : JSON.stringify({ pieces: { core: ${JSON.stringify(shape)}, provisioning: ${JSON.stringify(shape)} }, sdk: { file: "s", sha256: "0" }, signer: { file: "signer.wasm", sha256: "0" }, block: { file: "block.wasm", sha256: "0" }, register: { file: "register.wasm", sha256: "0" } });\n`);
+  const url = f => `${pathToFileURL(dir).href}/${f}`;
+  writeFileSync(join(dir, "sdk/pieces.js"), `export const decoder = async () => ({});
+const files = new Map(["sdk/s", "sdk/signer.wasm", "sdk/block.wasm", "sdk/register.wasm", "sdk/webapp.wasm"].map(f => [f, new Uint8Array(0)]));
+export const openPieces = () => ({ files, bundle: new Uint8Array(0) });
+export const linkModules = () => new Map(${JSON.stringify(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js"])}.map(p => [p, ${JSON.stringify(url(""))} + p]));
+export const repairPieces = async () => [];\n`);
   writeFileSync(join(dir, "runtime.js"), `export const sourceOf = () => "publisher";
 export const mountApp = () => ${rows ? "Promise.resolve()" : "new Promise(() => {})"};\n`);
-  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ backends: {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)} });\n`);
+  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)} });\n`);
   return dir;
 }
 
@@ -68,7 +79,7 @@ await t("an app whose rows come leaves NO timer, and stamps every phase in order
     assert.deepEqual([...live.values()], [], "a timer outlived the open");
     const p = globalThis.__craftworksOpen;
     const order = ["loader", "files", "sdk", "opened", "head", "rows"];
-    assert.ok(order.every(k => Number.isInteger(p[k])), `a phase is missing: ${JSON.stringify(p)}`);
+    assert.ok(order.every(k => Number.isInteger(p[k])), `a phase is missing: ${JSON.stringify(p)} (status: ${status.textContent})`);
     assert.ok(order.every((k, i) => i === 0 || p[order[i - 1]] <= p[k]), `phases out of order: ${JSON.stringify(p)}`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

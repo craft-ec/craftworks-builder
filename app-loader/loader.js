@@ -1,37 +1,45 @@
-// THE PUBLISHED APP'S LOADER (builder#104).
+// THE PUBLISHED APP'S LOADER (builder#104; loaded from parity pieces, craftworks-sdk#347).
 //
-// Served by a node at /v1/contract/web/<app address>/ from the app's web
-// container. It carries NONE of the SDK's wasm: `artefacts.json` names each by
-// hash and the SDK's artefacts container that holds them, on THIS node. So:
+// Served by a node at /v1/contract/web/<app address>/ from the app's STARTER
+// container, which carries only what runs before the SDK exists: this file,
+// the decode-only wasm and the SDK's fetch/race/decode modules. Everything
+// else — the SDK, the runtime and the provisioning artefacts — is k + m parity
+// pieces, each its own container, named in `artefacts.json`. So:
 //
-//   1. the SDK's wasm is fetched from the artefacts container and VERIFIED by
-//      its hash before it runs — a mismatch is refused and the app does not
-//      load; an artefact nobody serves fails naming which one and its hash;
-//   2. this node's signer is ASKED whose it is (`openPublished`), and the
-//      app opens as a NORMAL WEBSITE where everyone is a user: each
-//      component shows its SOURCE -- the APP's data (the tree `app.json`'s
-//      `publisher.head` names: editable only on the node that signs for it,
-//      read-only anywhere else) or the USER's own tree (`mine`), which every
-//      user writes (their key and tree are made on their first entry, through
-//      the SDK's existing provision path);
-//   3. which components show inputs is the SDK's one `canWrite` decision.
-import { load } from "./sdk/index.js";
-import { artefactBytes, servedText } from "./sdk/artefacts.js";
-import { mountApp, sourceOf } from "./runtime.js";
-import { openPublished } from "./runtime-logic.js";
+//   1. both bundles' pieces are RACED (`raceK`: the page's window, each piece
+//      checked by its sha256, the rest dropped at the k-th), and any k of them
+//      rebuild the bundle (`openPieces`, in the decoder wasm);
+//   2. the bundle's modules are linked as blob: modules (`linkModules`), and
+//      the SDK's wasm is VERIFIED by its own hash before it runs, like every
+//      artefact the session is handed;
+//   3. this node's signer is ASKED whose it is (`openPublished`), and the app
+//      opens as a NORMAL WEBSITE where everyone is a user (the APP's data,
+//      editable only where its key is; the USER's own tree, `mine`);
+//   4. every piece this load ASKED and did not get is PUT back, re-derived
+//      from the rebuilt bundle (`repairPieces`): the next load finds it.
+import { raceK, served, servedText } from "./sdk/served.js";
+import { decoder, linkModules, openPieces, repairPieces } from "./sdk/pieces.js";
+
+/** The SDK modules the STARTER serves: a bundle module importing one gets this container's copy (one instance). */
+const STARTER_MODULES = ["sdk/served.js", "sdk/pieces.js", "sdk/rto.js"];
 
 const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+// From `location.href`, never `location.origin`: a node serves an app in a
+// SANDBOXED iframe, whose origin is opaque — "null" — while its URL is the
+// node's own.
+const here = p => new URL(p, location.href).href;
+const blobOf = bytes => URL.createObjectURL(new Blob([bytes]));
 
 // THE OPEN'S PHASES, for the tools that time it (a realnet step time is one
 // number from navigate to rows, and cannot say where a slow open went): ms
 // since this page's navigation began, stamped once as each phase ends —
-// loader (the container served, this module running), files (app.json and
-// artefacts.json), sdk (its wasm fetched, verified, loaded), opened (this
-// node's signer asked, the app's tree and the user's own opened: the signer,
-// block and register artefacts load in here), head (the app's tree has a head
-// by the time the first rows came: stamped with them), rows (every
-// component's first read answered). Read, never acted on.
+// loader (the container served, this module running), files (app.json,
+// artefacts.json and the decoder), sdk (both bundles raced, decoded, linked, the
+// SDK's wasm verified and loaded), opened (this node's signer asked, the app's
+// tree and the user's own opened), head (the app's tree has a head by the time
+// the first rows came: stamped with them), rows (every component's first read
+// answered). Read, never acted on.
 const phases = (globalThis.__craftworksOpen = {});
 const mark = k => { phases[k] ??= Math.round(performance.now()); };
 mark("loader");
@@ -40,24 +48,53 @@ try {
   // This container's own files, through the SDK's one fetch: waited on (and
   // named while waiting), never ended by a status (rule 8, craftworks-sdk#340).
   const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
-  const [art, app] = await Promise.all([json("artefacts.json"), json("app.json")]);
+  const [art, app, dec] = await Promise.all([
+    json("artefacts.json"),
+    json("app.json"),
+    served({ url: "./decoder.wasm" }, { onWait: w => say(`${w.says ?? "waiting"}: decoder.wasm`) }).then(decoder),
+  ]);
   mark("files");
   const head = app?.publisher?.head;
-  // Every artefact from the SDK's artefacts container on THIS node, by hash.
-  // From `location.href`, never `location.origin`: a node serves an app in a
-  // SANDBOXED iframe, whose origin is opaque — "null" — while its URL is the
-  // node's own.
-  const from = e => ({ urls: [new URL(`/v1/contract/web/${art.contract}/${e.file}`, location.href).href], sha256: e.sha256 });
+
+  // 1. Both bundles raced at once, neither waiting on the other: the session
+  // needs the provisioning artefacts when it OPENS. The signer's bytes only
+  // for its delegate KEY (the Register query is sent to it; `openAsked`
+  // registers and installs nothing), the Block code to read the app's tree,
+  // the Register code for a user's own tree (craftworks-sdk#347).
+  const progress = {};
+  const shown = () => say(`Loading… ${Object.entries(progress).map(([b, w]) => `${b} ${w}`).join(" · ")}`);
+  const race = async (b, shape) => {
+    const spec = { ...shape, pieces: shape.pieces.map(p => ({ url: here(`/v1/contract/web/${p.address}/piece`), sha256: p.sha256 })) };
+    const raced = await raceK(spec, { onWait: w => { progress[b] = `${w.verified}/${w.k}${w.says ? ` (${w.says})` : ""}`; shown(); } });
+    progress[b] = "done";
+    shown();
+    return { spec: { ...shape }, raced, ...openPieces(dec, shape, raced.pieces) };
+  };
+  const [core, provisioning] = await Promise.all([race("app", art.pieces.core), race("signer", art.pieces.provisioning)]);
+
+  // 2. The modules, linked; the SDK's wasm verified by its hash on the way in.
+  const urls = linkModules(core.files, { external: p => (STARTER_MODULES.includes(p) ? here(`./${p}`) : null) });
+  const moduleOf = p => {
+    if (!urls.has(p)) throw new Error(`the app's pieces hold no ${p}`);
+    return import(urls.get(p));
+  };
+  const artefact = (bundle, name) => {
+    const e = art[name];
+    const bytes = bundle.files.get(`sdk/${e.file}`);
+    if (!bytes) throw new Error(`the ${name} artefact (${e.file}) is not in the app's pieces`);
+    return { urls: [blobOf(bytes)], sha256: e.sha256 };
+  };
+  // The content-hash cache (`artefactBytes`) is the SDK's, in the bundle: it verifies each artefact by its own hash.
+  const [{ load }, { artefactBytes }, { mountApp, sourceOf }, { openPublished }] =
+    await Promise.all(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js"].map(moduleOf));
   say("Loading the SDK…");
-  // A file the node does not serve yet is WAITED on, never an end (rule 8):
-  // the SDK re-asks on its RTO and says so, and the status names the file.
-  const sdk = await load(await artefactBytes(from(art.sdk), { onWait: w => say(`${w.says}: ${art.sdk.file}`) }));
+  // Verified by its hash (never an end short of a mismatch: rule 8), the status naming it while it waits.
+  const sdk = await load(await artefactBytes(artefact(core, "sdk"), { onWait: w => say(`${w.says}: ${art.sdk.file}`) }));
   mark("sdk");
   say("Connecting…");
   // The APP's id (craftworks-sdk#267): the space its data was written
-  // under, which this view reads. Absent, the app predates app ids and names
-  // nothing this SDK can open.
-  // Both ids are checked by the SDK's own rules (`sdk.ids`), now it is loaded.
+  // under, which this view reads. Both ids are checked by the SDK's own rules
+  // (`sdk.ids`), now it is loaded.
   if (!sdk.ids.hex32(head ?? "")) throw new Error("app.json names no publisher head, so there is nothing to show");
   const appId = app?.publisher?.app;
   try {
@@ -72,10 +109,20 @@ try {
     seq: app.publisher.seq ?? 0,
     app: appId,
     port: Number(location.port),
-    artefacts: { signer: from(art.signer), block: from(art.block), register: from(art.register) },
+    artefacts: { signer: artefact(provisioning, "signer"), block: artefact(provisioning, "block"), register: artefact(provisioning, "register") },
     ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
   });
   mark("opened");
+
+  // 4. Repair, in the background: a piece this load asked and did not get is
+  // PUT back. Never in the way of the app, and a refusal is only logged.
+  const webappCode = core.files.get("sdk/webapp.wasm");
+  for (const b of [core, provisioning]) {
+    repairPieces({ spec: b.spec, bundle: b.bundle, raced: b.raced, sdk, session: opened.asked.session, webappCode, subtle: crypto.subtle })
+      .then(r => { if (r.length) console.info("craftworks: load pieces repaired", r); })
+      .catch(e => console.warn("craftworks: load piece repair failed", e));
+  }
+
   // "Reading…" is never SILENT: it says how long, and a read that ENDS is
   // shown on its component by the runtime, by name.
   const t0 = Date.now();
@@ -94,6 +141,6 @@ try {
   const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
   say(ended.length ? ended.join(" · ") : (app.name ?? ""), ended.length > 0);
 } catch (e) {
-  // THE FIRST THING A PERSON CAN SEND: which artefact, which hash, what failed.
+  // THE FIRST THING A PERSON CAN SEND: which piece or artefact, which hash, what failed.
   say(`This app could not open: ${e.message}`, true);
 }

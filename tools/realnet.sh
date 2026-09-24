@@ -37,6 +37,10 @@ T=${REALNET_TUNNEL:-17619}
 free_port() { python3 -c "import socket,sys; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM if sys.argv[1]=='udp' else socket.SOCK_STREAM); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])" "$1"; }
 VWS=${REALNET_V_WS:-$(free_port tcp)}
 VNET=${REALNET_V_NET:-$(free_port udp)}
+# THE SAME-KEY PAIR (#117's convergence step): two MORE private nodes, O1 and
+# O2, pre-provisioned with ONE throwaway key, so they sign for ONE Register.
+# Two harness nodes with one key -- NOT how a person adds a device (Phase 6).
+O1WS=$(free_port tcp); O1NET=$(free_port udp); O2WS=$(free_port tcp); O2NET=$(free_port udp)
 BR=${REALNET_B_REMOTE:-7509}
 # The one lock every session shares (REALNET_LOCK only for the lock's own test).
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
@@ -72,13 +76,13 @@ for old in "$TMPDIR"/realnet-run.*/browsers.pids; do [ -f "$old" ] && { sweep "$
 run=$(mktemp -d "$TMPDIR/realnet-run.XXXXXX")
 export PAGE_HOST_PIDFILE="$run/browsers.pids"
 : > "$PAGE_HOST_PIDFILE"
-tunnel=""; vpid=""; vdir=""
+tunnel=""; npids=(); ndirs=(); nws=(); nlabels=()
 cleanup() {
   # This run's browsers, whatever ended it (the demo killed, this script
   # signalled): page-host kills them on every exit IT sees; this is the rest.
   [ -f "$PAGE_HOST_PIDFILE" ] && sweep "$PAGE_HOST_PIDFILE"
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
-  [ -n "$vpid" ] && kill "$vpid" 2>/dev/null && wait "$vpid" 2>/dev/null
+  for p in ${npids[@]+"${npids[@]}"}; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null; done
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -99,11 +103,11 @@ echo "RAN   builder $(git rev-parse --short HEAD) ($(git rev-parse --abbrev-ref 
 # THE A-SIDE CHECK's one decoder, from THIS SDK revision's own source (the
 # format and its encoders are the SDK's): classify-frames, and frame-put for
 # the Register-PUT mutant.
-if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put) > "$run/probe-build.log" 2>&1; then
+if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put --bin provision-signer) > "$run/probe-build.log" 2>&1; then
   echo "FAIL  the SDK's classify-frames did not build: $(tail -3 "$run/probe-build.log")"; exit 1
 fi
 probe_bin="$here/.sdk-build/$pinned/target/release"
-echo "RAN   sdk ${built:0:12} (sdk/REV), wasm sha256 $(shasum -a 256 sdk/craftworks_sdk_bg.wasm | cut -c1-16), artefacts container $(node -e 'console.log(require("./sdk/artefacts.json").container.address)')"
+echo "RAN   sdk ${built:0:12} (sdk/REV), wasm sha256 $(shasum -a 256 sdk/craftworks_sdk_bg.wasm | cut -c1-16), load pieces $(node -e 'const p=require("./sdk/pieces.json");console.log(Object.entries(p).map(([b,s])=>`${b} k=${s.k}+m=${s.m} first ${s.pieces[0].address}`).join(", "))')"
 
 # ---- B, read-only, and the tunnel --------------------------------------------
 remote() { perl -e 'alarm 60; exec @ARGV' ssh -o BatchMode=yes "$HOST" "$@"; }
@@ -123,28 +127,51 @@ for _ in $(seq 1 40); do nc -z 127.0.0.1 "$T" 2>/dev/null && break; perl -e 'sel
 echo "tunnel pid $tunnel: 127.0.0.1:$T -> $HOST 127.0.0.1:$BR"
 start=$(date -u '+%Y-%m-%d %H:%M:%S')
 
-# ---- V: the user who writes, on a node of its own -------------------------
-for p in "$VWS" "$VNET"; do
-  case "$p" in 7509|7609) echo "FAIL  $p is the owner's node: the user's node never uses it"; exit 2;; esac
+# ---- private nodes of this run: V, and the same-key pair O1/O2 -----------------
+# ONE way to start one (and ONE cleanup loop): each on free ports, joined to the
+# real network, its dirs and web cache under the run's TMPDIR, killed by PID.
+start_private() { # label ws net
+  local label=$1 ws=$2 net=$3 dir pid
+  for p in "$ws" "$net"; do
+    case "$p" in 7509|7609) echo "FAIL  $p is the owner's node: $label never uses it"; exit 2;; esac
+  done
+  if lsof -nP -iTCP:"$ws" -sTCP:LISTEN >/dev/null || lsof -nP -iUDP:"$net" >/dev/null; then
+    echo "REFUSED  port $ws (ws) or $net (udp) for $label is taken; nothing more started"; exit 2
+  fi
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/realnet-$label.XXXXXX")
+  mkdir -p "$dir/data" "$dir/config" "$dir/log" "$dir/webapp_cache"
+  FREENET_WEBAPP_CACHE_DIR="$dir/webapp_cache" freenet network --ws-api-address 127.0.0.1 --ws-api-port "$ws" \
+    --network-port "$net" --data-dir "$dir/data" --config-dir "$dir/config" --log-dir "$dir/log" \
+    --disable-auto-update > "$dir/log/console.out" 2>&1 &
+  pid=$!
+  npids+=("$pid"); ndirs+=("$dir"); nws+=("$ws"); nlabels+=("$label")
+  for _ in $(seq 1 240); do nc -z 127.0.0.1 "$ws" 2>/dev/null && break; kill -0 "$pid" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
+  if ! nc -z 127.0.0.1 "$ws" 2>/dev/null; then echo "FAIL  $label's node did not start: $(tail -3 "$dir/log/console.out")"; exit 1; fi
+  echo "RAN   $label = a private node on this machine :$ws (pid $pid, joined to the real network; dirs + web cache under $dir)"
+}
+start_private V "$VWS" "$VNET"
+start_private O1 "$O1WS" "$O1NET"
+start_private O2 "$O2WS" "$O2NET"
+# ONE throwaway key on both, through the SDK's own provisioning (provision-signer):
+# they must name the SAME Register, or the pair measures nothing.
+seed=$(openssl rand -hex 32)
+cmd="/v1/contract/command?encodingProtocol=native"
+for n in "$O1WS" "$O2WS"; do
+  if ! got=$("$probe_bin/provision-signer" "ws://127.0.0.1:$n$cmd" "$seed" "$here/sdk/signer.wasm" "$here/sdk/block.wasm" "$here/sdk/register.wasm" 2>&1); then
+    echo "FAIL  pre-provisioning :$n: $(tail -1 <<<"$got")"; exit 1
+  fi
+  regs+=("${got#register }")
 done
-if lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null || lsof -nP -iUDP:"$VNET" >/dev/null; then
-  echo "REFUSED  port $VWS (ws) or $VNET (udp) is taken — set REALNET_V_WS / REALNET_V_NET; nothing started"; exit 2
-fi
-vdir=$(mktemp -d "${TMPDIR:-/tmp}/realnet-v.XXXXXX")
-mkdir -p "$vdir/data" "$vdir/config" "$vdir/log" "$vdir/webapp_cache"
-FREENET_WEBAPP_CACHE_DIR="$vdir/webapp_cache" freenet network --ws-api-address 127.0.0.1 --ws-api-port "$VWS" \
-  --network-port "$VNET" --data-dir "$vdir/data" --config-dir "$vdir/config" --log-dir "$vdir/log" \
-  --disable-auto-update > "$vdir/log/console.out" 2>&1 &
-vpid=$!
-for _ in $(seq 1 240); do nc -z 127.0.0.1 "$VWS" 2>/dev/null && break; kill -0 "$vpid" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
-if ! nc -z 127.0.0.1 "$VWS" 2>/dev/null; then echo "FAIL  the user's node did not start: $(tail -3 "$vdir/log/console.out")"; exit 1; fi
-echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the real network; dirs + web cache under $vdir)"
+if [ "${regs[0]}" != "${regs[1]}" ]; then echo "FAIL  the pair names two Registers (${regs[0]:0:12}, ${regs[1]:0:12}): nothing to converge"; exit 1; fi
+echo "RAN   O1 :$O1WS and O2 :$O2WS hold ONE throwaway key: Register ${regs[0]:0:16}"
 
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
 RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
+  RN_O1="$O1WS" RN_O2="$O2WS" RN_PAIR_REGISTER="${regs[0]}" \
   RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
   RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
+  RN_PIECES="$here/sdk/pieces.json" RN_WEBAPP_WASM="$here/sdk/webapp.wasm" \
   RN_WIRE_DIR="$run" \
   node tools/realnet-demo.mjs
 fail=$?
@@ -152,10 +179,12 @@ fail=$?
 # ---- cleanup, proven ----------------------------------------------------------
 echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
-kill "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null
-if kill -0 "$vpid" 2>/dev/null || lsof -nP -iTCP:"$VWS" -sTCP:LISTEN >/dev/null; then echo "FAIL  the user's node (pid $vpid) is still up"; fail=1
-else echo "PASS  the user's node (pid $vpid) is gone; port $VWS free"; rm -rf "$vdir"; fi
-vpid=""
+for i in ${npids[@]+"${!npids[@]}"}; do
+  p=${npids[$i]}; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  if kill -0 "$p" 2>/dev/null || lsof -nP -iTCP:"${nws[$i]}" -sTCP:LISTEN >/dev/null; then echo "FAIL  ${nlabels[$i]}'s node (pid $p) is still up"; fail=1
+  else echo "PASS  ${nlabels[$i]}'s node (pid $p) is gone; port ${nws[$i]} free"; rm -rf "${ndirs[$i]}"; fi
+done
+npids=()
 if lsof -nP -iTCP:"$T" -sTCP:LISTEN >/dev/null; then echo "FAIL  port $T still listening"; fail=1; else echo "PASS  tunnel closed; port $T free"; fi
 after=$(state)
 if [ "$after" != "$before" ]; then echo "STOP  B changed during the run: before [$(tr '\n' ' ' <<<"$before")] after [$(tr '\n' ' ' <<<"$after")]"; fail=1

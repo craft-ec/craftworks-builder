@@ -1,4 +1,4 @@
-import { servedText } from "./sdk/artefacts.js";
+import { servedText } from "./sdk/served.js";
 // The versions panel: a footer chip that opens what this builder is running.
 //
 // All of the judgement lives in versions.js, which has no DOM and is tested on

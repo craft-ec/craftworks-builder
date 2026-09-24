@@ -38,6 +38,18 @@ await t("only idle and failed can be pressed", () => {
   }
 });
 
+await t("**a published app whose STRUCTURE changed can publish its changes (builder#117): pressable, then working, then Published again**", () => {
+  const changed = buttonFor("published", { changed: true });
+  assert.equal(changed.enabled, true, "a changed published app cannot publish its changes");
+  assert.equal(changed.label, "Publish changes");
+  assert.match(changed.hint, /link stays the same/, "the hint does not say the link is kept");
+  const going = buttonFor("published", { changed: true, republishing: true });
+  assert.equal(going.enabled, false, "publishing changes can be pressed twice");
+  assert.equal(going.label, "Publishing changes…");
+  // THE CONTROL: unchanged, it is Published and not pressable.
+  assert.deepEqual([buttonFor("published").label, buttonFor("published").enabled], ["Published", false]);
+});
+
 await t("an unpublished project's rows say so; a published one's do not", () => {
   for (const p of ["idle", "connecting", "provisioning", "opening", "failed"]) {
     assert.equal(rowStateFor(p), UNPUBLISHED,

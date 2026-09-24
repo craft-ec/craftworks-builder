@@ -23,7 +23,7 @@ export const PHASES = ["idle", "connecting", "provisioning", "opening", "publish
  * three "working" phases cannot collapse into one spinner, which is the same
  * rule the row states follow.
  */
-export function buttonFor(phase, { error = "", progress = null } = {}) {
+export function buttonFor(phase, { error = "", progress = null, changed = false, republishing = false } = {}) {
   switch (phase) {
     case "idle":
       return { label: "Publish", enabled: true, tone: "", hint:
@@ -47,6 +47,12 @@ export function buttonFor(phase, { error = "", progress = null } = {}) {
       return { label: progress ? `Moving your records… ${progress.confirmed} of ${progress.total} confirmed` : "Moving your records…", enabled: false, tone: "working", hint:
         "Copying what you made in Preview to the node, and waiting for it to confirm each one." };
     case "published":
+      // THE APP CHANGED since it went out (builder#117): its structure is put
+      // at the SAME link, as the site's next version — the person's act.
+      if (republishing) return { label: "Publishing changes…", enabled: false, tone: "working", hint:
+        "Putting the changed app at the same link: read, signed, put and read back by the node." };
+      if (changed) return { label: "Publish changes", enabled: true, tone: "", hint:
+        "The app's structure changed since it was published. Its link stays the same; people see the new version when they open or reload it." };
       return { label: "Published", enabled: false, tone: "ok", hint:
         "On the network. Each row now says what its own write is doing." };
     case "failed":
