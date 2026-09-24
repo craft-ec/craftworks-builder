@@ -114,14 +114,16 @@ export const durable = state => state === "published" || state === "parity-compl
  * is how a panel teaches people to stop reading it. A screenshot showed that;
  * no assertion could have.
  *
- * What it has to carry: the cost (a standing connection), and the shape of
+ * What it has to carry: WHOSE switch it is (the author's, for their own
+ * editing view: a published app is always live for its users, the owner's
+ * rule, `bindsLive`), the cost (a standing connection), and the shape of
  * data worth spending it on (things that change while you are looking). What
  * it must not carry: the word subscription, or anything else a person would
  * have to already know.
  */
 export const LIVE_NOTE =
-  "Costs a standing connection — worth it for a chat, a feed or a counter, " +
-  "not for a list that is read when it is opened.";
+  "For your own editing view: costs a standing connection — worth it for a chat, " +
+  "a feed or a counter. A published app is always live for its users.";
 
 /**
  * Is this binding live? Default OFF, and absence is not liveness.

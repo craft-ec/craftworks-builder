@@ -50,6 +50,11 @@ assert.equal(isLive({ live: true }), true);
 assert.ok(/[Cc]osts/.test(LIVE_NOTE), "the live note does not say what it costs");
 assert.ok(LIVE_NOTE.length <= 160, `the live note is ${LIVE_NOTE.length} chars; it renders as a paragraph, not a line`);
 assert.ok(/chat|feed|counter/i.test(LIVE_NOTE), "the note does not say what kind of data this is for");
+// WHOSE switch (the owner's rule): the author's, for their own editing view —
+// a published app is always live for its users, whatever the switch says
+// (`bindsLive`). Without this the note reads as if a user's page follows it.
+assert.ok(/your own/i.test(LIVE_NOTE), `the live note does not say the switch is for the author's own view: ${LIVE_NOTE}`);
+assert.ok(/published app is always live/i.test(LIVE_NOTE), `the live note does not say a published app is always live: ${LIVE_NOTE}`);
 assert.ok(!/subscri|delta|engine|binding/i.test(LIVE_NOTE.replace("standing connection", "")),
   `the live note uses jargon: ${LIVE_NOTE}`);
 
