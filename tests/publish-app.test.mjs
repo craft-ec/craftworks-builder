@@ -185,7 +185,7 @@ await t("refused before anything is sent: no head, and a piece that is not at th
 await t("**UNCHANGED, NOTHING SENT: a reconnect whose app is the same address on the same SDK PUTs nothing** (re-PUTs made the node serve a container 404 for a moment)", async () => {
   const first = await publishApp(APP, { sdk, session: node(), headId: HEAD, headSeq: 7, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast });
   assert.strictEqual(first.put, true);
-  const last = { app_contract_id: first.address, sdk_version: "rev-1" };
+  const last = { app_contract_id: first.address, sdk_version: "rev-1", head_seq: first.seq };
   const s = node();
   const again = await publishApp(APP, { sdk, session: s, headId: HEAD, headSeq: 7, appId: "proj1", manifest, read, subtle: crypto.subtle, ...fast, last, sdkVersion: "rev-1" });
   assert.strictEqual(s.puts.length, 0, `an unchanged app was PUT again: ${keys(s)}`);
