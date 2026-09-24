@@ -11,7 +11,7 @@
 // container touched at publish, and a separate node R's must show it touched by R's GET, each dated. If a
 // field is unreadable the run is REFUSED. Whether openers reach each other is a RESULT, never a gate.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
 import { openFreshBrowser } from "../../../tests/page-host.mjs";
@@ -73,6 +73,58 @@ async function touchedEventually(dataDir, address, from, to, ms = 30_000) {
   return r;
 }
 
+// ---- THE 503 CAPTURE (builder#153, the architect's §3): per 503, its BODY, the ms since that node's ws port
+// listened, and the node's RING STATE from its own INFO log -- the last "ring empty -- falls back to gateway"
+// line before it, and the first connection to a peer that is NOT a configured gateway. A 503 with the
+// "has not joined" body before any peer is the F60 JOIN WINDOW; any 503 AFTER a peer, or with another body,
+// is FLAGGED as its own finding, never folded into the join window.
+const LOG_LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z)\s+\w+\s+(.*)$/;
+function nodeLog(node) {
+  const dir = join(node.dir, "log");
+  let files = [];
+  try { files = readdirSync(dir).filter(n => /^freenet\.[\d-]+\.log$/.test(n)).sort(); } catch { return []; }
+  return files.flatMap(f => readFileSync(join(dir, f), "utf8").split("\n")).map(l => l.match(LOG_LINE)).filter(Boolean).map(m => ({ t: Date.parse(m[1]), text: m[2] }));
+}
+export function ringAt(lines, t) {
+  const gateways = new Set(lines.flatMap(l => [...l.text.matchAll(/gateway=([\d.]+:\d+)/g)].map(m => m[1])));
+  const empties = lines.filter(l => /ring empty/.test(l.text));
+  const conns = lines.filter(l => /connection established peer_addr=/.test(l.text)).map(l => ({ t: l.t, addr: l.text.match(/peer_addr=([\d.]+:\d+)/)?.[1] }));
+  const firstPeer = conns.find(c => c.addr && !gateways.has(c.addr)) ?? null;
+  return {
+    gateways: [...gateways],
+    ring_empty_last_before: empties.filter(l => l.t <= t).at(-1)?.t ?? null,
+    ring_empty_after: empties.some(l => l.t > t),
+    first_connection: conns[0]?.t ?? null,
+    first_peer: firstPeer?.t ?? null,
+    first_peer_addr: firstPeer?.addr ?? null,
+  };
+}
+export function classify503({ body, t, ring }) {
+  const afterPeer = ring.first_peer !== null && ring.first_peer <= t;
+  const joinBody = /has not joined/i.test(body ?? "");
+  if (joinBody && !afterPeer) return { cls: "join window (F60)", flagged: false };
+  return { cls: afterPeer ? "FLAGGED: 503 AFTER a peer connected" : "FLAGGED: another body", flagged: true };
+}
+const got503 = [];
+function record503(ctx, node, { source, t, body }) {
+  const listenAt = node.started_ms + (node.ready_ms ?? 0);
+  got503.push({ node, source, t, body: (body ?? "").replace(/\s+/g, " ").trim().slice(0, 160), since_listen_ms: t - listenAt });
+}
+function report503(ctx) {
+  if (!got503.length) { ctx.say("503   none: no node answered 503 this run"); return 0; }
+  ctx.say("503   node | source | ms since ws listened | body | last 'ring empty' before (ms since listen) | first non-gateway peer (ms since listen) | class");
+  let flagged = 0;
+  for (const r of got503) {
+    const listenAt = r.node.started_ms + (r.node.ready_ms ?? 0);
+    const ring = ringAt(nodeLog(r.node), r.t);
+    const c = classify503({ body: r.body, t: r.t, ring });
+    if (c.flagged) flagged += 1;
+    const rel = v => (v === null ? "none" : `${v - listenAt}`);
+    ctx.say(`503   ${r.node.label} | ${r.source} | ${r.since_listen_ms} | ${JSON.stringify(r.body)} | ${rel(ring.ring_empty_last_before)} | ${rel(ring.first_peer)}${ring.first_peer_addr ? ` (${ring.first_peer_addr})` : ""} | ${c.cls}`);
+  }
+  return flagged;
+}
+
 export async function run(ctx) {
   const { say } = ctx;
   say(`ATTR  ${LIMIT}`);
@@ -101,7 +153,9 @@ export async function run(ctx) {
   const tGet = Date.now();
   let status = 0;
   while (Date.now() - tGet < STEP_MS && status !== 200) {
-    status = await fetch(appUrl(R.ws), { signal: AbortSignal.timeout(30_000) }).then(r => r.status, () => 0);
+    const res = await fetch(appUrl(R.ws), { signal: AbortSignal.timeout(30_000) }).then(async r => ({ status: r.status, body: await r.text().catch(() => ""), t: Date.now() }), () => ({ status: 0 }));
+    status = res.status;
+    if (status === 503) record503(ctx, R, { source: "precheck GET", t: res.t, body: res.body });
     if (status !== 200) await sleep(2000);
   }
   const tGetEnd = Date.now();
@@ -149,6 +203,7 @@ export async function run(ctx) {
     const ms = ok.map(r => r.finished.t - r.sent.t).sort((a, b) => a - b);
     // The app document's own answer: the first response to the app's URL.
     const doc = [...byId.values()].find(r => r.url === appUrl(O.ws));
+    if (doc?.response?.status === 503) record503(ctx, O, { source: "navigation", t: doc.response.t, body: shown });
     const sample = {
       opener: name, ok: !!rows, open_ms: rows ? t1 - t0 : null, node_ready_ms: O.ready_ms, stamps,
       document_status: doc?.response?.status ?? null, ...(rows ? {} : { shown }),
@@ -174,11 +229,14 @@ export async function run(ctx) {
     say(`TOUCH ${o.opener}: earlier harness nodes touched ${touched} of this open's ${o.keys.length} keys during it${touched ? ` (${Object.entries(by).map(([n, c]) => `${n} ${c}`).join(", ")})` : " -- every key was answered from OUTSIDE the harness"}`);
   }
 
+  // ---- every 503, one table ----
+  const flagged503 = report503(ctx);
+
   // ---- the arm's line ----
   const clean = arm.samples.filter(s => s.ok && s.sdk_ran && !s.contaminated);
   const sum = ctx.summarize(clean.map(s => s.open_ms));
   const dead = arm.all.filter(s => !s.ok || !s.sdk_ran);
   say(`ARM   open: ${JSON.stringify(sum)} over ${clean.length} clean open(s) of ${arm.samples.length} in the last attempt; ${dead.length} of ${arm.all.length} open(s) across ${arm.attempts} attempt(s) FAILED${arm.verdict ? `; ${arm.verdict}` : ""}`);
   // Not a pass: any failed open in ANY attempt, or an arm that stayed contaminated (nothing was measured).
-  return { failed: dead.length > 0 || arm.contaminated };
+  return { failed: dead.length > 0 || arm.contaminated || flagged503 > 0 };
 }
