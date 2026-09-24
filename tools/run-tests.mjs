@@ -10,12 +10,28 @@
 // side by side on a loaded machine turns their timing waits into the thing
 // under test.
 import { spawnSync } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const files = process.argv.slice(2);
 if (files.length === 0) {
   console.error("run-tests: no test files given — a run that checked nothing is not a pass");
   process.exit(1);
 }
+// THE DISK GUARD (sdk#361), before any test starts a node or a browser: a run
+// that starts short of space fails late and misleads. The SDK owns the one
+// copy; no guard to run is a refusal, never a skip. Exit 1 refused, 2 could
+// not check: both stop the run.
+const root = fileURLToPath(new URL("..", import.meta.url));
+const guard = process.env.DISK_GUARD ?? resolve(root, process.env.CRAFTWORKS_SDK ?? "../craftworks-sdk", "scripts/disk-guard.sh");
+try {
+  accessSync(guard, constants.X_OK);
+} catch {
+  console.error(`no disk guard at ${guard} -- cannot check the disk, and will not skip it`);
+  process.exit(1);
+}
+if (spawnSync(guard, ["the builder test run"], { stdio: "inherit" }).status !== 0) process.exit(1);
 const results = [];
 for (const f of files) {
   const t0 = Date.now();

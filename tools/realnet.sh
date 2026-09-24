@@ -52,6 +52,12 @@ cd "$here" || exit 2
 case "${TMPDIR:-}" in
   ""|/var/folders/*|/tmp|/tmp/|/private/tmp|/private/tmp/) echo "REFUSED  TMPDIR is ${TMPDIR:-unset}: set it to your own directory, so every browser and node this run starts names its owner; nothing started"; exit 2;;
 esac
+# THE DISK GUARD (sdk#361), before the lock and before any node or browser: a
+# run that starts short of space fails late and misleads. The SDK owns the one
+# copy; no guard to run is a refusal, never a skip.
+guard=${DISK_GUARD:-${CRAFTWORKS_SDK:-../craftworks-sdk}/scripts/disk-guard.sh}
+if [ ! -x "$guard" ]; then echo "no disk guard at $guard -- cannot check the disk, and will not skip it" >&2; exit 1; fi
+"$guard" "the builder realnet run" || exit 1
 
 # ---- the lock: one session on the server at a time ---------------------------
 if ! mkdir "$LOCK" 2>/dev/null; then
