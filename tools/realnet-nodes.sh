@@ -6,6 +6,9 @@
 # removed ONLY on a passing run whose node was proven gone; on any failure every dir is
 # kept and its path printed. And a node is stopped TERM -> bounded wait -> KILL -> proven
 # gone, never `kill; wait`: a node that ignores TERM (cold8) turned that `wait` into a hang.
+# And a pid is signalled ONLY while its command line still names this node's own data dir:
+# a node that exited early frees its pid, and a reused pid may be another session's process
+# or the owner's node, which is never touched.
 #
 # Uses the caller's parallel arrays npids / ndirs / nws / nlabels (one entry per node).
 
@@ -17,6 +20,12 @@ node_alive() {
   local s
   s=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
   [ -n "$s" ] && [ "${s#Z}" = "$s" ]
+}
+
+# Is pid $1 still THIS RUN's node: its command line names the node's own dir $2 (unique per
+# run)? Asked before EVERY signal.
+node_ours() {
+  ps -o command= -p "$1" 2>/dev/null | grep -qF -- "$2"
 }
 
 # Poll for up to $2 seconds until pid $1 is no longer alive. 0: gone.
@@ -31,14 +40,24 @@ node_gone_within() {
 }
 
 # Stop one node: TERM, a bounded wait, KILL, a bounded wait; then PROVE it gone (the pid,
-# and nothing listening on its ws port). 0: proven gone.
-stop_node() { # pid label ws
-  local p=$1 label=$2 ws=$3
-  kill -TERM "$p" 2>/dev/null
+# and nothing listening on its ws port). 0: proven gone. 2: the pid is no longer this node
+# (it exited earlier), so it was NOT signalled; the node counts as gone, its dirs are kept.
+stop_node() { # pid label ws dir
+  local p=$1 label=$2 ws=$3 dir=$4
+  if node_alive "$p" && ! node_ours "$p" "$dir"; then
+    echo "SKIP  $label: pid $p is no longer this run's node (exited earlier); not signalled"
+    return 2
+  fi
+  node_ours "$p" "$dir" && kill -TERM "$p" 2>/dev/null
   if ! node_gone_within "$p" "$REALNET_TERM_WAIT"; then
-    echo "KILL  $label's node (pid $p) ignored TERM for ${REALNET_TERM_WAIT} s"
-    kill -KILL "$p" 2>/dev/null
-    node_gone_within "$p" "$REALNET_KILL_WAIT"
+    if node_ours "$p" "$dir"; then
+      echo "KILL  $label's node (pid $p) ignored TERM for ${REALNET_TERM_WAIT} s"
+      kill -KILL "$p" 2>/dev/null
+      node_gone_within "$p" "$REALNET_KILL_WAIT"
+    else
+      echo "SKIP  $label: pid $p stopped being this run's node before KILL; not signalled"
+      return 2
+    fi
   fi
   # Reap it if it is ours -- only once it is gone: a `wait` on a live node is the hang
   # this exists to prevent.
@@ -55,17 +74,17 @@ stop_node() { # pid label ws
 # the run passed AND their node is proven gone; otherwise they are kept and named. Returns
 # non-zero when any node could not be proven gone. Empties npids.
 end_nodes() { # run_failed
-  local run_failed=$1 i p bad=0 kept=0
+  local run_failed=$1 i p r bad=0 kept=0
   for i in ${npids[@]+"${!npids[@]}"}; do
     p=${npids[$i]}
-    if stop_node "$p" "${nlabels[$i]}" "${nws[$i]}"; then
-      if [ "$run_failed" = 0 ]; then
-        rm -rf "${ndirs[$i]}"
-        continue
-      fi
-    else
-      bad=1
+    stop_node "$p" "${nlabels[$i]}" "${nws[$i]}" "${ndirs[$i]}"
+    r=$?
+    # 2: exited earlier and not signalled -- an early exit is a failure worth its logs.
+    if [ "$r" = 0 ] && [ "$run_failed" = 0 ]; then
+      rm -rf "${ndirs[$i]}"
+      continue
     fi
+    [ "$r" = 1 ] && bad=1
     echo "KEPT  ${nlabels[$i]}'s dirs (data, config, log, web cache): ${ndirs[$i]}"
     kept=1
   done

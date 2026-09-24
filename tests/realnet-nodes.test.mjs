@@ -5,7 +5,9 @@
 // ignores TERM (cold8) is killed, not waited on for ever.
 //
 // The "nodes" are stand-in processes (no freenet is started): one that exits on TERM, one that
-// IGNORES TERM, each with a dir of its own under this test's temp dir.
+// IGNORES TERM, each with a dir of its own under this test's temp dir, NAMED on its command line
+// as a real node's --data-dir is. A pid whose command line does not name its dir (reused by
+// another process after the node exited) is never signalled.
 import assert from "node:assert";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -22,7 +24,7 @@ const freePort = () => new Promise(res => { const s = createServer().listen(0, "
 // Start two stand-in nodes (a polite one, and one that ignores TERM), then end them with the
 // run's verdict. Returns the output, the exit status, the dirs and the pids.
 const started = [];
-const run = async (runFailed, { holdPort = false } = {}) => {
+const run = async (runFailed, { holdPort = false, reused = false } = {}) => {
   const dir = n => { const d = join(base, `${n}-${Math.random().toString(36).slice(2)}`); mkdirSync(join(d, "log"), { recursive: true }); writeFileSync(join(d, "log", "console.out"), `${n} log\n`); return d; };
   const dirs = [dir("V"), dir("O1")];
   const ports = [await freePort(), await freePort()];
@@ -33,8 +35,11 @@ const run = async (runFailed, { holdPort = false } = {}) => {
     . '${under}'
     REALNET_TERM_WAIT=1; REALNET_KILL_WAIT=3
     npids=(); ndirs=(); nws=(); nlabels=()
-    sleep 300 & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)
-    perl -e '$SIG{TERM} = "IGNORE"; sleep 300' & npids+=($!); ndirs+=('${dirs[1]}'); nws+=(${ports[1]}); nlabels+=(O1)
+    ${reused
+      // V's recorded pid now belongs to an UNRELATED process: its command line names no node dir.
+      ? `perl -e 'sleep 300' unrelated-process & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)`
+      : `perl -e 'sleep 300' '${dirs[0]}' & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)`}
+    perl -e '$SIG{TERM} = "IGNORE"; sleep 300' '${dirs[1]}' & npids+=($!); ndirs+=('${dirs[1]}'); nws+=(${ports[1]}); nlabels+=(O1)
     echo "PIDS \${npids[*]}"
     sleep 0.3
     end_nodes ${runFailed ? 1 : 0}
@@ -81,6 +86,15 @@ try {
   assert.ok(!existsSync(held.dirs[1]), "a node proven gone kept its dirs on a passing run");
   assert.strictEqual(held.rc, 1, "end_nodes did not report the node it could not prove gone");
   console.log("ok a node not PROVEN gone (its port still listening) is reported and its dirs kept, even on a passing run");
+  // A PID NO LONGER OURS: the recorded pid is now an unrelated process. It is NOT signalled
+  // (still alive after), SKIP is said, and the node's dirs are kept (an early exit is a failure).
+  const reused = await run(false, { reused: true });
+  const [stranger] = reused.pids;
+  assert.match(reused.out, new RegExp(`SKIP {2}V: pid ${stranger} is no longer this run's node \\(exited earlier\\); not signalled`), `the reused pid was not skipped: ${reused.out}`);
+  assert.ok(reused.alive.includes(stranger), `end_nodes SIGNALLED a pid that was no longer its node (${stranger}): ${reused.out}`);
+  assert.ok(existsSync(reused.dirs[0]), "the dirs of a node that exited early were deleted");
+  assert.ok(!existsSync(reused.dirs[1]), "a node proven gone kept its dirs on a passing run");
+  console.log("ok a recorded pid that is no longer this run's node is never signalled: SKIP, and its dirs kept");
 } finally {
   // Whatever a failed assertion left: THIS test's stand-in nodes, by the pids it recorded.
   for (const p of started) { try { process.kill(p, "SIGKILL"); } catch {} }
