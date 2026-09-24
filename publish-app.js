@@ -63,17 +63,26 @@ const enc = new TextEncoder();
 const bytesOf = v => (typeof v === "string" ? enc.encode(v) : v);
 
 /**
- * Publish `app`, whose data is the tree `headId` names. Resolves once the node
+ * Publish `app`, whose data is the tree `headId` names, at the version
+ * `headSeq` (the seq of the head this session has PUBLISHED, craftworks-sdk#349).
+ * Resolves once the node
  * has acknowledged BOTH containers; rejects naming which one was refused (in
  * the node's words), or went unanswered.
  */
 export async function publishApp(app, {
-  sdk, session, headId, appId, manifest, read, subtle,
+  sdk, session, headId, headSeq, appId, manifest, read, subtle,
   everyMs = 200, sleep = ms => new Promise(r => setTimeout(r, ms)), signal = null,
   last = null, sdkVersion = null,
 }) {
   if (!sdk.ids.hex32(headId ?? "")) {
     throw new Error("publish: this session has no head yet, so the app would name no data");
+  }
+  // THE PUBLISHED VERSION (craftworks-sdk#349): a view opened from this app
+  // waits until its node has a head at least this new, instead of showing an
+  // older one the node still holds. A whole number, or the app would name a
+  // floor no view can read.
+  if (!Number.isSafeInteger(headSeq) || headSeq < 0) {
+    throw new Error(`publish: the published head's seq is ${JSON.stringify(headSeq)}, not a whole number, so a view could not tell an older version from this one`);
   }
   // AND THE APP ID it is written under (craftworks-sdk#267): every user's
   // session must open the SAME app's space in the app's tree, or it
@@ -103,16 +112,19 @@ export async function publishApp(app, {
   // default).
   const sdkFiles = {};
   for (const [at, from] of Object.entries(appFiles(manifest, sdk.ids))) sdkFiles[at] = await read(from);
-  const published = { ...app, publisher: { head: headId, app: appId } };
-  const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle, ids: sdk.ids });
-
-  // 3. Its container, built by the SDK (deterministic: the same app is the
-  // same address).
-  const c = new sdk.webapp.AppContainer();
-  for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
-  const state = c.finish();
-  const address = sdk.webapp.address(code, state);
-  const result = { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length };
+  // `seq` null: an app.json from before the published version (its address
+  // is the one it had, and it names no floor).
+  const build = async seq => {
+    const published = { ...app, publisher: { head: headId, app: appId, ...(seq === null ? {} : { seq }) } };
+    const { files, bundleHash, bytes: bundleBytes } = await packageApp(published, { sdkFiles, manifest, artefactsKey, subtle, ids: sdk.ids });
+    // 3. Its container, built by the SDK (deterministic: the same app is the
+    // same address).
+    const c = new sdk.webapp.AppContainer();
+    for (const [p, v] of Object.entries(files)) c.add(p, bytesOf(v));
+    const state = c.finish();
+    const address = sdk.webapp.address(code, state);
+    return { state, result: { address, artefactsKey, bundleHash, bundleBytes, containerBytes: state.length, artefactsBytes: artefacts.length, seq } };
+  };
 
   // NOTHING CHANGED, NOTHING SENT. A published project reopening (the
   // builder's reconnect) whose app is the SAME address as its last
@@ -121,9 +133,19 @@ export async function publishApp(app, {
   // contract. Re-PUTting them was measured to make the node serve the
   // artefacts container 404 on BOTH linked nodes for a moment (250 ms probe,
   // 1 run in 3), which the owner hit as "could not resolve artefact".
-  if (last?.app_contract_id === address && !!sdkVersion && last?.sdk_version === sdkVersion) {
-    return { ...result, put: false };
+  //
+  // THE SAME APP is compared at the LAST publication's seq, never this one's
+  // (craftworks-sdk#349, the core dev's ruling): the address is the app's
+  // stable link and changes when the APP changes, never when its data does.
+  // Rows added since leave the published container, and its older floor,
+  // where they are: an older floor is still a floor (a view reads no head
+  // below it). The seq is refreshed only by a publication that PUTs.
+  if (last?.app_contract_id && !!sdkVersion && last?.sdk_version === sdkVersion) {
+    const same = await build(last.head_seq ?? null);
+    if (same.result.address === last.app_contract_id) return { ...same.result, put: false };
   }
+  const { state, result } = await build(headSeq);
+  const address = result.address;
 
   // 4. PUT, and both acknowledged, matched by KEY.
   for (const [what, key, bytes] of [["artefacts", artefactsKey, artefacts], ["app", address, state]]) {

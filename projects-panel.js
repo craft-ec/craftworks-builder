@@ -721,9 +721,9 @@ export async function mountProjects(host, {
    *
    * The tree root it published FROM, the SDK it was built against, when, and
    * — once the app is on the network (builder#104) — its bundle hash, its
-   * address and the head its data is read from.
+   * address, the head its data is read from and that head's seq in its app.json.
    */
-  async function published({ sourceRoot = null, sdkVersion = null, bundleHash = null, appContractId = null, head = null } = {}) {
+  async function published({ sourceRoot = null, sdkVersion = null, bundleHash = null, appContractId = null, head = null, headSeq = null } = {}) {
     const pid = current();
     if (!pid) return null;
     const rec = await recordPublication(db, pid, {
@@ -733,6 +733,7 @@ export async function mountProjects(host, {
       bundle_hash: bundleHash,
       app_contract_id: appContractId,
       head,
+      head_seq: headSeq,
     });
     await paint();
     return rec;

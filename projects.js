@@ -153,6 +153,9 @@ export const SCHEMAS = {
       { name: "bundle_hash", kind: "text" },
       { name: "app_contract_id", kind: "text" },
       { name: "head", kind: "text" },
+      // The seq of that head when the app was PUT (craftworks-sdk#349): the
+      // version its app.json names, which a view reads no older than.
+      { name: "head_seq", kind: "int" },
     ],
   },
   // ONE RECORD PER (PROJECT, DOMAIN): that domain's schema and seed rows, for
@@ -453,7 +456,7 @@ export async function openInto(db, pid, { setLastOpened, handOver }) {
   return project;
 }
 
-export async function recordPublication(db, pid, { seq, sdk_version = null, schema_block_ids = [], source_root = null, published_at = Date.now(), bundle_hash = null, app_contract_id = null, head = null, ...rest }) {
+export async function recordPublication(db, pid, { seq, sdk_version = null, schema_block_ids = [], source_root = null, published_at = Date.now(), bundle_hash = null, app_contract_id = null, head = null, head_seq = null, ...rest }) {
   // WHAT WAS PUT, all three or none (builder#104). A bundle hash with no
   // address is a publication nobody can open, and an address with no head
   // opens onto no data; recording half would read as a complete one. A row
@@ -468,6 +471,7 @@ export async function recordPublication(db, pid, { seq, sdk_version = null, sche
     schema_block_ids: enc(schema_block_ids),
     source_root, published_at,
     ...(bundle_hash === null ? {} : { bundle_hash, app_contract_id, head }),
+    ...(head_seq === null ? {} : { head_seq }),
   });
 }
 
@@ -491,6 +495,7 @@ export async function publicationsOf(db, pid) {
       bundle_hash: r.fields.bundle_hash ?? null,
       app_contract_id: r.fields.app_contract_id ?? null,
       head: r.fields.head ?? null,
+      head_seq: r.fields.head_seq ?? null,
     }));
 }
 

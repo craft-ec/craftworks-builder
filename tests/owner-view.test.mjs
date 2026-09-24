@@ -40,6 +40,8 @@ const all = n => [n, ...((n?.children ?? []).flatMap(all))].filter(x => x instan
 const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
 const APP = { name: "Notes", components: [{ type: "form", domain: "notes" }, { type: "table", domain: "notes" }] };
 const HEAD = "a".repeat(64);
+/** The seq of the app's head on the faked node. */
+const NODE_SEQ = 5;
 
 /** The app's data, in a real Db. */
 async function appDb() {
@@ -78,7 +80,17 @@ async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
           db: own,
           canWrite: head => ({ answer: head === "" || head === signsFor ? "yes" : "no", why: "" }),
           openOwn: async () => { opens.push("openOwn"); return ownAnswer; },
-          tree: async head => { opens.push("tree"); return { db: head === HEAD ? viewOf(pub) : null }; },
+          // THE SDK's PUBLISHED-VERSION FLOOR (craftworks-sdk#354), as its reader
+          // keeps it: the node holds the app's head at NODE_SEQ; asked for a
+          // newer one, every read WAITS (never an older answer) and
+          // `waitingFor()` says what for.
+          tree: async (head, { seq = 0 } = {}) => {
+            opens.push({ tree: seq });
+            if (head !== HEAD) return { db: null };
+            const below = seq > NODE_SEQ;
+            const waiting = new Proxy(pub, { get: (d, k) => (typeof d[k] === "function" ? () => new Promise(() => {}) : d[k]) });
+            return { db: below ? waiting : viewOf(pub), waitingFor: () => (below ? `waiting for the published version (seq ${seq}); the node answered seq ${NODE_SEQ} (1 times)` : "") };
+          },
         };
       },
     },
@@ -142,7 +154,32 @@ await t("**a USER of an app with `mine` components gets working INPUTS, and thei
 await t("**the node that signs for the app's data, whose tree does NOT open, says so by name, never falls back to a view**", async () => {
   const n = await nodeSdk(HEAD, { answer: "no", why: "the signer refused the register" });
   await assert.rejects(openPublished(n.sdk, { ...ARGS, ownData: false }), /its tree did not open: the signer refused the register/);
-  assert.ok(!n.opens.includes("tree"), "an app owner whose tree failed was quietly shown a view");
+  assert.ok(!n.opens.some(o => o.tree !== undefined), "an app owner whose tree failed was quietly shown a view");
+});
+
+await t("**PUBLISHED AT A NEWER VERSION than the node holds: the view WAITS for it and says so — no rows from the older head** (craftworks-sdk#349)", async () => {
+  const n = await nodeSdk(null);
+  const opened = await openPublished(n.sdk, { ...ARGS, seq: NODE_SEQ + 4, ownData: false });
+  assert.deepStrictEqual(n.opens.filter(o => o.tree !== undefined), [{ tree: NODE_SEQ + 4 }], "the app's tree was not opened at the published seq");
+  assert.match(opened.waitingFor(), /waiting for the published version \(seq 9\); the node answered seq 5/);
+  const read = await Promise.race([opened.backends.publisher.scan("notes").then(r => r.map(x => x.fields.title)), new Promise(ok => setTimeout(() => ok("pending"), 50))]);
+  assert.strictEqual(read, "pending", "a view below the published version showed the older head's rows");
+});
+
+await t("THE CONTROLS: published at or below the node's head, or by an app.json from before the seq, the view reads at once and waits for nothing", async () => {
+  for (const [what, seq] of [["the node's own seq", NODE_SEQ], ["an older seq", 1], ["no seq (an older app.json)", undefined]]) {
+    const n = await nodeSdk(null);
+    const opened = await openPublished(n.sdk, { ...ARGS, ...(seq === undefined ? {} : { seq }), ownData: false });
+    assert.strictEqual(opened.waitingFor(), "", `${what}: the view says it waits`);
+    assert.deepStrictEqual((await opened.backends.publisher.scan("notes")).map(r => r.fields.title), ["one"], what);
+  }
+});
+
+await t("the app owner's own node reads its own tree (that version or newer): it waits for nothing", async () => {
+  const n = await nodeSdk(HEAD);
+  const opened = await openPublished(n.sdk, { ...ARGS, seq: NODE_SEQ + 4, ownData: false });
+  assert.strictEqual(opened.waitingFor(), "");
+  assert.strictEqual(opened.backends.publisher, n.pub);
 });
 
 if (failures) { process.stdout.write(`${failures} failing\n`); process.exit(1); }

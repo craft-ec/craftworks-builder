@@ -248,9 +248,12 @@ try {
     const app = ${JSON.stringify(APP)};
     // The SAME app id the real publication used (one project, one app).
     const appId = window.__craftworksPublished.app;
-    const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: bad, read, subtle: crypto.subtle });
-    const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), appId, manifest: missing, read, subtle: crypto.subtle });
-    return { mismatch: a.address, missing: b.address, sha: m.sdk.sha256 };`);
+    const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId, manifest: bad, read, subtle: crypto.subtle });
+    const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId, manifest: missing, read, subtle: crypto.subtle });
+    // Published at a version no node has yet (craftworks-sdk#349): a view of it WAITS.
+    const ahead = h.headSeq() + 1000;
+    const c = await publishApp({ ...app, name: "Notes (ahead)" }, { sdk, session: h.session, headId: h.headId(), headSeq: ahead, appId, manifest: m, read, subtle: crypto.subtle });
+    return { mismatch: a.address, missing: b.address, ahead: c.address, aheadSeq: ahead, sha: m.sdk.sha256 };`);
   for (const [kind, addr, expect] of [["mismatch", tampered.mismatch, /sha256|hash|mismatch|does not match/i], ["missing", tampered.missing, /no-such-artefact\.wasm/]]) {
     const tab = await fresh.tab(`visitor-${kind}`);
     await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`)}; return 1;`);
@@ -259,6 +262,20 @@ try {
     check(typeof st === "string" && expect.test(st) && rows === 0,
       kind === "mismatch" ? "an SDK wasm that does not match its hash is REFUSED and the app does not load" : "an unresolvable artefact is NAMED, with its hash",
       st);
+  }
+  // ---- 5. PUBLISHED AT A NEWER VERSION THAN THE NODE HOLDS, THE VIEW WAITS --
+  // (craftworks-sdk#349) and says so in the SDK's words — never the older
+  // head's rows. Watched for 30 s: a wait has no end (rule 8), so the check is
+  // that it is STILL waiting, with no row, when the watch ends.
+  {
+    const tab = await fresh.tab("visitor-ahead");
+    const frame = `${tampered.ahead}/?__sandbox=1`;
+    await tab.evaluate(`window.location.href = ${JSON.stringify(`http://127.0.0.1:${B.ws}/v1/contract/web/${tampered.ahead}/`)}; return 1;`);
+    const said = await untilIn(tab, `const s = document.getElementById("status")?.textContent ?? ""; return s.includes("waiting for the published version") ? s : null;`, 90_000, 1000, frame);
+    await sleep(30_000);
+    const after = await tab.evaluateIn(frame, `return { status: document.getElementById("status")?.textContent ?? null, rows: document.querySelectorAll("tbody tr").length };`);
+    check(typeof said === "string" && said.includes(`seq ${tampered.aheadSeq}`) && /waiting for the published version/.test(after.status ?? "") && after.rows === 0,
+      "an app published at a newer version than the node holds WAITS for it, says so, and shows no older rows", { said, after });
   }
 } catch (e) {
   failed += 1;
