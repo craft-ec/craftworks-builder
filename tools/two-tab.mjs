@@ -157,6 +157,10 @@ async function publish(tab, live) {
       button: document.getElementById("publish")?.textContent ?? null,
       why: document.getElementById("publish-note")?.textContent || document.getElementById("publish")?.title || null,
       notices: [...document.querySelectorAll(".notice, .storage-notice, [role=alert], .pub-why, .err")].map(n => n.textContent.trim()).filter(Boolean).slice(0, 5),
+      // WHICH STAGE it stopped in: the button keeps the handoff's words through the containers' PUTs after it.
+      phase: window.__craftworks?.phase ?? null,
+      published: window.__craftworksPublished ?? null,
+      progress: (() => { try { return JSON.parse(window.__craftworksSession?.take_progress?.() ?? "[]").slice(-8); } catch (e) { return String(e); } })(),
     });`).catch(() => "(the page could not be read)");
     throw new Error(`${e.message.split("\n")[0]} — the page said: ${said}`);
   }
@@ -574,11 +578,35 @@ async function reload() {
     "the write to reach the network", 120_000);
 
   // THE HEAD BEFORE, so "the same head" is a comparison and not a hope.
-  const headBefore = await a.evaluate(`return window.__craftworks?.db?.root?.() ?? null;`);
+  // THE HEAD, QUIET: "saved" is said when the write's blocks are on the node,
+  // and the head that includes them is published after (measured: seq 36 at
+  // "saved", 37 three seconds later, with nothing else written). A head read
+  // at "saved" is not yet the head the write lands as, so the published seq
+  // must hold still for 5 s first (bounded: a head that never settles is said).
+  const at = () => a.evaluate(`return { root: window.__craftworks?.db?.root?.() ?? null, seq: window.__craftworksSession?.headSeq?.() ?? window.__craftworks?.session?.headSeq?.() ?? null };`);
+  // WHAT THE TREE HOLDS: every domain's schema and rows (id + fields), to name what a commit changed.
+  const snap = () => a.evaluate(`const db = window.__craftworks?.db; const out = { phase: window.__craftworks?.phase ?? null, seq: window.__craftworksSession?.headSeq?.() ?? window.__craftworks?.session?.headSeq?.() ?? null, root: db?.root?.() ?? null, domains: {} };
+    let ds = []; try { const raw = await db.domains(); ds = Array.isArray(raw) ? raw : (() => { try { return JSON.parse(raw); } catch { return String(raw).split(/[,\\n]/).filter(Boolean); } })(); } catch (e) { out.domainsError = String(e.message ?? e); }
+    for (const d of ds) { let rows = null, schema = null; try { const raw = await db.schema(d); schema = typeof raw === "string" ? raw.length : raw; } catch (e) { schema = "?" + (e.message ?? e); } try { rows = (await db.scan(d)).map(r => JSON.parse(JSON.stringify(r))); } catch (e) { rows = "?" + (e.message ?? e); } out.domains[d] = { schema, rows }; }
+    return out;`);
+  const before0 = await at();
+  let before3 = before0, quietSince = Date.now();
+  const settleEnd = Date.now() + 60_000;
+  while (Date.now() - quietSince < 5_000 && Date.now() < settleEnd) {
+    await sleep(500);
+    const now = await at();
+    if (now.seq !== before3.seq || now.root !== before3.root) quietSince = Date.now();
+    before3 = now;
+  }
+  if (Date.now() - quietSince < 5_000) throw new Error(`the head never held still for 5 s after the write: ${JSON.stringify(before0)} -> ${JSON.stringify(before3)}`);
+  const headBefore = before3.root;
 
+  const snapBefore = await snap().catch(e => ({ error: e.message }));
   await a.reload();
   await sleep(1000);
   await a.until(`document.getElementById("publish")`, "the page to come back", 60_000);
+  await sleep(5000);
+  const snapReloaded = await snap().catch(e => ({ error: e.message }));
   // A SECOND PUBLISH after the reload must not install anything again: the
   // delegate refuses a second install on its own (first-writer-wins), and a
   // run that installed twice would have handed out a second signing key.
@@ -587,13 +615,16 @@ async function reload() {
   await a.until(`window.__craftworks?.phase === "published"`, "the reloaded tab to remount", 90_000);
   const steps = await a.evaluate(`return JSON.parse(window.__craftworksSession?.take_progress?.() ?? "[]");`);
   const headAfter = await a.evaluate(`return window.__craftworks?.db?.root?.() ?? null;`);
+  const after = await at();
+  await sleep(5000);
+  const snapPublished = await snap().catch(e => ({ error: e.message }));
   const back = await a.until(
     `[...document.querySelectorAll(".rt-comp td")].some(e => e.textContent === ${JSON.stringify(title)})`,
     "the reloaded tab to show what was written before it", 120_000);
   const shown = await rows(a);
   await shot(a, "reload-after");
   a.close();
-  return { start, shown, headBefore, headAfter, steps, ms: back };
+  return { start, shown, headBefore, headAfter, steps, ms: back, seqs: { before0, before3, after }, snaps: { snapBefore, snapReloaded, snapPublished } };
 }
 
 /**
@@ -752,7 +783,7 @@ check("4. a reloaded tab A gets its data back, same head, no second install", ()
   assert.ok(report.reload?.shown > 0, "the reloaded tab showed nothing");
   assert.ok(report.reload.headBefore, "no head was recorded before the reload, so there is nothing to compare");
   assert.strictEqual(report.reload.headAfter, report.reload.headBefore,
-    `the head moved across a reload that wrote nothing: ${report.reload.headBefore} -> ${report.reload.headAfter}`);
+    `the head moved across a reload that wrote nothing: ${report.reload.headBefore} -> ${report.reload.headAfter}; what the reloaded tab's publish did: ${JSON.stringify(report.reload.steps).slice(0, 1500)}; root/seq: ${JSON.stringify(report.reload.seqs)}; snapshots: ${JSON.stringify(report.reload.snaps)}`);
   const installs = (report.reload.steps ?? []).filter(x => /install/i.test(String(x)));
   assert.deepStrictEqual(installs, [],
     `the reloaded tab installed again (${installs.join(", ")}). A second install would hand out a second signing key.`);
