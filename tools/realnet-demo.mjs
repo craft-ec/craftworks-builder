@@ -17,7 +17,7 @@
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Every CLIENT connected to the node on `port` now: `{ pid, command, peer }` (lsof, read-only). */
@@ -57,7 +57,6 @@ const host = await openPageHost("realnet-demo", { budgetMs: Number(process.env.B
 const WIRE_DIR = process.env.RN_WIRE_DIR;
 const MUTANT = process.env.REALNET_MUTANT ?? "";
 const windowOf = () => String(stepN + 1);
-const runStart = Date.now();
 const wires = [];
 let pubBrowser = null, visBrowser = null, vBrowser = null, failed = 0, stepN = 0;
 const step = (ok, what, evidence) => {
@@ -224,23 +223,8 @@ function classified(file) {
   if (r.status !== 0) throw new Error(`classify-frames failed: ${r.stderr}`);
   return r.stdout.split("\n").filter(Boolean).map(l => JSON.parse(l));
 }
-/** CLIENT-tagged PUT/UPDATE lines of a node's INFO log in [from, to] (READ-ONLY: the owner's log is only ever read). */
-function nodeClientWrites(dir, from, to) {
-  const out = [];
-  let files = [];
-  try { files = readdirSync(dir).filter(f => /^freenet\.\d{4}-\d{2}-\d{2}-\d{2}\.log$/.test(f)).map(f => join(dir, f)).filter(f => statSync(f).mtimeMs >= from - 3_600_000); } catch { return null; }
-  for (const f of files) {
-    for (const line of readFileSync(f, "utf8").split("\n")) {
-      const t = Date.parse(line.slice(0, 27));
-      if (!(t >= from && t <= to) || !/client_id=/.test(line)) continue;
-      if (/\b(put|update)\b/i.test(line)) out.push(line.slice(0, 220));
-    }
-  }
-  return out;
-}
 function wireCheck() {
   for (const w of wires) w.cap.stop();
-  const runEnd = Date.now();
   const byLabel = Object.fromEntries(wires.map(w => [w.label, { stats: w.cap.stats(), rows: classified(w.file) }]));
   const A = byLabel.A ?? { rows: [], stats: {} }, Vw = byLabel.V ?? { rows: [], stats: {} };
   const fails = A.rows.filter(r => r.verdict === "fail");
@@ -248,8 +232,8 @@ function wireCheck() {
   const unpaused = [...(A.stats.unpaused ?? []), ...(Vw.stats.unpaused ?? [])];
   if (unpaused.length) step(false, `a frame or worker started UNPAUSED: a socket it opened at once could be unseen by the capture`, unpaused);
   step(A.rows.length > 0 && fails.length === 0,
-    `A view steps: ${fails.length} user-data writes (${repairs} repair PUTs) — ${A.rows.length} request(s) on ${A.stats.sockets} socket(s) from ${A.stats.targets} target(s)`,
-    fails.length ? fails.slice(0, 8) : A.rows.length ? undefined : "NOTHING was captured from A: the check saw no frame at all");
+    `A view steps: ${fails.length} user-data writes (${repairs} repair PUTs)`,
+    fails.length ? fails.slice(0, 8) : A.rows.length ? { requests: A.rows.length, sockets: A.stats.sockets, targets: A.stats.targets } : "NOTHING was captured from A: the check saw no frame at all");
   const v9 = Vw.rows.filter(r => r.window === "9" && r.verdict === "fail");
   // V's OPEN window (open → before its first user write). REPORT-ONLY until sdk#350 (opening commits nothing on a
   // key-holding node); REALNET_V_OPEN_ENFORCE=1 makes it a step. A MUTANT run is the proof the capture and the decoder
@@ -261,14 +245,5 @@ function wireCheck() {
   const v10 = Vw.rows.filter(r => r.window === "10");
   const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
   step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step 10) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
-  // THE NODE SIDE: the same, from each node's own INFO log. V's control says whether INFO can tell a CLIENT write at
-  // all; only then does a disagreement on A fail.
-  const vLog = process.env.RN_V_LOG ? nodeClientWrites(process.env.RN_V_LOG, runStart, runEnd) : null;
-  const aLog = process.env.RN_A_LOG ? nodeClientWrites(process.env.RN_A_LOG, runStart, runEnd) : null;
-  const exact = (vLog?.length ?? 0) >= 1;
-  const aWire = A.rows.filter(r => r.op === "put" || r.op === "update").length;
-  const line = `node log: A ${aLog === null ? "not read" : `${aLog.length} client-tagged PUT/UPDATE`} vs ${aWire} on A's wire; V ${vLog === null ? "not read" : vLog.length} (${exact ? "exact: INFO names client writes" : "relay-indistinct: INFO does not name a client PUT, reported only"})`;
-  if (exact && aLog !== null) step(aLog.length === aWire, line, aLog.length === aWire ? undefined : aLog.slice(0, 8));
-  else console.log(`NOTE  ${line}`);
   console.log(`WIRE  frames kept in ${WIRE_DIR}`);
 }

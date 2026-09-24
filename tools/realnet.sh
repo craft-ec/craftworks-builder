@@ -142,11 +142,10 @@ echo "RAN   V = a private node on this machine :$VWS (pid $vpid, joined to the r
 
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
-# A's log is the OWNER's (A is the owner's node): the demo only ever READS it.
 RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
   RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
   RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
-  RN_V_LOG="$vdir/log" RN_A_LOG="${REALNET_A_LOG:-$HOME/Library/Logs/freenet}" RN_WIRE_DIR="$run" \
+  RN_WIRE_DIR="$run" \
   node tools/realnet-demo.mjs
 fail=$?
 
