@@ -4,14 +4,16 @@
 // (`sdk.ids`). A `fetch(` or a validation regex anywhere else in the builder's
 // own code fails this test, so a new copy cannot merge.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { trackedFiles } from "./tracked-files.mjs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-// Not the builder's own code: dependencies, the SDK's copied files, the tests
-// themselves, build output. `docs` holds no JavaScript. tools/ IS scanned.
-const SKIP = new Set(["node_modules", "sdk", "tests", ".git", "docs", ".sdk-build"]);
+// The builder's own code: what git TRACKS (tests/tracked-files.mjs), less the
+// tests themselves and docs (no JavaScript); dependencies, the SDK's copied
+// files and build output are not tracked. tools/ IS scanned.
+const SKIP = ["tests/", "docs/", "sdk/"];
 
 // THE EXCEPTIONS, printed on every run so one added is never silent: each file
 // with the EXACT number of such lines it may hold and why. A second copy in an
@@ -33,14 +35,6 @@ function copies(text) {
   return text.split("\n").filter(l => !l.trim().startsWith("//") && (/\bfetch\w*\(/.test(l) || /\/\^\[/.test(l)));
 }
 
-function files(dir, out = []) {
-  for (const n of readdirSync(dir)) {
-    const p = join(dir, n);
-    if (statSync(p).isDirectory()) { if (!SKIP.has(n) && !n.startsWith(".")) files(p, out); }
-    else if (/\.m?js$/.test(n)) out.push(p);
-  }
-  return out;
-}
 
 let failures = 0;
 const t = async (name, fn) => {
@@ -49,7 +43,7 @@ const t = async (name, fn) => {
 };
 
 await t("**no fetch( and no validation regex in the builder's own code outside the named exceptions**", () => {
-  const all = files(root);
+  const all = trackedFiles(root, { skip: SKIP }).map(f => join(root, f));
   assert.ok(all.length > 20, `the scan found only ${all.length} files: it is not looking at the builder`);
   process.stdout.write(`      exceptions: ${Object.entries(EXEMPT).map(([f, [n, why]]) => `${f} ×${n} (${why})`).join("; ")}\n`);
   const found = all.flatMap(f => wrong(relative(root, f), readFileSync(f, "utf8")));
