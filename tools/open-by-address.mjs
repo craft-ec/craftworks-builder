@@ -254,14 +254,32 @@ try {
     const ahead = h.headSeq() + 1000;
     const c = await publishApp({ ...app, name: "Notes (ahead)" }, { sdk, session: h.session, headId: h.headId(), headSeq: ahead, appId, manifest: m, read, subtle: crypto.subtle });
     return { mismatch: a.address, missing: b.address, ahead: c.address, aheadSeq: ahead, sha: m.sdk.sha256 };`, { ms: BUDGET_MS });
-  for (const [kind, addr, expect] of [["mismatch", tampered.mismatch, /sha256|hash|mismatch|does not match/i], ["missing", tampered.missing, /no-such-artefact\.wasm/]]) {
-    const tab = await fresh.tab(`visitor-${kind}`);
+  // A MISMATCH is an END: bytes that do not hash are refused, by name.
+  {
+    const tab = await fresh.tab("visitor-mismatch");
+    const addr = tampered.mismatch;
     await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`);
     const st = await untilIn(tab, `const s = document.getElementById("status"); return s?.className === "bad" ? s.textContent : null;`, 90_000, 2000, `${addr}/?__sandbox=1`);
     const rows = await tab.evaluateIn(`${addr}/?__sandbox=1`, `return document.querySelectorAll("tbody tr").length;`);
-    check(typeof st === "string" && expect.test(st) && rows === 0,
-      kind === "mismatch" ? "an SDK wasm that does not match its hash is REFUSED and the app does not load" : "an unresolvable artefact is NAMED, with its hash",
-      st);
+    check(typeof st === "string" && /sha256|hash|mismatch|does not match/i.test(st) && rows === 0, "an SDK wasm that does not match its hash is REFUSED and the app does not load", st);
+  }
+  // A MISSING artefact is NOT an answer (rule 8, craftworks-sdk#340): it is
+  // re-asked on the RTO with no give-up, and the page SAYS it waits — naming
+  // the file and counting seconds — and loads nothing meanwhile.
+  {
+    const tab = await fresh.tab("visitor-missing");
+    const addr = tampered.missing;
+    const frame = `${addr}/?__sandbox=1`;
+    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`);
+    const waiting = `const s = document.getElementById("status")?.textContent ?? ""; const m = /not available on this node yet \\((\\d+) s\\): no-such-artefact\\.wasm/.exec(s); return m ? Number(m[1]) : null;`;
+    const first = await untilIn(tab, waiting, 90_000, 1000, frame);
+    await sleep(5_000);
+    const later = await tab.evaluateIn(frame, waiting).catch(() => null);
+    const rows = await tab.evaluateIn(frame, `return document.querySelectorAll("tbody tr").length;`).catch(() => null);
+    const bad = await tab.evaluateIn(frame, `return document.getElementById("status")?.className === "bad";`).catch(() => null);
+    check(Number.isInteger(first) && Number.isInteger(later) && later > first && rows === 0 && bad === false,
+      "an artefact the node does not serve is WAITED on, not an end: the page names the file and counts seconds, and loads nothing",
+      { first, later, rows, bad, status: await tab.evaluateIn(frame, `return document.getElementById("status")?.textContent;`).catch(e => e.message) });
   }
   // ---- 5. PUBLISHED AT A NEWER VERSION THAN THE NODE HOLDS, THE VIEW WAITS --
   // (craftworks-sdk#349) and says so in the SDK's words — never the older
