@@ -12,6 +12,12 @@
 //
 // Each line: {"t": ms, "window": the step label at the time, "socket":
 // "<session>:<requestId>", "url": the socket's URL, "opcode", "data": base64}.
+//
+// And, with `received`, every frame the node SENDS BACK, in a file of its own
+// (same line shape): what a node answered — a head's value, a block, or
+// nothing — is what tells a stall's cause (batch 1's step 4: A asked one block
+// five times; whether its ROOT was the head's needs the head's value). Kept
+// apart from `out`, which the decoder reads as requests.
 import { appendFileSync } from "node:fs";
 import { browserDebuggerUrl, cdpConnect } from "../tests/page-host.mjs";
 
@@ -23,7 +29,7 @@ import { browserDebuggerUrl, cdpConnect } from "../tests/page-host.mjs";
 /** The target types that can carry a page's sockets: only these have their network captured. */
 const OURS = /^(page|iframe|worker|shared_worker|service_worker)$/;
 
-export async function captureWire(debug, { out, windowOf, label, connect = cdpConnect }) {
+export async function captureWire(debug, { out, received = null, windowOf, label, connect = cdpConnect }) {
   // Through the ONE CDP connection (tests/page-host.mjs): every call has a
   // deadline and names its method, so a target that never answers cannot
   // hang the run silently. Events arrive through `onEvent`.
@@ -31,11 +37,17 @@ export async function captureWire(debug, { out, windowOf, label, connect = cdpCo
   const cdp = await connect(await browserDebuggerUrl(debug), `wire capture (${label})`, { onEvent: m => onEvent(m) });
   const send = (method, params = {}, sessionId) => cdp.send(method, params, { sessionId });
   const urls = new Map();
-  const stats = { targets: 0, sockets: 0, frames: 0, types: {}, unpaused: [], unresumed: [], gone: [], notOurs: [] };
+  const stats = { targets: 0, sockets: 0, frames: 0, received: 0, types: {}, unpaused: [], unresumed: [], gone: [], notOurs: [] };
   // Sessions of targets that have closed: a call to one fails "not found", and
   // that target is GONE (nothing left to capture), never "not resumed".
   const detached = new Set();
   let started = false;
+  // Binary frames come base64 already; a text frame is carried as its bytes (and will not decode: it FAILS).
+  const line = (m, key) => {
+    const r = m.params.response ?? {};
+    const data = r.opcode === 2 ? r.payloadData : Buffer.from(r.payloadData ?? "", "utf8").toString("base64");
+    return JSON.stringify({ t: Date.now(), window: windowOf(), browser: label, socket: key, url: urls.get(key) ?? null, opcode: r.opcode, data }) + "\n";
+  };
   onEvent = m => {
     if (m.method === "Target.attachedToTarget") {
       const s = m.params.sessionId;
@@ -81,11 +93,11 @@ export async function captureWire(debug, { out, windowOf, label, connect = cdpCo
       urls.set(key, m.params.url);
       stats.sockets += 1;
     } else if (m.method === "Network.webSocketFrameSent") {
-      const r = m.params.response ?? {};
-      // Binary frames come base64 already; a text frame is carried as its bytes (and will not decode: it FAILS).
-      const data = r.opcode === 2 ? r.payloadData : Buffer.from(r.payloadData ?? "", "utf8").toString("base64");
       stats.frames += 1;
-      appendFileSync(out, JSON.stringify({ t: Date.now(), window: windowOf(), browser: label, socket: key, url: urls.get(key) ?? null, opcode: r.opcode, data }) + "\n");
+      appendFileSync(out, line(m, key));
+    } else if (m.method === "Network.webSocketFrameReceived" && received) {
+      stats.received += 1;
+      appendFileSync(received, line(m, key));
     }
   };
   // Every target that exists now and every one made later, each paused until attached.
