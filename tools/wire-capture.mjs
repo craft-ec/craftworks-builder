@@ -18,6 +18,11 @@
 // nothing — is what tells a stall's cause (batch 1's step 4: A asked one block
 // five times; whether its ROOT was the head's needs the head's value). Kept
 // apart from `out`, which the decoder reads as requests.
+//
+// And, with `requests` (the live harness, tools/live/), every HTTP REQUEST
+// those targets make, one line per event: {"t", "target", "id", "event":
+// sent|response|finished|failed, "url", "status", "canceled"} -- the per-piece
+// view of an open (which pieces were asked, answered, cancelled at k).
 import { appendFileSync } from "node:fs";
 import { browserDebuggerUrl, cdpConnect } from "../tests/page-host.mjs";
 
@@ -29,7 +34,7 @@ import { browserDebuggerUrl, cdpConnect } from "../tests/page-host.mjs";
 /** The target types that can carry a page's sockets: only these have their network captured. */
 const OURS = /^(page|iframe|worker|shared_worker|service_worker)$/;
 
-export async function captureWire(debug, { out, received = null, windowOf, label, connect = cdpConnect }) {
+export async function captureWire(debug, { out, received = null, requests = null, windowOf, label, connect = cdpConnect }) {
   // Through the ONE CDP connection (tests/page-host.mjs): every call has a
   // deadline and names its method, so a target that never answers cannot
   // hang the run silently. Events arrive through `onEvent`.
@@ -98,6 +103,10 @@ export async function captureWire(debug, { out, received = null, windowOf, label
     } else if (m.method === "Network.webSocketFrameReceived" && received) {
       stats.received += 1;
       appendFileSync(received, line(m, key));
+    } else if (requests && /^Network\.(requestWillBeSent|responseReceived|loadingFinished|loadingFailed)$/.test(m.method)) {
+      const p = m.params;
+      const event = { requestWillBeSent: "sent", responseReceived: "response", loadingFinished: "finished", loadingFailed: "failed" }[m.method.slice(8)];
+      appendFileSync(requests, JSON.stringify({ t: Date.now(), target: m.sessionId ?? "browser", id: p.requestId, event, url: p.request?.url ?? p.response?.url ?? null, status: p.response?.status ?? null, canceled: p.canceled ?? null }) + "\n");
     }
   };
   // Every target that exists now and every one made later, each paused until attached.
