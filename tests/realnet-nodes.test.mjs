@@ -24,7 +24,7 @@ const freePort = () => new Promise(res => { const s = createServer().listen(0, "
 // Start two stand-in nodes (a polite one, and one that ignores TERM), then end them with the
 // run's verdict. Returns the output, the exit status, the dirs and the pids.
 const started = [];
-const run = async (runFailed, { holdPort = false, reused = false } = {}) => {
+const run = async (runFailed, { holdPort = false, reused = false, exited = false } = {}) => {
   const dir = n => { const d = join(base, `${n}-${Math.random().toString(36).slice(2)}`); mkdirSync(join(d, "log"), { recursive: true }); writeFileSync(join(d, "log", "console.out"), `${n} log\n`); return d; };
   const dirs = [dir("V"), dir("O1")];
   const ports = [await freePort(), await freePort()];
@@ -38,6 +38,9 @@ const run = async (runFailed, { holdPort = false, reused = false } = {}) => {
     ${reused
       // V's recorded pid now belongs to an UNRELATED process: its command line names no node dir.
       ? `perl -e 'sleep 300' unrelated-process & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)`
+      : exited
+      // V EXITED on its own before cleanup (a crash, a failed start).
+      ? `perl -e 'exit 0' '${dirs[0]}' & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)`
       : `perl -e 'sleep 300' '${dirs[0]}' & npids+=($!); ndirs+=('${dirs[0]}'); nws+=(${ports[0]}); nlabels+=(V)`}
     perl -e '$SIG{TERM} = "IGNORE"; sleep 300' '${dirs[1]}' & npids+=($!); ndirs+=('${dirs[1]}'); nws+=(${ports[1]}); nlabels+=(O1)
     echo "PIDS \${npids[*]}"
@@ -95,6 +98,13 @@ try {
   assert.ok(existsSync(reused.dirs[0]), "the dirs of a node that exited early were deleted");
   assert.ok(!existsSync(reused.dirs[1]), "a node proven gone kept its dirs on a passing run");
   console.log("ok a recorded pid that is no longer this run's node is never signalled: SKIP, and its dirs kept");
+  // A node that EXITED before cleanup, on a run that otherwise passed: its dirs are kept (an
+  // early exit is worth its logs) and it is named; the other node's dirs go as usual.
+  const exited = await run(false, { exited: true });
+  assert.match(exited.out, /GONE {2}V's node \(pid \d+\) exited before cleanup; its dirs are kept/, `the early exit was not named: ${exited.out}`);
+  assert.ok(existsSync(exited.dirs[0]), "the dirs of a node that exited early were deleted on a passing run");
+  assert.ok(!existsSync(exited.dirs[1]), "a node proven gone kept its dirs on a passing run");
+  console.log("ok a node that exited BEFORE cleanup is named GONE and its dirs kept, even on a passing run");
 } finally {
   // Whatever a failed assertion left: THIS test's stand-in nodes, by the pids it recorded.
   for (const p of started) { try { process.kill(p, "SIGKILL"); } catch {} }

@@ -44,7 +44,12 @@ node_gone_within() {
 # (it exited earlier), so it was NOT signalled; the node counts as gone, its dirs are kept.
 stop_node() { # pid label ws dir
   local p=$1 label=$2 ws=$3 dir=$4
-  if node_alive "$p" && ! node_ours "$p" "$dir"; then
+  if ! node_alive "$p"; then
+    wait "$p" 2>/dev/null   # reap it if it is ours; it is gone, so this never blocks
+    echo "GONE  $label's node (pid $p) exited before cleanup; its dirs are kept"
+    return 2
+  fi
+  if ! node_ours "$p" "$dir"; then
     echo "SKIP  $label: pid $p is no longer this run's node (exited earlier); not signalled"
     return 2
   fi
