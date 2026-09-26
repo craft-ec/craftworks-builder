@@ -81,6 +81,12 @@ test run made *without* disagrees about whether the hashes should say `unknown`.
 | `palette-phases-drift.png` | the same palette with the drift banner |
 | `palette-phase-14-chat.png` | after Phase 13 (Compute — craftvm) was inserted: Chat reads **phase 14** |
 
+## Screenshot of the Assets tab (design mock, KEEPER.md §1/§3/§10)
+
+| file | state |
+|---|---|
+| `assets-tab-mock.png` | the DESIGN before code, rendered from `docs/mock/assets-tab.html` with the builder's own styles: one row per asset (whole · degraded with its warning · damaged with a refused block · auditing · unmeasured), the running pass and "not answering", policy edited in place, "Keep this" |
+
 ## Screenshots of the versions panel
 
 In `docs/`, committed rather than described, because the screenshot is a gate

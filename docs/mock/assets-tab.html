@@ -1,0 +1,209 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Assets tab (mock)</title><style>
+  :root { --bg:#f6f5f2; --panel:#fff; --ink:#1d1d1f; --mute:#6b6b70; --line:#e3e1dc; --acc:#2f5bea; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16171a; --panel:#1f2125; --ink:#ececee; --mute:#9a9aa2; --line:#2e3036; --acc:#7b9bff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:grid; grid-template-rows:auto 1fr; }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header b { font-size:15px; } header .sp { flex:1; }
+  .projwrap { position:relative; }
+  .proj-chip { font:inherit; padding:5px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); cursor:pointer; }
+  .proj-pop { position:absolute; top:calc(100% + 6px); left:0; width:320px; z-index:30;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.12); }
+  .proj-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .proj-acts { display:flex; gap:6px; }
+  .proj-head button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); cursor:pointer; }
+  .proj-list { display:flex; flex-direction:column; gap:4px; max-height:300px; overflow:auto; }
+  .proj-row { display:flex; flex-direction:column; gap:2px; align-items:flex-start; text-align:left;
+    font:inherit; padding:7px 9px; border:1px solid transparent; border-radius:7px; background:none; cursor:pointer; }
+  .proj-row:hover { background:var(--bg); }
+  .proj-row.is-open { border-color:var(--line); background:var(--bg); }
+  .proj-row small { color:var(--dim); font-size:11px; }
+  .proj-empty, .proj-note { color:var(--dim); font-size:11px; margin:8px 2px 0; line-height:1.5; }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); cursor:pointer; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.pri { background:var(--acc); border-color:var(--acc); color:#fff; }
+  main { display:grid; grid-template-columns:240px 1fr 300px; min-height:0; }
+  aside { background:var(--panel); padding:12px; overflow:auto; }
+  aside.l { border-right:1px solid var(--line); } aside.r { border-left:1px solid var(--line); }
+  h3 { margin:0 0 8px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
+  #palette { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .chip { text-align:left; padding:5px 8px; }
+  .chip small { font-size:10px; }
+  .chip small { display:block; color:var(--mute); }
+  #canvas { padding:20px; overflow:auto; }
+  .comp { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; cursor:pointer; }
+  .comp.sel { border-color:var(--acc); box-shadow:0 0 0 2px color-mix(in srgb, var(--acc) 25%, transparent); }
+  .comp .t { font-weight:600; } .comp .b { color:var(--mute); font-size:12px; }
+  .empty { color:var(--mute); text-align:center; margin-top:18vh; }
+  label { display:block; margin:10px 0 4px; color:var(--mute); font-size:12px; }
+  input, select { width:100%; padding:6px 8px; font:inherit; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:11px; overflow:auto; max-height:40vh; }
+  .addr { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--mute); padding:3px 8px; border:1px solid var(--line); border-radius:6px; }
+  .addr b { color:var(--ink); font-weight:600; }
+  #tree, #map { font-size:12px; }
+  .rng { margin-bottom:8px; }
+  .rng > .h, #tree-root .h { color:var(--mute); display:flex; gap:6px; align-items:baseline; }
+  .rng > .h code, #tree-root .h code { color:var(--ink); }
+  .path { display:block; margin:3px 0 0 10px; padding:3px 6px; border-radius:6px; border:1px solid transparent; cursor:pointer; font:11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap:anywhere; }
+  .path:hover { border-color:var(--line); } .path.hl { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 12%, transparent); }
+  .path small { display:block; font-family:system-ui, sans-serif; color:var(--mute); }
+  .set { border-style:dashed !important; }
+  .kv { display:grid; grid-template-columns:78px 1fr; gap:4px 8px; margin:0; }
+  .kv dt { color:var(--mute); } .kv dd { margin:0; overflow-wrap:anywhere; }
+  .kv code, .tag { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tag { display:inline-block; padding:1px 6px; margin:0 3px 3px 0; border:1px solid var(--line); border-radius:999px; }
+  .note { color:var(--mute); margin-top:8px; }
+  .rt-state { font-size:11px; padding:2px 7px; border-radius:99px; white-space:nowrap; }
+  .rt-state.ok { background:#e7f5ec; color:#1c6b3a; }
+  .rt-state.working { background:#fff4e0; color:#8a5a00; }
+  .rt-state.warn { background:#fdf0e3; color:#8a4b00; }
+  .rt-state.bad { background:#fdeaea; color:#a11; }
+  .rt-state.unknown { background:#eee; color:#555; }
+  .rt-live { font-size:11px; margin-left:8px; padding:2px 7px; border-radius:99px; background:#e8eeff; color:#33c; font-weight:600; }
+  label.live { display:flex; align-items:center; gap:8px; margin-top:12px; font-weight:600; }
+  label.live input { width:auto; margin:0; }
+  #live-note { font-size:12px; line-height:1.45; margin-top:4px; }
+  #tree-root { margin-bottom:12px; }
+  #tree-root .root { display:flex; align-items:center; gap:6px; margin:3px 0 0 10px; }
+  #tree-root .root code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* The pill carries its own margin for the tag lists it was made for; inside
+     this row the flex gap does the spacing, so zero it or the row looks askew. */
+  #tree-root .root .tag { margin:0; padding:0 6px; color:var(--mute); }
+  #tree-root .copy { font-size:10px; padding:1px 5px; }
+  .rootstats { display:flex; gap:10px; margin:4px 0 0 10px; color:var(--mute); font-size:11px; }
+  .schema input, .schema select { margin-bottom:4px; }
+  .frow { display:grid; grid-template-columns:1fr 74px 18px 26px; gap:4px; align-items:center; }
+  .frow button { padding:2px 0; }
+  .rt-comp { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  .rt-comp h4 { margin:0 0 10px; font-size:12px; color:var(--mute); font-weight:600; }
+  .rt-row { display:grid; grid-template-columns:110px 1fr; gap:8px; align-items:center; margin:0 0 8px; color:var(--ink); font-size:13px; }
+  .rt-row input[type=checkbox] { width:auto; justify-self:start; }
+  .rt-actions { display:inline-flex; gap:6px; } .rt-actions button { padding:3px 9px; font-size:12px; }
+  .rt-err { color:#c0392b; margin:6px 0 0; font-size:12px; } .rt-empty { color:var(--mute); margin:0; }
+  .rt-saving { margin:0 0 8px; font-size:12px; color:#8a6d00; } /* writes not yet published (sdk#163) */
+  .rt-scroll { overflow-x:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); } th { color:var(--mute); font-weight:600; font-size:11px; }
+  .rt-list { list-style:none; margin:0; padding:0; } .rt-list li { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); }
+  .rt-list small { color:var(--mute); }
+  body.previewing #palette, body.previewing #palette-h { opacity:.4; pointer-events:none; }
+  /* Versions panel: a footer chip that opens what this build is running. */
+  .verwrap { position:fixed; left:12px; bottom:12px; z-index:40; }
+  .ver-chip { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; padding:4px 10px; border-radius:999px; }
+  .ver-chip.s-ok, .ver-chip.s-info { color:var(--mute); }
+  .ver-chip.s-warn { color:#9a6b00; border-color:#d9a300; }
+  .ver-chip.s-mismatch { color:#fff; background:#c0392b; border-color:#c0392b; }
+  .ver-chip.s-unverified { color:var(--mute); border-style:dashed; }
+  .ver-pop { position:absolute; left:0; bottom:34px; width:min(420px, calc(100vw - 24px)); max-height:min(70vh, 560px); overflow:auto;
+             background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; box-shadow:0 10px 30px rgba(0,0,0,.18); }
+  .ver-pop section { margin-top:12px; }
+  .ver-pop h4 { margin:0 0 6px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
+  .ver-verdict { font-size:12px; padding:7px 9px; border-radius:8px; border:1px solid var(--line); }
+  .ver-verdict b { letter-spacing:.04em; }
+  .ver-verdict.s-mismatch { background:color-mix(in srgb, #c0392b 12%, transparent); border-color:#c0392b; }
+  .ver-verdict.s-warn { background:color-mix(in srgb, #d9a300 14%, transparent); border-color:#d9a300; }
+  .ver-kv { display:grid; grid-template-columns:104px 1fr; gap:5px 10px; margin:0; align-items:baseline; }
+  .ver-kv dt { color:var(--mute); font-size:12px; }
+  .ver-kv dd { margin:0; overflow-wrap:anywhere; }
+  .ver-kv dd code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ver-kv dd small { display:block; color:var(--mute); font-size:11px; margin-top:1px; }
+  .ver-kv dd.s-warn code, .ver-kv dd.s-mismatch code { color:#c0392b; }
+  .ver-kv dd.s-unknown code { color:var(--mute); }
+  /* Sticky, because the popover is capped and scrolls: the screenshot showed
+     Copy diagnostics below the fold, which is the one thing in here people
+     come to press. */
+  .ver-actions { position:sticky; bottom:-12px; margin:14px -14px -12px; padding:10px 14px;
+                 display:flex; gap:8px; align-items:center; background:var(--panel); border-top:1px solid var(--line); }
+  .ver-actions button { font-size:12px; padding:4px 10px; }
+  .ver-flash { color:var(--mute); font-size:11px; }
+  .ver-diag { margin-top:10px; max-height:200px; }
+  /* The upgrade OFFER. Never applied on its own (ARCHITECTURE §19), so it is a
+     bar with a button and not a thing that happens to you. */
+  .upbar:empty { display:none; }
+  /* Why a publish did not happen, WHERE A PERSON CAN SEE IT. It lived in the
+     button's tooltip, which renders as nothing in a screenshot and requires a
+     hover to find — so the one thing that makes a failure fixable was the one
+     thing invisible. */
+  .savestate{margin:0 16px 8px;padding:8px 12px;border-radius:8px;background:#fdecea;color:#7a1f16;font-size:13px}
+.savestate button{margin-left:4px}
+.pubnote:empty { display:none; }
+  .pubnote { margin:0 12px 8px; padding:8px 12px; border-radius:8px; font-size:13px; line-height:1.45;
+             background:#fdf2f2; border:1px solid #f0c7c7; color:#7a2020; overflow-wrap:anywhere; }
+  .upbar { position:fixed; right:12px; bottom:12px; z-index:40; display:flex; gap:10px; align-items:center;
+           background:var(--panel); border:1px solid #d9a300; border-radius:10px; padding:8px 12px;
+           box-shadow:0 8px 24px rgba(0,0,0,.14); max-width:min(560px, calc(100vw - 24px)); }
+  .upbar .up-what { font-size:12px; color:var(--ink); overflow-wrap:anywhere; }
+  .upbar button { font-size:12px; padding:4px 10px; white-space:nowrap; }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } aside.l, aside.r { border:0; border-bottom:1px solid var(--line); } }
+</style></head><body>
+<style>
+  .assets { grid-column:1 / -1; padding:20px 28px; overflow:auto; }
+  .assets h2 { margin:0; font-size:18px; }
+  .assets .sub { color:var(--mute); font-size:12px; margin:4px 0 14px; max-width:860px; }
+  .pass { display:flex; gap:14px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:14px; }
+  .pass .bar { flex:0 0 220px; height:6px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .pass .bar i { display:block; height:100%; width:67%; background:var(--acc); }
+  .pass .slow { color:#a15c00; font-size:12px; }
+  table.at { width:100%; border-collapse:separate; border-spacing:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .at th { text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); font-weight:600; padding:10px 12px; border-bottom:1px solid var(--line); }
+  .at td { padding:11px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .at tr:last-child td { border-bottom:none; }
+  .at .name { font-weight:600; } .at small { display:block; color:var(--mute); font-size:11px; }
+  .at code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .h { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; border:1px solid; }
+  .h.whole { color:#1f7a3a; border-color:#9fd3ae; background:#ecf7ef; }
+  .h.degraded { color:#8a5a00; border-color:#e6c77a; background:#fdf5e1; }
+  .h.damaged { color:#a3261c; border-color:#eba59f; background:#fcebea; }
+  .h.unmeasured, .h.auditing { color:var(--mute); border-color:var(--line); background:var(--bg); }
+  .warn { color:#8a5a00; font-size:11px; margin-top:4px; }
+  .dmg { color:#a3261c; font-size:11px; margin-top:4px; }
+  .g { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .at select, .at input { width:auto; padding:3px 6px; font-size:12px; }
+  .at input.n { width:44px; }
+  .keep { display:flex; gap:8px; align-items:center; margin-top:14px; }
+  .keep input { width:420px; flex:0 0 auto; } .keep select { width:auto; flex:0 0 auto; } .keep button, .at button { white-space:nowrap; }
+  .foot { color:var(--mute); font-size:11px; margin-top:10px; max-width:900px; line-height:1.5; }
+  header button.on { border-color:var(--acc); color:var(--acc); }
+</style>
+<header>
+  <b>Craftec Builder</b><span class="b" style="color:var(--mute)">SDK 0.1.0</span>
+  <span class="addr"><b>craftec://</b>notes<b>/</b>you · published</span><span class="sp"></span>
+  <button>Projects</button><button class="on">Assets</button>
+  <button>Preview</button><button>Clear</button><button class="pri">Publish</button>
+</header>
+<main>
+ <section class="assets">
+  <h2>Assets</h2>
+  <div class="sub">What this identity keeps, and how each one is doing. Audits and repairs run only while an Assets tab is open (one op at a time, behind your apps' own requests). Health means: held by your node or findable from it, and verified — the network does not report how many copies exist.</div>
+  <div class="pass">
+    <b>Auditing</b><span><code>9D9bAjjKSVoH…</code> · full pass</span>
+    <span class="bar"><i></i></span><span class="g">212 / 318 blocks asked</span>
+    <span class="slow">node not answering for 14 s (an audit op) — asked again, still waiting</span>
+  </div>
+  <table class="at">
+   <tr><th>Asset</th><th>Health</th><th>Groups<br><span style="text-transform:none;letter-spacing:0">whole · degraded · damaged</span></th><th>Last full audit</th><th>Repair</th><th>Warn below</th><th></th></tr>
+   <tr><td><span class="name">Your data</span><small>your identity's tree</small><code>reg 7bb29b3b…</code></td>
+       <td><span class="h whole">whole</span></td><td class="g">14 · 0 · 0</td><td>2 min ago<small>repaired 0 · 1.2 MB (step 3)</small></td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name">Notes</span><small>your published app</small><code>site 2uhMr27d…</code></td>
+       <td><span class="h degraded">degraded</span><div class="warn">1 group has 1 block to spare (below 2)</div></td><td class="g">12 · 1 · 0</td><td>5 min ago<small>repaired 0 · 840 KB</small></td>
+       <td><select><option>below 2</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name">Guestbook</span><small>your published app</small><code>site 71XasNUM…</code></td>
+       <td><span class="h damaged">damaged</span><div class="dmg">group <code>p:8c1f…</code>: fewer than k blocks anywhere — cannot be rebuilt</div><div class="dmg">1 block refused by the node (encoding, or a node on another contract epoch)</div></td>
+       <td class="g">9 · 0 · 1</td><td>12 min ago<small>repaired 3 · 610 KB</small></td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name"><code>9D9bAjjKSVoH…</code></span><small>an app you keep (named by its address: a kept record carries no name)</small></td>
+       <td><span class="h auditing">auditing…</span><div class="warn" style="color:var(--mute)">212 of 318 blocks asked</div></td><td class="g">— · — · —</td><td>yesterday<small>last result: whole</small></td>
+       <td><select><option>below 3</option></select></td><td><input class="n" value="2"></td><td><button disabled>Auditing</button></td></tr>
+   <tr><td><span class="name">SDK 0.1.0</span><small>loaded by your apps</small><code>core k=25+m=8</code></td>
+       <td><span class="h whole">whole</span></td><td class="g">2 · 0 · 0</td><td>2 min ago<small>repaired 0 · 3.1 MB</small></td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name"><code>4BgcWjAqDWBN…</code></span><small>an app you keep</small></td>
+       <td><span class="h unmeasured">unmeasured</span><div class="warn" style="color:var(--mute)">this node has no signer for you yet — nothing was asked, nothing assumed missing</div></td>
+       <td class="g">— · — · —</td><td>never</td>
+       <td><select><option>off (watch only)</option></select></td><td><input class="n" value="0"></td><td><button disabled>Audit now</button></td></tr>
+  </table>
+  <div class="keep"><input placeholder="Keep an app or tree by its address (craftec://… or a site id)"><select><option>always (keep backed up)</option></select><button>Keep this</button></div>
+  <div class="foot">Publishing an app adds it here once, on its first publish, with <b>always (keep backed up)</b> and <b>warn below 2</b>. Every setting is saved in your own tree, so your other devices show and continue the same list. <b>Repair</b>: <i>off</i> watches only · <i>below N</i> rebuilds a group once fewer than N spare blocks are left · <i>always</i> rebuilds anything missing. <b>Warn below N</b> marks an asset once any group has fewer than N spare blocks.</div>
+ </section>
+</main></body></html>
