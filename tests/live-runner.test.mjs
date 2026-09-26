@@ -218,6 +218,21 @@ await t("**every scenario asserts BACKED_UP through page.mjs**, and none reads t
   }
 });
 
+await t("**the page's recording is written whole into the run's evidence, its counts said; a handle without pageTrace() is SAID**", async () => {
+  const { recordPageTrace } = await import("../tools/live/page.mjs");
+  const dir = join(base, "page-trace");
+  const said = [];
+  const ctx = { say: l => said.push(l), logsOf: label => join(dir, label), fs: { mkdirSync, appendFileSync: (f, d) => writeFileSync(f, (existsSync(f) ? readFileSync(f, "utf8") : "") + d) } };
+  const dump = "── instrument dump: page ops (stream v1) ──\n   OUTSTANDING 2 · unfinished spans 0\n   outcome Withdrawn: 1\n    7  exit   page::op::put#3 Withdrawn\n";
+  // A tab stands in for the browser: it answers the harness's expression as the page would.
+  await recordPageTrace(ctx, { evaluate: async () => dump }, "builder", "publish");
+  const file = readFileSync(join(dir, "builder", "page-trace.txt"), "utf8");
+  assert.ok(file.includes("exit   page::op::put#3 Withdrawn"), `the dump was not written whole: ${file}`);
+  assert.match(said.at(-1), /TRACE builder publish: OUTSTANDING 2 · unfinished spans 0; outcome Withdrawn: 1/);
+  await recordPageTrace(ctx, { evaluate: async () => "(this SDK's session handle has no pageTrace(): sdk#434)" }, "builder", "end");
+  assert.match(said.at(-1), /no pageTrace\(\): sdk#434/, "an SDK without the reader was not said by name");
+});
+
 rmSync(base, { recursive: true, force: true });
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nall ok\n");
 process.exit(failures ? 1 : 0);
