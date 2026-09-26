@@ -17,6 +17,7 @@
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
+import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -126,7 +127,7 @@ try {
 
   // 2. OPEN BY ADDRESS THROUGH A, in a fresh profile: the rows, as a view.
   visBrowser = await openFreshBrowser("realnet-demo: another user on A");
-  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), windowOf, label: "A" }) });
+  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), requests: join(WIRE_DIR, "requests-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), requests: join(WIRE_DIR, "requests-A.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await loadPage(vis, url(A.ws), { ms: STEP_MS, what: `2. ${A.label} opens the app` });
@@ -269,7 +270,7 @@ try {
   const strays = clientsOn(V.ws);
   step(strays.length === 0, `no client is connected to ${V.label} before its page opens (${strays.length} found)`, strays.length ? strays.map(c => ({ ...c, command: spawnSync("ps", ["-o", "command=", "-p", String(c.pid)], { encoding: "utf8" }).stdout.trim().slice(0, 200) })) : undefined);
   vBrowser = await openFreshBrowser("realnet-demo: a user who writes their own data, on V");
-  wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), received: join(WIRE_DIR, "wire-V.received.jsonl"), windowOf, label: "V" }) });
+  wires.push({ label: "V", file: join(WIRE_DIR, "wire-V.jsonl"), requests: join(WIRE_DIR, "requests-V.jsonl"), cap: await captureWire(vBrowser.debug, { out: join(WIRE_DIR, "wire-V.jsonl"), received: join(WIRE_DIR, "wire-V.received.jsonl"), requests: join(WIRE_DIR, "requests-V.jsonl"), windowOf, label: "V" }) });
   const vt = await vBrowser.tab("user-v");
   const t9 = Date.now();
   // V's two windows, taken from the step counter WHEN THEY START, never
@@ -366,4 +367,23 @@ function wireCheck() {
   const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
   step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step ${vWriteWindow}) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
   console.log(`WIRE  frames kept in ${WIRE_DIR}`);
+  // THE PER-PIECE VIEW OF EVERY WINDOW ON EVERY CAPTURED BROWSER (sdk#451's measurement, main; A's and V's, the
+  // architect: #451's gate is steps 9 AND 12): which pieces each page asked, each ask's status and time, and the gap
+  // before a re-ask -- so a slow open says WHY in the run that was slow. Each browser's tables in pieces-<label>.txt;
+  // one line here per window that loaded pieces. A table that cannot be built is a NOTE, never the run's verdict.
+  for (const wire of wires.filter(w => w.requests)) {
+    try {
+      const reqs = readRequests(wire.requests);
+      const windows = [...new Set(reqs.map(r => String(r.window)))].sort((a, b) => Number(a) - Number(b));
+      for (const w of windows) {
+        const p = piecesOf(reqs, w);
+        if (p.pieces.size === 0) continue;
+        appendFileSync(join(WIRE_DIR, `pieces-${wire.label}.txt`), `${table(p, `window ${w}:`)}\n\n`);
+        const s = summary(p);
+        console.log(`PIECES  ${wire.label}, step ${w}: ${s.paths} paths, ${s.ok} answered 200, ${s.asks} asks (${s.reasks} re-asks, ${s.nonOk} non-200); longest ask ${s.longestAsk} ms, longest gap ${s.longestGap} ms; last ${s.last} ms`);
+      }
+    } catch (e) {
+      console.log(`NOTE  no per-piece table for ${wire.label}: ${e.message}`);
+    }
+  }
 }

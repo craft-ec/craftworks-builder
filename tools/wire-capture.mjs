@@ -106,7 +106,7 @@ export async function captureWire(debug, { out, received = null, requests = null
     } else if (requests && /^Network\.(requestWillBeSent|responseReceived|loadingFinished|loadingFailed)$/.test(m.method)) {
       const p = m.params;
       const event = { requestWillBeSent: "sent", responseReceived: "response", loadingFinished: "finished", loadingFailed: "failed" }[m.method.slice(8)];
-      appendFileSync(requests, JSON.stringify({ t: Date.now(), target: m.sessionId ?? "browser", id: p.requestId, event, url: p.request?.url ?? p.response?.url ?? null, status: p.response?.status ?? null, canceled: p.canceled ?? null }) + "\n");
+      appendFileSync(requests, JSON.stringify({ t: Date.now(), window: windowOf(), target: m.sessionId ?? "browser", id: p.requestId, event, url: p.request?.url ?? p.response?.url ?? null, status: p.response?.status ?? null, canceled: p.canceled ?? null }) + "\n");
     }
   };
   // Every target that exists now and every one made later, each paused until attached.
