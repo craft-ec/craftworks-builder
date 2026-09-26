@@ -41,6 +41,8 @@ VNET=${REALNET_V_NET:-$(free_port udp)}
 # O2, pre-provisioned with ONE throwaway key, so they sign for ONE Register.
 # Two harness nodes with one key -- NOT how a person adds a device (Phase 6).
 O1WS=$(free_port tcp); O1NET=$(free_port udp); O2WS=$(free_port tcp); O2NET=$(free_port udp)
+# THE LOSE-DATA STEP (builder#176): three ws-lose proxies in front of V, one per arm, each on a free port of its own.
+LDM=$(free_port tcp); LDM1=$(free_port tcp); LRM=$(free_port tcp)
 BR=${REALNET_B_REMOTE:-7509}
 # The one lock every session shares (REALNET_LOCK only for the lock's own test).
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
@@ -82,7 +84,7 @@ for old in "$TMPDIR"/realnet-run.*/browsers.pids; do [ -f "$old" ] && { sweep "$
 run=$(mktemp -d "$TMPDIR/realnet-run.XXXXXX")
 export PAGE_HOST_PIDFILE="$run/browsers.pids"
 : > "$PAGE_HOST_PIDFILE"
-tunnel=""; npids=(); ndirs=(); nws=(); nlabels=()
+tunnel=""; npids=(); ndirs=(); nws=(); nlabels=(); lpids=(); lports=()
 # shellcheck source=tools/realnet-nodes.sh
 . "$here/tools/realnet-nodes.sh"
 cleanup() {
@@ -90,10 +92,29 @@ cleanup() {
   # signalled): page-host kills them on every exit IT sees; this is the rest.
   [ -f "$PAGE_HOST_PIDFILE" ] && sweep "$PAGE_HOST_PIDFILE"
   [ -n "$tunnel" ] && kill "$tunnel" 2>/dev/null && wait "$tunnel" 2>/dev/null
+  stop_proxies
   # Still here on the EXIT trap only when the run ended EARLY -- never a pass: stop every
   # node for certain and KEEP its dirs (the logs are why it ended).
   end_nodes 1
   [ "$(sed -n 's/^pid=//p' "$LOCK/owner" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
+}
+# The ws-lose proxies: TERM, a bounded wait, KILL; then PROVEN gone (the pid, and nothing listening on its port).
+stop_proxies() {
+  local i p bad=0
+  for i in ${lpids[@]+"${!lpids[@]}"}; do
+    p=${lpids[$i]}
+    kill -TERM "$p" 2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
+    kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null && perl -e 'select undef,undef,undef,0.5'
+    wait "$p" 2>/dev/null
+    if kill -0 "$p" 2>/dev/null || lsof -nP -iTCP:"${lports[$i]}" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "FAIL  the ws-lose proxy (pid $p) on :${lports[$i]} is still up"; bad=1
+    else
+      echo "PASS  the ws-lose proxy (pid $p) is gone; port ${lports[$i]} free"
+    fi
+  done
+  lpids=(); lports=()
+  return "$bad"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
@@ -113,7 +134,7 @@ echo "RAN   builder $(git rev-parse --short HEAD) ($(git rev-parse --abbrev-ref 
 # THE A-SIDE CHECK's one decoder, from THIS SDK revision's own source (the
 # format and its encoders are the SDK's): classify-frames, and frame-put for
 # the Register-PUT mutant.
-if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put --bin provision-signer) > "$run/probe-build.log" 2>&1; then
+if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put --bin provision-signer --bin ws-lose) > "$run/probe-build.log" 2>&1; then
   echo "FAIL  the SDK's classify-frames did not build: $(tail -3 "$run/probe-build.log")"; exit 1
 fi
 probe_bin="$here/.sdk-build/$pinned/target/release"
@@ -180,6 +201,22 @@ start_private() { # label ws net
 start_private V "$VWS" "$VNET"
 start_private O1 "$O1WS" "$O1NET"
 start_private O2 "$O2WS" "$O2NET"
+# THE LOSE-DATA STEP's proxies (builder#176): each between a FRESH V page and V's node, answering NotFound for one
+# group's blocks (the SDK's probe ws-lose). Listening is checked with lsof, never by connecting: a connection through
+# the proxy would dial V, and the demo fails on a client connected to V before V's page opens.
+start_lose() { # name port group lose
+  local name=$1 port=$2 p
+  case "$port" in 7509|7609) echo "FAIL  $port is the owner's node: ws-lose never uses it"; exit 2;; esac
+  "$probe_bin/ws-lose" "$port" "$VWS" --group "$3" --lose "$4" 2> "$run/lose-$name.jsonl" &
+  p=$!
+  lpids+=("$p"); lports+=("$port")
+  for _ in $(seq 1 40); do lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && break; kill -0 "$p" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || { echo "FAIL  the ws-lose proxy $name did not start: $(tail -2 "$run/lose-$name.jsonl")"; exit 1; }
+  echo "RAN   ws-lose $name = :$port -> V :$VWS (pid $p; --group $3 --lose $4; its log $run/lose-$name.jsonl)"
+}
+start_lose data-m "$LDM" data m
+start_lose data-m1 "$LDM1" data m+1
+start_lose root-m "$LRM" root m
 # ONE throwaway key on both, through the SDK's own provisioning (provision-signer):
 # they must name the SAME Register, or the pair measures nothing.
 seed=$(openssl rand -hex 32)
@@ -201,12 +238,16 @@ RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
   RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
   RN_PIECES="$here/sdk/pieces.json" RN_WEBAPP_WASM="$here/sdk/webapp.wasm" \
   RN_WIRE_DIR="$run" \
+  RN_V_LOSE_DATA_M="$LDM" RN_V_LOSE_DATA_M_LOG="$run/lose-data-m.jsonl" \
+  RN_V_LOSE_DATA_M1="$LDM1" RN_V_LOSE_DATA_M1_LOG="$run/lose-data-m1.jsonl" \
+  RN_V_LOSE_ROOT_M="$LRM" RN_V_LOSE_ROOT_M_LOG="$run/lose-root-m.jsonl" \
   node tools/realnet-demo.mjs
 fail=$?
 
 # ---- cleanup, proven ----------------------------------------------------------
 echo "== cleanup"
 kill "$tunnel" 2>/dev/null; wait "$tunnel" 2>/dev/null; tunnel=""
+stop_proxies || fail=1
 # Every node TERM -> bounded wait -> KILL -> proven gone; its dirs (the logs) KEPT and
 # named when the run failed, removed only on a pass.
 end_nodes "$fail" || fail=1
