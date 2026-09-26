@@ -51,7 +51,8 @@ export const linkModules = () => new Map(${JSON.stringify(["sdk/index.js", "sdk/
 export const repairPieces = async () => [];\n`);
   writeFileSync(join(dir, "runtime.js"), `export const sourceOf = () => "publisher";
 export const mountApp = () => ${rows ? "Promise.resolve()" : "new Promise(() => {})"};\n`);
-  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)} });\n`);
+  // The page recordings: read from `globalThis.__traces` WHEN ASKED, so a test can move them and see a live read.
+  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)}, pageTrace: () => ({ ...globalThis.__traces }) });\n`);
   return dir;
 }
 
@@ -82,6 +83,34 @@ await t("an app whose rows come leaves NO timer, and stamps every phase in order
     assert.ok(order.every(k => Number.isInteger(p[k])), `a phase is missing: ${JSON.stringify(p)} (status: ${status.textContent})`);
     assert.ok(order.every((k, i) => i === 0 || p[order[i - 1]] <= p[k]), `phases out of order: ${JSON.stringify(p)}`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// THE OPENER'S RECORDINGS HAVE A READ-ONLY READER (builder#160): the loader puts ONE function on `__craftworksOpen`,
+// `pageTrace()`, returning one STRING with both pages' dumps, read when asked. Not enumerable (the stamps stay plain
+// data); nothing that drives a session reachable (a string is all that leaves). Mutant "no seam" -> red.
+await t("**`__craftworksOpen.pageTrace()` is the one reader: a string, both pages, read when asked -- and nothing else is on it**", async () => {
+  live.clear();
+  delete globalThis.__craftworksOpen;
+  globalThis.__traces = { asked: "ASKED dump 1", view: "VIEW dump 1" };
+  const dir = page("trace", { rows: true, head: "b".repeat(64) });
+  try {
+    await import(pathToFileURL(join(dir, "loader.js")).href);
+    for (let i = 0; i < 20; i++) await tick();
+    const o = globalThis.__craftworksOpen;
+    assert.equal(typeof o.pageTrace, "function", "the loader exposes no pageTrace(): an opener's recording has no reader");
+    const phases = ["loader", "files", "sdk", "opened", "head", "rows"];
+    assert.deepEqual(Object.keys(o), phases, "the phase stamps are not plain data (pageTrace enumerable, or something else added)");
+    assert.deepEqual(Object.getOwnPropertyNames(o).filter(k => typeof o[k] !== "number"), ["pageTrace"], "something besides the reader is on __craftworksOpen");
+    assert.equal(JSON.stringify(o), JSON.stringify(Object.fromEntries(phases.map(k => [k, o[k]]))), "a by-value read of the stamps changed");
+    const first = o.pageTrace();
+    assert.equal(first, "== asked\nASKED dump 1\n== view\nVIEW dump 1\n");
+    // Read WHEN ASKED, and a primitive both times: nothing handed out can reach back.
+    globalThis.__traces = { asked: "ASKED dump 2", view: "VIEW dump 2" };
+    const second = o.pageTrace();
+    assert.equal(typeof first, "string");
+    assert.equal(typeof second, "string");
+    assert.equal(second, "== asked\nASKED dump 2\n== view\nVIEW dump 2\n", "pageTrace() answered an old dump: a copy taken at open");
+  } finally { rmSync(dir, { recursive: true, force: true }); delete globalThis.__traces; }
 });
 
 globalThis.setInterval = realSetInterval;

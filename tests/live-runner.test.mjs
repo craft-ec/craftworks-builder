@@ -231,6 +231,19 @@ await t("**the page's recording is written whole into the run's evidence, its co
   assert.match(said.at(-1), /TRACE builder publish: OUTSTANDING 2 · unfinished spans 0; outcome Withdrawn: 1/);
   await recordPageTrace(ctx, { evaluate: async () => "(this SDK's session handle has no pageTrace(): sdk#434)" }, "builder", "end");
   assert.match(said.at(-1), /no pageTrace\(\): sdk#434/, "an SDK without the reader was not said by name");
+  // AN OPENER (builder#160): read IN ITS APP'S FRAME through the loader's seam, into the opener's own logs.
+  const { OPENER_TRACE } = await import("../tools/live/page.mjs");
+  const asked = [];
+  const tab = { evaluate: async () => { throw new Error("read the top page, not the app's frame"); }, evaluateIn: async (frame, expr) => { asked.push([frame, expr]); return "== asked\nA\n== view\n   OUTSTANDING 0 · unfinished spans 0\n"; } };
+  await recordPageTrace(ctx, tab, "O1", "rows", { frame: "127.0.0.1:1/v1/contract/web/x/?__sandbox=1", read: OPENER_TRACE });
+  assert.deepEqual(asked, [["127.0.0.1:1/v1/contract/web/x/?__sandbox=1", OPENER_TRACE]], "the opener's recording was not read in its frame through the seam");
+  assert.ok(readFileSync(join(dir, "O1", "page-trace.txt"), "utf8").includes("== view"), "the opener's dump did not land in its logs");
+  assert.match(said.at(-1), /TRACE O1 rows: OUTSTANDING 0/);
+});
+await t("**every opener's recording is read in its app's frame** (open-fresh-nodes, builder#160), beside its wire.jsonl", () => {
+  const src = readFileSync(fileURLToPath(new URL("../tools/live/scenarios/open-fresh-nodes.mjs", import.meta.url)), "utf8");
+  assert.match(src, /recordPageTrace\(ctx, tab, name, [^\n]*\{ frame: frameOf\(O\.ws\), read: OPENER_TRACE \}\)/, "open-fresh-nodes does not read each opener's recording in its frame through the loader's seam");
+  assert.ok(src.indexOf("recordPageTrace(ctx, tab, name") < src.indexOf("await b.stop()"), "the opener's recording is read after its browser stopped");
 });
 
 rmSync(base, { recursive: true, force: true });
