@@ -125,7 +125,25 @@ state() { remote "systemctl show -p MainPID,ActiveEnterTimestamp,NRestarts freen
 before=$(state) || { echo "FAIL  cannot reach $HOST read-only; nothing started"; exit 2; }
 bpid=$(sed -n 's/^MainPID=//p' <<<"$before")
 bver=$(remote "/proc/$bpid/exe --version" | head -1 | sed 's/Freenet version: //')
-aver=$(freenet --version 2>/dev/null | head -1 | sed 's/Freenet version: //')
+# A's version is its RUNNING binary's, read as B's is: the pid listening on :$A, its executable, that file's
+# --version -- never `freenet` from PATH, which is not A. A node can outlive its binary (a self-update replaced
+# the file): then the file's version is NOT the running one, and the line says so instead of naming it.
+a_version() {
+  local pid exe started changed
+  pid=$(lsof -nP -iTCP:"$A" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  [ -n "$pid" ] || { echo "? (nothing listens on :$A)"; return; }
+  exe=$(ps -o comm= -p "$pid")
+  case "$exe" in /*) ;; *) echo "? (pid $pid's executable is not a path: $exe)"; return ;; esac
+  [ -x "$exe" ] || { echo "? (pid $pid's executable $exe is gone)"; return; }
+  started=$(date -j -f "%a %b %d %T %Y" "$(ps -o lstart= -p "$pid")" +%s 2>/dev/null)
+  changed=$(stat -f %m "$exe")
+  if [ -n "$started" ] && [ "$changed" -gt "$started" ]; then
+    echo "? (pid $pid's binary $exe was replaced after it started; the file is $("$exe" --version 2>/dev/null | head -1 | sed 's/Freenet version: //'))"
+    return
+  fi
+  echo "$("$exe" --version 2>/dev/null | head -1 | sed 's/Freenet version: //') (pid $pid, $exe)"
+}
+aver=$(a_version)
 echo "RAN   A = this machine :$A (freenet ${aver:-?}, hotspot/home); B = ${HOST#*@} (freenet ${bver:-?}, datacentre)"
 echo "B before: $(tr '\n' ' ' <<<"$before")"
 if holder=$(lsof -nP -iTCP:"$T" -sTCP:LISTEN -t 2>/dev/null | head -1) && [ -n "$holder" ]; then
@@ -157,7 +175,7 @@ start_private() { # label ws net
   npids+=("$pid"); ndirs+=("$dir"); nws+=("$ws"); nlabels+=("$label")
   for _ in $(seq 1 240); do nc -z 127.0.0.1 "$ws" 2>/dev/null && break; kill -0 "$pid" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
   if ! nc -z 127.0.0.1 "$ws" 2>/dev/null; then echo "FAIL  $label's node did not start: $(tail -3 "$dir/log/console.out")"; exit 1; fi
-  echo "RAN   $label = a private node on this machine :$ws (pid $pid, joined to the real network; dirs + web cache under $dir)"
+  echo "RAN   $label = a private node on this machine :$ws (pid $pid, freenet $(freenet --version 2>/dev/null | head -1 | sed 's/Freenet version: //') from $(command -v freenet); joined to the real network; dirs + web cache under $dir)"
 }
 start_private V "$VWS" "$VNET"
 start_private O1 "$O1WS" "$O1NET"
