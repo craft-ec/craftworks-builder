@@ -214,9 +214,17 @@ try {
   const rowsKept = grew ? await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws)) : null;
   const served9end = re?.address ? await servedOf(re.address, [["B (publisher)", B.ws], ["A", A.ws]]) : null;
   if (served9end) console.log(servedLine("at step 9's end", served9end));
+  // WHAT THE BUILDER'S PAGE SAID (main, for engineer2's lead: a structure change may be a data-tree commit, and a FINAL
+  // signer refusal fails it at once, said in the page's `unusable()`: "the signer refused commit seq N ..."). At the
+  // step's end, pass or fail, RECORDING ONLY: its `unusable()` lines (a newer SDK drains them: read once, here) and
+  // `unsaved()`, the writes not yet saved. The SDK has no per-write fate reader to add.
+  const builderSaid = await builder.evaluate(`const h = window.__craftworks?.session; if (!h) return { session: "none on the builder's page" };
+    const r = {}; try { r.unusable = h.unusable?.() ?? "no unusable() on this SDK"; } catch (e) { r.unusable = { error: e.message }; }
+    try { r.unsaved = h.unsaved?.() ?? "no unsaved() on this SDK"; } catch (e) { r.unsaved = { error: e.message }; } return r;`).catch(e => ({ error: e.message }));
+  console.log(`SAID  the builder's page at step 9's end: ${JSON.stringify(builderSaid)}`);
   step(!!re && re.address === pub.address && re.put === true && !!grew && !!rowsKept,
     `the builder changes the app's STRUCTURE and publishes the changes: the SAME address (version ${re?.version ?? "?"}), and ${A.label} RELOADED shows the new structure with the rows (${Date.now() - t8b} ms)`,
-    { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, served: served9 && { afterRepublish: Object.fromEntries(served9), atEnd: Object.fromEntries(served9end ?? []) }, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
+    { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, served: served9 && { afterRepublish: Object.fromEntries(served9), atEnd: Object.fromEntries(served9end ?? []) }, builderSaid, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
 
   // 8c. SAME KEY, SECOND NODE: THE SITE CONVERGES (#117, the architect). Two
   // HARNESS nodes, O1 and O2, hold ONE throwaway key (realnet.sh pre-provisioned
