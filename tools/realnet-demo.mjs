@@ -17,6 +17,7 @@
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
+import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -126,7 +127,7 @@ try {
 
   // 2. OPEN BY ADDRESS THROUGH A, in a fresh profile: the rows, as a view.
   visBrowser = await openFreshBrowser("realnet-demo: another user on A");
-  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), windowOf, label: "A" }) });
+  wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), requests: join(WIRE_DIR, "requests-A.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await loadPage(vis, url(A.ws), { ms: STEP_MS, what: `2. ${A.label} opens the app` });
@@ -366,4 +367,20 @@ function wireCheck() {
   const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
   step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step ${vWriteWindow}) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
   console.log(`WIRE  frames kept in ${WIRE_DIR}`);
+  // THE PER-PIECE VIEW OF EVERY WINDOW ON A (sdk#451's measurement, main): which pieces A's page asked, each ask's
+  // status and time, and the gap before a re-ask -- so a slow open says WHY in the run that was slow. Every window's
+  // table in pieces-A.txt; one line here per window that loaded pieces.
+  try {
+    const reqs = readRequests(join(WIRE_DIR, "requests-A.jsonl"));
+    const windows = [...new Set(reqs.map(r => String(r.window)))].sort((a, b) => Number(a) - Number(b));
+    for (const w of windows) {
+      const p = piecesOf(reqs, w);
+      if (p.pieces.size === 0) continue;
+      appendFileSync(join(WIRE_DIR, "pieces-A.txt"), `${table(p, `window ${w}:`)}\n\n`);
+      const s = summary(p);
+      console.log(`PIECES  A, step ${w}: ${s.paths} paths, ${s.ok} answered 200, ${s.asks} asks (${s.reasks} re-asks, ${s.nonOk} non-200); longest ask ${s.longestAsk} ms, longest gap ${s.longestGap} ms; last ${s.last} ms`);
+    }
+  } catch (e) {
+    console.log(`NOTE  no per-piece table: ${e.message}`);
+  }
 }
