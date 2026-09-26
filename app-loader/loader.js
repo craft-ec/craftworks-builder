@@ -20,8 +20,6 @@
 import { raceK, served, servedText } from "./sdk/served.js";
 import { decoder, linkModules, openPieces, repairPieces } from "./sdk/pieces.js";
 
-/** The SDK modules the STARTER serves: a bundle module importing one gets this container's copy (one instance). */
-const STARTER_MODULES = ["sdk/served.js", "sdk/pieces.js", "sdk/rto.js"];
 
 const status = document.getElementById("status");
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
@@ -73,7 +71,11 @@ try {
   const [core, provisioning] = await Promise.all([race("app", art.pieces.core), race("signer", art.pieces.provisioning)]);
 
   // 2. The modules, linked; the SDK's wasm verified by its hash on the way in.
-  const urls = linkModules(core.files, { external: p => (STARTER_MODULES.includes(p) ? here(`./${p}`) : null) });
+  // The SDK modules the STARTER serves -- the SDK's own list, carried in this container's artefacts.json
+  // (craftworks-sdk#408): a bundle module importing one gets this container's copy (one instance).
+  if (!Array.isArray(art.starter) || art.starter.length === 0) throw new Error("this app's artefacts.json names no `starter`: republish it with a builder that carries the SDK's list");
+  const starter = new Set(art.starter.map(m => `sdk/${m}`));
+  const urls = linkModules(core.files, { external: p => (starter.has(p) ? here(`./${p}`) : null) });
   const moduleOf = p => {
     if (!urls.has(p)) throw new Error(`the app's pieces hold no ${p}`);
     return import(urls.get(p));

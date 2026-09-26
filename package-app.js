@@ -58,6 +58,10 @@ export const PLATFORM = {
   // index.js): what goes into the container, never fetched by hash. Each a
   // file beside index.js by the SDK's one rule (`sdk.ids.module`).
   modules: (e, ids) => Array.isArray(e) && e.length > 0 && e.every(m => typeof m === "string" && ids.module(m)),
+  // THE STARTER'S MODULES (craftworks-sdk#408): the SDK's JS that runs BEFORE the SDK exists, computed by the SDK's
+  // build from its starter entries -- the ONE owner of that list. The starter container carries exactly these, and
+  // the loader's `external` serves exactly these; neither keeps a copy. Each a file by the SDK's one module rule.
+  starter: (e, ids) => Array.isArray(e) && e.length > 0 && e.every(m => typeof m === "string" && ids.module(m)),
   // The decode-only wasm a starter CARRIES (craftworks-sdk#347): run before the SDK exists, so never named by hash.
   decoder: (e, ids) => e?.file === "decoder.wasm" && ids.hex32(e?.sha256 ?? ""),
 };
@@ -122,6 +126,11 @@ export async function packageApp(app, { carried, manifest, pieces, subtle, ids }
         "this build cannot tell it from an app artefact — refused rather than guessed.",
     );
   }
+  // The STARTER's list is what the loader links as its own (craftworks-sdk#408): an app packaged without it could
+  // not load. Refused by name, as a missing hash is.
+  if (!Array.isArray(manifest?.starter)) {
+    throw new Error("the SDK manifest names no `starter` (craftworks-sdk#408): the loader could not tell its own modules from the bundle's, so this SDK build is too old for it.");
+  }
   if (missing.length) {
     throw new Error(
       `the SDK manifest has no hash for: ${missing.join(", ")}. ` +
@@ -157,6 +166,8 @@ export async function packageApp(app, { carried, manifest, pieces, subtle, ids }
   files["artefacts.json"] = JSON.stringify(
     {
       pieces: { core: pieces.core, provisioning: pieces.provisioning },
+      // What the loader links as the STARTER's own (its `external`): the SDK's list, carried, never retyped.
+      starter: manifest.starter,
       ...Object.fromEntries(
         NAMED.map(n => [n, { file: manifest[n].file, sha256: manifest[n].sha256 }]),
       ),
