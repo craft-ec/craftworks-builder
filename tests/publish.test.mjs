@@ -71,7 +71,22 @@ const fakeOpen = ({ events = ["open"], fail = null } = {}) => async ({ onEvent }
   if (fail) throw new Error(fail);
   return { db: { marker: "engine" } };
 };
-const P = { appId: "proj1", ids, onSaving: () => {}, port: 17509 };
+const ART = { signer: "s.wasm", block: "b.wasm", register: "r.wasm" };
+const P = { appId: "proj1", ids, onSaving: () => {}, port: 17509, artefacts: ART };
+
+await t("**no artefacts is refused BY NAME before anything opens** -- without them open() provisions nothing and returns at once (builder#73); control: the full set reaches open()", async () => {
+  for (const [what, artefacts] of [["none", undefined], ["null (nothing beside the SDK)", null], ["no signer", { block: "b", register: "r" }], ["an empty register", { ...ART, register: "" }]]) {
+    let opened = false;
+    const seen = [];
+    await assert.rejects(() => publish({}, { ...P, artefacts, open: async () => { opened = true; return {}; } }, (p, e) => seen.push([p, e])),
+      /artefact/, what);
+    assert.equal(opened, false, `${what}: it opened a connection before refusing`);
+    assert.equal(seen.at(-1)?.[0], "failed", `${what}: no failed phase`);
+  }
+  let given = null;
+  await publish({}, { ...P, open: async o => { given = o.artefacts; return { db: {} }; } });
+  assert.deepEqual(given, ART, "THE CONTROL: the artefacts did not reach open()");
+});
 
 await t("publish reports each phase, in order, and hands back the engine db", async () => {
   const seen = [];
@@ -146,7 +161,7 @@ await t("THE CONTROL: an ordinary port is NOT refused", async () => {
   // tests above and nothing could ever be published.
   const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
   const { db } = await publish({}, { appId: "proj1", ids, onSaving: () => {},
-    port: 17509,
+    port: 17509, artefacts: ART,
     open: async () => ({ ...session, db: { marker: "engine" } }),
   });
   assert.equal(db.marker, "engine");
@@ -166,7 +181,7 @@ await t("**no app id is refused BEFORE anything opens** — the SDK would refuse
 
 await t("THE CONTROL: a valid app id reaches open() as `app`", async () => {
   let given;
-  await publish({}, { appId: "proj1", onSaving: () => {}, ids, port: 18080,
+  await publish({}, { appId: "proj1", onSaving: () => {}, ids, port: 18080, artefacts: ART,
     open: async o => { given = o.app; throw new Error("stop here"); } }).catch(() => {});
   assert.strictEqual(given, "proj1", "open() was not told which app this is");
 });

@@ -185,12 +185,13 @@ await t("publishing remounts on the new backend", async () => {
 // or disposed.
 
 /** An `open()` as the SDK's behaves: on failure it closes the session it made, then rejects. */
+const ART = { signer: "s.wasm", block: "b.wasm", register: "r.wasm" };
 const sdkOpen = (s, fail) => async () => { if (fail) { s.close(); throw new Error(fail); } return s; };
 
 await t("**a refused publish leaves nothing open**: the SDK closed its session, and publish never held it", async () => {
   const s = fakeSession();
   const seen = [];
-  await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, open: sdkOpen(s, "the node refused to set up: no room") }, (p, e) => seen.push([p, e])),
+  await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, artefacts: ART, open: sdkOpen(s, "the node refused to set up: no room") }, (p, e) => seen.push([p, e])),
     /refused to set up: no room/);
   assert.strictEqual(s.closed, 1, "closed twice (or never): the builder must not close a session it never held");
   assert.deepStrictEqual(seen.at(-1)[0], "failed");
@@ -206,7 +207,7 @@ await t("**retrying after failures leaves exactly one session open**", async () 
     return sdkOpen(s, attempt < 3 ? "the node refused to set up: busy" : null)();
   };
   const rt = createProjectRuntime({ mount: fakeMounts().mount, publish });
-  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", ids, port: 18080, open }, NO_HANDOFF).catch(() => {});
+  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", ids, port: 18080, artefacts: ART, open }, NO_HANDOFF).catch(() => {});
   assert.strictEqual(rt.phase, "published");
   assert.deepStrictEqual(sessions.map(s => s.closed), [1, 1, 0],
     "the two failed attempts closed theirs; the one that succeeded is OWNED, not orphaned");

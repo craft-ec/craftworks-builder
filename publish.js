@@ -166,6 +166,21 @@ export async function publish(app, deps, onPhase = () => {}) {
     throw new Error(why);
   }
 
+  // THE ARTEFACTS ARE LOAD-BEARING (builder#173, the architect). `open()`
+  // waits for the node to be provisioned only when it is given the artefacts
+  // to provision it with (the SDK's `untilProvisioned` runs `if
+  // (opts.artefacts && ...)`), and this file keeps no wait of its own. So
+  // without them publish would say "opening" at once over a node that cannot
+  // write: the builder#73 shape. NO DEFAULT: refused by name, before
+  // anything opens. `sdk.SHIPPED_ARTEFACTS` is null when nothing is beside
+  // the SDK (a module linked from load pieces).
+  const missing = ["signer", "block", "register"].filter(n => typeof artefacts?.[n] !== "string" || !artefacts[n]);
+  if (missing.length) {
+    const why = `publish: no ${missing.join(", ")} artefact${missing.length > 1 ? "s" : ""} -- without them the node is never set up, and the page would say published over a node that cannot write`;
+    onPhase("failed", why);
+    throw new Error(why);
+  }
+
   // ONE WAIT, THE SDK'S (builder#173). `open()` returns only once the node says
   // it is provisioned (the SDK's `untilProvisioned`), and it ends only on an
   // ANSWER: the node's refusal, a node that is not there (two refused

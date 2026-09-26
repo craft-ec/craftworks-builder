@@ -49,7 +49,7 @@ await t("publish hands every count the session reports to onSaving, in order", a
   const seen = [];
   await publish({}, {
     appId: "proj1", ids,
-    port: 18080,
+    port: 18080, artefacts: { signer: "s.wasm", block: "b.wasm", register: "r.wasm" },
     onSaving: n => seen.push(n),
     open: async ({ onEvent }) => { emit = onEvent; onEvent({ kind: "open" }); return { provisioned: () => true, db: {}, close() {} }; },
   });
