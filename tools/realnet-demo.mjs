@@ -112,6 +112,11 @@ const [ADDED, EDIT_FROM, EDIT_TO, DELETED, GUEST] = [`added ${tag}`, `to-edit ${
 try {
   console.log(`app owner ${B.label} ws ${B.ws}; user ${A.label} ws ${A.ws}; rows tagged ${tag}; each step waits at most ${STEP_MS / 1000} s`);
   // 1. PUBLISH ON B, from the builder.
+  // THE BUILDER'S WIRE, "B" (main, for engineer2's diff of step 9: the builder's page is the one that SIGNS and PUTs
+  // or UPDATEs the site, so its Sign (label, seq/prev), its site op and its ReadHead{Site} are only visible here).
+  // RECORDING ONLY, started before its tab opens, as A's and V's are: the builder's writes go to B through its own
+  // node as today, and no verdict reads this capture (the A-side check reads A and V).
+  wires.push({ label: "B", file: join(WIRE_DIR, "wire-B.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), cap: await captureWire(host.debug, { out: join(WIRE_DIR, "wire-B.jsonl"), received: join(WIRE_DIR, "wire-B.received.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), windowOf, label: "B" }) });
   const builder = await host.tab("builder");
   // The app's notes, and a GUESTBOOK whose data is each USER's own
   // (`source: "mine"`, builder#113/#115): every person writes their own tree.
