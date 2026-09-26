@@ -17,6 +17,8 @@
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
+import { loadPage as load } from "./realnet-load.mjs";
+import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -55,6 +57,10 @@ if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
 // Each step's wait for an ANSWER from the network: long, because a hotspot's
 // tail is long (block arrival p90 ~31 s), and said as "not within T" if hit.
 const STEP_MS = Number(process.env.STEP_MS ?? 180_000);
+// Every page load waits the step's budget; a SLOW one is also written to the run's slow-loads.txt, which realnet.sh's
+// RESULT line counts (the architect's rule: a slow open never hides behind a green demo).
+const loadPage = (tab, url, opts) =>
+  load(tab, url, { ...opts, onSlow: note => { if (process.env.RN_WIRE_DIR) appendFileSync(join(process.env.RN_WIRE_DIR, "slow-loads.txt"), `${note}\n`); } });
 const host = await openPageHost("realnet-demo", { budgetMs: Number(process.env.BUDGET_MS ?? 1_500_000) });
 // THE A-SIDE CHECK (no user-data writes through a view): every frame A's and
 // V's browsers send their node, raw (wire-capture.mjs), classified afterwards
@@ -108,7 +114,7 @@ try {
   const APP = { name: `Notes ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" },
     { type: "form", domain: "guests", source: "mine" }, { type: "table", domain: "guests", source: "mine" }],
     schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] }, guests: { type: "Guest", fields: [{ name: "title", kind: "text", required: true }] } } };
-  await builder.navigate(`http://127.0.0.1:${host.port}/#node=${B.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)));
+  await loadPage(builder, `http://127.0.0.1:${host.port}/#node=${B.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)), { ms: STEP_MS, what: "1. the builder" });
   await until(builder, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 30_000);
   for (const t of ["alpha", "beta"]) { await builder.evaluate(addTo("notes", t)); await sleep(500); }
   const t1 = Date.now();
@@ -123,7 +129,7 @@ try {
   wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), windowOf, label: "A" }) });
   const vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
-  await vis.navigate(url(A.ws));
+  await loadPage(vis, url(A.ws), { ms: STEP_MS, what: `2. ${A.label} opens the app` });
   const seen = await until(vis, has(["alpha", "beta"]), STEP_MS, 500, frameOf(A.ws));
   await phases(vis, frameOf(A.ws), `${A.label}'s view`);
   // The APP's components are a view here: no notes form, and the notes
@@ -136,7 +142,7 @@ try {
   pubBrowser = await openFreshBrowser("realnet-demo: the app owner's site on B");
   const own = await pubBrowser.tab("owner");
   const t3 = Date.now();
-  await own.navigate(url(B.ws));
+  await loadPage(own, url(B.ws), { ms: STEP_MS, what: `3. ${B.label} opens the site` });
   const editable = await until(own, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, STEP_MS, 500, frameOf(B.ws));
   await phases(own, frameOf(B.ws), `the owner's site on ${B.label}`);
   if (!step(!!editable, `the app owner's site on ${B.label} opens EDITABLE (${Date.now() - t3} ms)`, editable ? undefined : await own.evaluateIn(frameOf(B.ws), `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message))) throw new Error("no editable site to write from");
@@ -164,13 +170,13 @@ try {
 
   // 7. A RELOADED reader reads all three from the network.
   const t7 = Date.now();
-  await vis.reload();
+  await loadPage(vis, null, { ms: STEP_MS, what: `${A.label} reloads` });
   const reread = await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws));
   step(!!reread, `${A.label} RELOADED reads the add, the edit and the delete (${Date.now() - t7} ms)`, reread ? undefined : await vis.evaluateIn(frameOf(A.ws), TITLES).catch(e => e.message));
 
   // 8. The builder RELOADED reopens connected, and the rows are still there.
   const t8 = Date.now();
-  await builder.reload();
+  await loadPage(builder, null, { ms: STEP_MS, what: "the builder reloads" });
   await sleep(1500);
   const again = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS);
   const rows = again ? await until(builder, has([ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS) : null;
@@ -190,7 +196,7 @@ try {
   const pressable = await until(builder, `return (document.getElementById("publish")?.textContent === "Publish changes" && 1) || null;`, 30_000);
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
   const re = pressable ? await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3) : null;
-  await vis.reload();
+  await loadPage(vis, null, { ms: STEP_MS, what: `${A.label} reloads` });
   const grew = re ? await until(vis, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) > ${Number(beforeTables ?? 0)} && 1) || null;`, STEP_MS, 500, frameOf(A.ws)) : null;
   const rowsKept = grew ? await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws)) : null;
   step(!!re && re.address === pub.address && re.put === true && !!grew && !!rowsKept,
@@ -212,7 +218,7 @@ try {
   const PAIR_CHANGED = { ...PAIR, components: [...PAIR.components, { type: "table", domain: "notes", mode: "owned" }] };
   const builderOn = async (browser, ws, app, label) => {
     const tab = await browser.tab(label);
-    await tab.navigate(`http://127.0.0.1:${host.port}/#node=${ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(app)));
+    await loadPage(tab, `http://127.0.0.1:${host.port}/#node=${ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(app)), { ms: STEP_MS, what: "a builder" });
     await until(tab, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 30_000);
     return tab;
   };
@@ -244,7 +250,7 @@ try {
   // Its OWN tab on A's browser: `vis` keeps showing the main app for the steps after this.
   const pairView = re2?.address ? await visBrowser.tab("user-a: the pair's app") : null;
   if (pairView) {
-    await pairView.navigate(pairUrl);
+    await loadPage(pairView, pairUrl, { ms: STEP_MS, what: "10. the pair's app on A" });
     aSees = await until(pairView, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) >= 2 && [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === ${JSON.stringify(`pair ${tag}`)}) && 1) || null;`, STEP_MS, 500, pairFrame);
   }
   step(!!first?.address && sameHead === true && !!re2?.address && re2.address === first.address && re2.put === true && !!aSees,
@@ -270,7 +276,7 @@ try {
   // written as numbers: a step added before them (#133's stray check) shifted
   // both, and the control then read V's OPEN window for V's write — 0 seen.
   vOpenWindow = windowOf();
-  await vt.navigate(url(V.ws));
+  await loadPage(vt, url(V.ws), { ms: STEP_MS, what: `12. ${V.label} opens the app` });
   // THE MUTANTS, inside V's OPEN window (step 9), never on A: the check must SEE them.
   const mutate = async () => {
     if (MUTANT === "view-write") return vt.evaluateIn(frameOf(V.ws), addTo("guests", `mutant ${tag}`));
@@ -292,7 +298,7 @@ try {
   const vSaved = await until(vt, savedIn("guests", GUEST), STEP_MS, 500, frameOf(V.ws));
   step(typed === "ok" && !!vSaved, `the user on ${V.label} adds a guestbook entry to their OWN tree: saved and shown (${Date.now() - t10} ms)`, vSaved ? undefined : { typed, guests: await vt.evaluateIn(frameOf(V.ws), titles("guests")).catch(() => null), body: await vt.evaluateIn(frameOf(V.ws), `return document.body?.innerText?.slice(0, 300);`).catch(e => e.message) });
   const t11 = Date.now();
-  await vt.reload();
+  await loadPage(vt, null, { ms: STEP_MS, what: `${V.label} reloads` });
   const kept = await until(vt, hasIn("guests", [GUEST]), STEP_MS, 500, frameOf(V.ws));
   await phases(vt, frameOf(V.ws), `${V.label} reloaded`);
   step(!!kept, `the user's entry survives a RELOAD of ${V.label} (${Date.now() - t11} ms)`, kept ? undefined : await vt.evaluateIn(frameOf(V.ws), titles("guests")).catch(e => e.message));

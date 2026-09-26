@@ -216,5 +216,7 @@ if [ "$after" != "$before" ]; then echo "STOP  B changed during the run: before 
 else echo "PASS  B unchanged: $(tr '\n' ' ' <<<"$after")"; fi
 echo "B journal since $start (read-only), not rate-limit noise, last 10:"
 remote "journalctl -u freenet-blob --since '$start' --no-pager -o cat | grep -v 'RATE LIMIT' | cut -c1-200 | tail -10"
-echo "RESULT $( [ $fail = 0 ] && echo passes || echo breaks ) — builder $(git rev-parse --short HEAD), sdk ${built:0:12}"
+# SLOW page loads (tools/realnet-load.mjs): not a failure, never silent -- counted on the RESULT line.
+slow=$( [ -f "$run/slow-loads.txt" ] && wc -l < "$run/slow-loads.txt" | tr -d ' ' || echo 0)
+echo "RESULT $( [ $fail = 0 ] && echo passes || echo breaks ) — builder $(git rev-parse --short HEAD), sdk ${built:0:12}; ${slow} slow page load(s) (NOTE SLOW)"
 exit $fail
