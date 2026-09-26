@@ -1,8 +1,4 @@
-<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Craftec Builder</title>
-<style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Assets tab (mock)</title><style>
   :root { --bg:#f6f5f2; --panel:#fff; --ink:#1d1d1f; --mute:#6b6b70; --line:#e3e1dc; --acc:#2f5bea; }
   @media (prefers-color-scheme: dark) { :root { --bg:#16171a; --panel:#1f2125; --ink:#ececee; --mute:#9a9aa2; --line:#2e3036; --acc:#7b9bff; } }
   * { box-sizing: border-box; }
@@ -139,8 +135,8 @@
   .upbar .up-what { font-size:12px; color:var(--ink); overflow-wrap:anywhere; }
   .upbar button { font-size:12px; padding:4px 10px; white-space:nowrap; }
   @media (max-width:760px) { main { grid-template-columns:1fr; } aside.l, aside.r { border:0; border-bottom:1px solid var(--line); } }
-  /* THE ASSETS TAB (builder#164): the same styles as its mock, docs/mock/assets-tab.html. */
-
+</style></head><body>
+<style>
   .assets { grid-column:1 / -1; padding:20px 28px; overflow:auto; }
   .assets h2 { margin:0; font-size:18px; }
   .assets .sub { color:var(--mute); font-size:12px; margin:4px 0 14px; max-width:860px; }
@@ -167,32 +163,44 @@
   .keep { display:flex; gap:8px; align-items:center; margin-top:14px; }
   .keep input { width:420px; flex:0 0 auto; } .keep select { width:auto; flex:0 0 auto; } .keep button, .at button { white-space:nowrap; }
   .foot { color:var(--mute); font-size:11px; margin-top:10px; max-width:900px; line-height:1.5; }
-  .assets[hidden], main[hidden] { display:none; }
   header button.on { border-color:var(--acc); color:var(--acc); }
-  .stubbed { background:#fdf5e1; border:1px solid #e6c77a; color:#8a5a00; border-radius:8px; padding:6px 10px; margin-bottom:12px; font-size:12px; }
-  .assets .mute { color:var(--mute); font-size:11px; margin-top:4px; }
-  .keep-said { color:#a3261c; font-size:12px; margin-top:6px; }
 </style>
-
 <header>
-  <b>Craftec Builder</b><span id="sdk" class="b" style="color:var(--mute)">loading SDK…</span>
-  <span id="tree-addr" class="addr" title="The tree this app works on"></span><span class="sp"></span>
-  <div class="projwrap" id="projects"></div>
-  <button id="assets">Assets</button>
-  <button id="preview">Preview</button>
-  <button id="clear">Clear</button>
-  <button class="pri" id="publish">Publish</button>
+  <b>Craftec Builder</b><span class="b" style="color:var(--mute)">SDK 0.1.0</span>
+  <span class="addr"><b>craftec://</b>notes<b>/</b>you · published</span><span class="sp"></span>
+  <button>Projects</button><button class="on">Assets</button>
+  <button>Preview</button><button>Clear</button><button class="pri">Publish</button>
 </header>
-<div class="verwrap" id="versions"></div>
-<div id="upgrade" class="upbar"></div>
-<div id="publish-note" class="pubnote"></div>
-<div id="save-state" class="savestate" role="status" hidden></div>
-<div id="storage-note" class="savestate" role="status" hidden></div>
-<section id="assets-view" class="assets" hidden></section>
 <main>
-  <aside class="l"><h3>Tree</h3><div id="tree-root"></div><div id="tree"></div><h3 style="margin-top:16px">Components</h3><div id="palette"></div></aside>
-  <section id="canvas"></section>
-  <aside class="r"><h3>Properties</h3><div id="props"></div><h3 style="margin-top:16px">Data mapping</h3><div id="map"></div><h3 style="margin-top:16px">App definition</h3><pre id="def"></pre><h3 style="margin-top:16px">Last operation</h3><div id="trace"></div></aside>
-</main>
-
-<script type="module" src="./app.js"></script>
+ <section class="assets">
+  <h2>Assets</h2>
+  <div class="sub">What this identity keeps, and how each one is doing. Audits and repairs run only while an Assets tab is open (one op at a time, behind your apps' own requests). Health means: held by your node or findable from it, and verified — the network does not report how many copies exist.</div>
+  <div class="pass">
+    <b>Auditing</b><span><code>9D9bAjjKSVoH…</code> · full pass</span>
+    <span class="bar"><i></i></span><span class="g">212 / 318 blocks asked</span>
+    <span class="slow">node not answering the assets audit for 14 s (a Held ask) — asked again, still waiting</span>
+  </div>
+  <table class="at">
+   <tr><th>Asset</th><th>Health</th><th>Groups<br><span style="text-transform:none;letter-spacing:0">whole · degraded · damaged</span></th><th>Last full audit</th><th>Repair</th><th>Warn below</th><th></th></tr>
+   <tr><td><span class="name">Your data</span><small>your identity's tree</small><code>reg 7bb29b3b…</code></td>
+       <td><span class="h whole">whole</span></td><td class="g">14 · 0 · 0</td><td>2 min ago</td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name">Notes</span><small>your published app</small><code>site 2uhMr27d…</code></td>
+       <td><span class="h degraded">degraded</span><div class="warn">1 group has fewer than 2 blocks to spare (lowest: 1)</div></td><td class="g">12 · 1 · 0</td><td>5 min ago<small>2 blocks pending (silent) — asked again next pass</small></td>
+       <td><select><option>below 2</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name">Guestbook</span><small>your published app</small><code>site 71XasNUM…</code></td>
+       <td><span class="h damaged">damaged</span><div class="dmg">group <code>p:8c1f…</code>: fewer than k blocks anywhere — cannot be rebuilt</div><div class="dmg">1 block refused by the node (encoding, or a node on another contract epoch)</div></td>
+       <td class="g">9 · 0 · 1</td><td>12 min ago</td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+   <tr><td><span class="name"><code>9D9bAjjKSVoH…</code></span><small>an app you keep (named by its address: a kept record carries no name)</small></td>
+       <td><span class="h auditing">auditing…</span><div class="warn" style="color:var(--mute)">212 of 318 blocks asked</div></td><td class="g">— · — · —</td><td>yesterday<small>last result: whole</small></td>
+       <td><select><option>below 3</option></select></td><td><input class="n" value="2"></td><td><button disabled>Auditing</button></td></tr>
+   <tr><td><span class="name"><code>4BgcWjAqDWBN…</code></span><small>an app you keep</small></td>
+       <td><span class="h unmeasured">unmeasured</span><div class="warn" style="color:var(--mute)">this node has no signer for you yet — nothing was asked, nothing assumed missing</div></td>
+       <td class="g">— · — · —</td><td>never</td>
+       <td><select><option>off (watch only)</option></select></td><td><input class="n" value="0"></td><td><button>Audit now</button></td></tr>
+  </table>
+  <div class="keep"><input placeholder="Keep an app or tree by its address (craftec://… or a site id)"><select><option>always (keep backed up)</option></select><button>Keep this</button></div>
+  <div class="foot">Publishing an app adds it here once, on its first publish, with <b>always (keep backed up)</b> and <b>warn below 2</b>. Every setting is saved in your own tree, so your other devices show and continue the same list. <b>Repair</b>: <i>off</i> watches only · <i>below N</i> rebuilds a group once fewer than N spare blocks are left · <i>always</i> rebuilds anything missing. <b>Warn below N</b> marks an asset once any group has fewer than N spare blocks.</div>
+ </section>
+</main></body></html>
