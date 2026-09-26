@@ -56,7 +56,8 @@ export function assetsView({ assets, reports = new Map(), labels = new Map(), wa
       lastNote: running && a.health?.word ? `last result: ${a.health.word}` : pending ? `${pending} block${pending === 1 ? "" : "s"} pending (silent) — asked again next pass` : null,
       repair: repairWords(a.policy.repair),
       warnBelow: a.policy.warn_below,
-      canAudit: !running && !unmeasured,
+      // Disabled only while a pass runs. NOT for unmeasured: running a pass is how a row learns it is (engineer2).
+      canAudit: !running,
     };
   });
   const live = assets.map(a => [a, reports.get(a.target)]).find(([, r]) => r?.state === "running");

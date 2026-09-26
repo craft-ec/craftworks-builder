@@ -13,6 +13,7 @@ import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
 import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
+import { mountAssets } from "./assets-panel.js";
 import { createProjectRuntime } from "./project-runtime.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
@@ -738,3 +739,32 @@ $("publish").onclick = doPublish;
 $("clear").onclick = () => { app.components.length = 0; app.seed = {}; sel = -1; rt.invalidate(); save(); render(); };
 $("preview").onclick = () => { preview = !preview; rt.invalidate(); render(); };
 render();
+
+// ---- THE ASSETS TAB (builder#164; KEEPER.md §1, §3) ----------------------------------------------------------------
+// A header button that swaps the main area for the assets view. The view reads the SDK's keep API on the session
+// handle. Until that API is in the pinned SDK, the tab runs on `assets-keep-stub.js` and SAYS so on the page -- the
+// stub is deleted in the PR that switches to the real surface (the architect's condition), and nothing it shows is
+// presented as measured.
+{
+  const button = $("assets"), view = $("assets-view"), mainEl = document.querySelector("main");
+  let mounted = null;
+  const labels = () => {
+    const m = new Map();
+    const id = openedProject?.publication?.app_contract_id;
+    if (id) m.set(id, app.name);
+    return m;
+  };
+  button.onclick = async () => {
+    const on = view.hidden;
+    view.hidden = !on;
+    mainEl.hidden = on;
+    button.classList.toggle("on", on);
+    if (!on) return;
+    const handle = rt?.session;
+    const real = typeof handle?.keepAssets === "function";
+    const api = real ? handle : (await import("./assets-keep-stub.js")).keepStub();
+    const host = document.createElement("div");
+    view.replaceChildren(...(real ? [] : [Object.assign(document.createElement("div"), { className: "stubbed", textContent: "Sample data: this SDK build has no keep API yet (the audit is engineer2's SDK step). Nothing below was measured." })]), host);
+    mounted = mountAssets(host, { api, labels });
+  };
+}
