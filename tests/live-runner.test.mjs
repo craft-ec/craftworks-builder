@@ -197,6 +197,27 @@ await t("**TERM mid-run: the samples already written stay, the summary says INTE
   assert.ok(existsSync(ndir), "an interrupted run deleted its node's dirs (its logs)");
 });
 
+// ---- BACKED_UP, asserted by every scenario (stock-take proposal 4) --------------------------------------
+const { backedUp } = await import("../tools/live/page.mjs");
+await t("**BACKED_UP holds only when EVERY named row reads \"saved + backed up\"**; nothing named refuses", () => {
+  const S = [["alpha", "saved + backed up"], ["beta", "saved"], ["gamma", "saved + backed up"]];
+  assert.equal(backedUp(S, ["alpha", "gamma"]), true);
+  assert.equal(backedUp(S, ["alpha", "beta"]), false, "a row still \"saved\" passed");
+  assert.equal(backedUp(S, ["delta"]), false, "a row that is not on the page passed");
+  assert.equal(backedUp([], ["alpha"]), false, "an empty page passed");
+  assert.throws(() => backedUp(S, []), /no row named/, "an assertion about no rows was allowed (vacuously true)");
+});
+await t("**every scenario asserts BACKED_UP through page.mjs**, and none reads the state words itself", () => {
+  const dir = fileURLToPath(new URL("../tools/live/scenarios/", import.meta.url));
+  const files = readdirSync(dir).filter(f => f.endsWith(".mjs"));
+  assert.ok(files.length >= 4, `only ${files.length} scenario(s) found`);
+  for (const f of files) {
+    const src = readFileSync(join(dir, f), "utf8");
+    assert.match(src, /\b(publish|publishRecording|backedUp)\(/, `${f} asserts no BACKED_UP (it neither publishes through page.mjs nor asks backedUp)`);
+    assert.ok(!/"saved \+ backed up"\s*[)=!]/.test(src) && !/=== "saved/.test(src), `${f} compares a row state itself: a second definition of BACKED_UP`);
+  }
+});
+
 rmSync(base, { recursive: true, force: true });
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nall ok\n");
 process.exit(failures ? 1 : 0);
