@@ -2,6 +2,7 @@
 // by pid on every exit, a poll with a deadline, and PUBLISH (the builder's publish flow on a node, optionally with
 // its wire captured). A scenario imports these; none keeps a copy.
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { captureWire } from "../wire-capture.mjs";
 import { openFreshBrowser } from "../../tests/page-host.mjs";
 import { ROOT } from "./runner.mjs";
@@ -39,6 +40,20 @@ export async function browser(ctx, label) {
   const b = await openFreshBrowser(label);
   ctx.onEnd(() => { try { process.kill(b.pid, "SIGKILL"); } catch {} });
   return b;
+}
+
+/**
+ * THE PAGE'S RECORDING, read into the run's evidence (sdk#434): the session handle's `pageTrace()` -- each op by send
+ * order, how it ENDED (Response, Timeout, Withdrawn) and its retry clock -- written whole to `<logs>/page-trace.txt`,
+ * and its counts line said. An SDK whose handle has no `pageTrace()` is SAID, never skipped silently.
+ */
+export async function recordPageTrace(ctx, tab, label, when) {
+  const dir = ctx.logsOf(label);
+  ctx.fs.mkdirSync(dir, { recursive: true });
+  const dump = await tab.evaluate(`const s = globalThis.__craftworks?.session; if (!s) return "(no session on this page)"; return typeof s.pageTrace === "function" ? s.pageTrace() : "(this SDK's session handle has no pageTrace(): sdk#434)";`).catch(e => `(unreadable: ${e.message})`);
+  ctx.fs.appendFileSync(join(dir, "page-trace.txt"), `==== ${when} ${new Date().toISOString()}\n${dump}\n`);
+  const counts = String(dump).split("\n").filter(l => /OUTSTANDING|outcome /.test(l)).map(l => l.trim()).join("; ");
+  ctx.say(`TRACE ${label} ${when}: ${counts || String(dump).slice(0, 200)} (whole: ${join(dir, "page-trace.txt")})`);
 }
 
 /** A publish that reached Published but whose rows never read "saved + backed up": BACKED_UP was not reached. */
@@ -90,6 +105,7 @@ export async function publish(ctx, node, { app, rows, capture = null, label = "p
     if (backedUp(seen, rows)) { backed_up_ms = Date.now() - t0; break; }
     await sleep(500);
   }
+  await recordPageTrace(ctx, tab, "builder", `${label} publish`);
   cap?.stop();
   await b.stop();
   if (backed_up_ms === null) throw new NotBackedUp(`NOT BACKED UP: published ${pub.address} in ${ms} ms, but its rows did not all read "saved + backed up" within ${STEP_MS / 1000} s (they read ${JSON.stringify(seen)})`, { address: pub.address, states: seen, published_ms: ms, t0 });

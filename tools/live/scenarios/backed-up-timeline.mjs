@@ -10,7 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
-import { ROW_STATES, STEP_MS, addTo, backedUp, browser, builderServer, comp, sleep, until } from "../page.mjs";
+import { ROW_STATES, STEP_MS, addTo, backedUp, browser, builderServer, comp, recordPageTrace, sleep, until } from "../page.mjs";
 
 const APP = {
   name: "live backed-up-timeline",
@@ -62,6 +62,7 @@ export async function run(ctx) {
   // The session handle's count of writes not yet saved (session.js `unsaved()`). The mount's db carries no trace().
   const own = await tab.evaluate(`const s = globalThis.__craftworks?.session; if (!s) return "no session"; return { unsaved: s.unsaved?.() ?? "no unsaved()" };`).catch(e => `(unreadable: ${e.message})`);
   ctx.say(`PAGE  the session's unsaved writes: ${JSON.stringify(own).slice(0, 1500)}`);
+  await recordPageTrace(ctx, tab, "builder", "timeline end");
   cap.stop();
   await b.stop();
   if (process.env.LIVE_PUT_ACKS) {
