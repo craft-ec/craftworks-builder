@@ -3,7 +3,7 @@
 // A published app is a TINY STARTER container (its address IS the app's address) plus the SDK's LOAD PIECES:
 //
 //   * the STARTER: the page, its loader, the decode-only wasm, and the three SDK files that run before the SDK
-//     exists (served.js: the fetch and the race; pieces.js: decode, link, repair; rto.js: the page's pacing),
+//     exists (the SDK names them: its artefacts.json `starter`, craftworks-sdk#408),
 //     with `app.json` (the app, naming its data) and `artefacts.json` (the pieces, by address and sha256). Kept
 //     small: it is the one fetch nothing can race (measured, #347: a single cold GET stalls; the pieces are raced);
 //   * the CORE pieces: the SDK wasm, the SDK's other JavaScript and the runtime's, and the `webapp` code (for the
@@ -23,8 +23,6 @@ export const STARTER_FILES = {
   "decoder.wasm": "sdk/decoder.wasm",
 };
 
-/** The SDK's JavaScript the starter carries: what runs BEFORE the SDK exists. Never also in the core bundle. */
-export const STARTER_SDK_MODULES = ["served.js", "pieces.js", "rto.js"];
 
 /** The runtime (the view a published app mounts), carried in the CORE pieces, by bundle path -> builder file. */
 export const RUNTIME_FILES = {
@@ -68,10 +66,31 @@ function sdkModules(manifest, ids) {
   return modules;
 }
 
+/**
+ * The SDK's JavaScript the STARTER carries: what runs BEFORE the SDK exists, never also in the core bundle. The SDK's
+ * build computes it from its starter entries and names it in `artefacts.json` `starter` (craftworks-sdk#408): the ONE
+ * owner of the list. A hand copy here went stale in the same way `modules` once did.
+ */
+export function sdkStarter(manifest, ids) {
+  sdkModules(manifest, ids);
+  const starter = manifest?.starter;
+  if (!Array.isArray(starter) || starter.length === 0) {
+    throw new Error("publish: the SDK's artefacts.json names no `starter` — which of its files run before the SDK exists is the SDK's to say; rebuild against an SDK that says it (craftworks-sdk#408)");
+  }
+  for (const m of starter) {
+    // Not necessarily one of `modules`: a starter ENTRY the SDK's index never imports (pieces.js) is the starter's alone.
+    if (typeof m !== "string" || !ids.module(m)) {
+      throw new Error(`publish: the SDK's artefacts.json names ${JSON.stringify(m)} in \`starter\`, which is not a file beside its index.js`);
+    }
+  }
+  return starter;
+}
+
 /** The CORE bundle's files, by bundle path -> builder file: the runtime, the SDK modules not in the starter, the
  * SDK wasm, and the `webapp` code. What `tools/cut-pieces.mjs` cuts at build time. */
 export function coreFiles(manifest, ids) {
-  const modules = sdkModules(manifest, ids).filter(m => !STARTER_SDK_MODULES.includes(m));
+  const starter = sdkStarter(manifest, ids);
+  const modules = sdkModules(manifest, ids).filter(m => !starter.includes(m));
   return {
     ...RUNTIME_FILES,
     ...Object.fromEntries(modules.map(m => [`sdk/${m}`, `sdk/${m}`])),
@@ -82,8 +101,7 @@ export function coreFiles(manifest, ids) {
 
 /** Every file the STARTER carries, by its path in it -> builder file. */
 export function starterFiles(manifest, ids) {
-  sdkModules(manifest, ids);
-  return { ...STARTER_FILES, ...Object.fromEntries(STARTER_SDK_MODULES.map(m => [`sdk/${m}`, `sdk/${m}`])) };
+  return { ...STARTER_FILES, ...Object.fromEntries(sdkStarter(manifest, ids).map(m => [`sdk/${m}`, `sdk/${m}`])) };
 }
 
 const enc = new TextEncoder();

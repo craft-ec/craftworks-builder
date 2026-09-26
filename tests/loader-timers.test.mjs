@@ -42,7 +42,7 @@ function page(name, { rows, head }) {
   const shape = { k: 1, m: 0, payload: 1, bundle_len: 1, pieces: [{ address: "p", sha256: "0" }] };
   writeFileSync(join(dir, "sdk/served.js"), `export const served = async () => new Uint8Array(0);
 export const raceK = async () => ({ pieces: [new Uint8Array(0)], verified: 1, asked: [0] });
-export const servedText = async ({ url }) => url.endsWith("app.json") ? JSON.stringify({ name: "T", components: [], publisher: { head: "a".repeat(64), app: "t" } }) : JSON.stringify({ pieces: { core: ${JSON.stringify(shape)}, provisioning: ${JSON.stringify(shape)} }, sdk: { file: "s", sha256: "0" }, signer: { file: "signer.wasm", sha256: "0" }, block: { file: "block.wasm", sha256: "0" }, register: { file: "register.wasm", sha256: "0" } });\n`);
+export const servedText = async ({ url }) => url.endsWith("app.json") ? JSON.stringify({ name: "T", components: [], publisher: { head: "a".repeat(64), app: "t" } }) : JSON.stringify({ pieces: { core: ${JSON.stringify(shape)}, provisioning: ${JSON.stringify(shape)} }, starter: ["served.js", "pieces.js", "rto.js"], sdk: { file: "s", sha256: "0" }, signer: { file: "signer.wasm", sha256: "0" }, block: { file: "block.wasm", sha256: "0" }, register: { file: "register.wasm", sha256: "0" } });\n`);
   const url = f => `${pathToFileURL(dir).href}/${f}`;
   writeFileSync(join(dir, "sdk/pieces.js"), `export const decoder = async () => ({});
 const files = new Map(["sdk/s", "sdk/signer.wasm", "sdk/block.wasm", "sdk/register.wasm", "sdk/webapp.wasm"].map(f => [f, new Uint8Array(0)]));

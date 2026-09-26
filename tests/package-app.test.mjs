@@ -59,10 +59,10 @@ await t("**the measurement: naming instead of carrying**", async () => {
   // THE REAL STARTER — the loader, the decoder and the SDK's pre-SDK
   // JavaScript — not the stub files the other tests use: a measurement taken
   // over a fixture measures the fixture.
-  const { STARTER_FILES, STARTER_SDK_MODULES } = await import("../publish-app.js");
+  // Everything the starter carries, from the SDK's own list (`starter`, craftworks-sdk#408): no copy here.
+  const { starterFiles } = await import("../publish-app.js");
   const real = {};
-  for (const [p, from] of Object.entries(STARTER_FILES)) real[p] = readFileSync(at(`../${from}`));
-  for (const m of STARTER_SDK_MODULES) real[`sdk/${m}`] = readFileSync(at(`../sdk/${m}`), "utf8");
+  for (const [p, from] of Object.entries(starterFiles(manifest, ids))) real[p] = readFileSync(at(`../${from}`));
   const { bytes } = await packageApp(APP, { carried: real, manifest, pieces: PIECES, subtle, ids });
   const carrying = weightCarrying(bytes, manifest);
   const saved = carrying - bytes;
@@ -162,20 +162,20 @@ await t("**an EXTRA artefact is a mismatch too**", async () => {
 const CONTAINER = { address: "BimQYzQWHZLEiffGJHfVXCXHqk4mGiyVzuk1cgBKpxb", sha256: "e".repeat(64), bytes: 510922 };
 const WEBAPP = { file: "webapp.wasm", sha256: "4".repeat(64), bytes: 30476 };
 const DECODER = { file: "decoder.wasm", sha256: "5".repeat(64), bytes: 39488 };
-const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP, decoder: DECODER, modules: ["index.js", "wrap.js"] };
+const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), container: CONTAINER, webapp: WEBAPP, decoder: DECODER, modules: ["index.js", "wrap.js"], starter: ["pieces.js", "rto.js", "served.js"] };
 
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
   assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
-  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "decoder", "modules", "site", "webapp"]);
+  assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "decoder", "modules", "site", "starter", "webapp"]);
   const { files } = await packageApp(APP, { carried: SDK_JS, manifest: withTools, pieces: PIECES, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
-  assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", ...NAMED].sort(),
+  assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", "starter", ...NAMED].sort(),
     `the app's artefacts.json names ${Object.keys(named).join(", ")}`);
 });
 
 await t("**a container or webapp entry shaped like an APP artefact is refused, not fetched**", async () => {
   for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }], ["decoder", { file: "decoder2.wasm", sha256: "d".repeat(64), bytes: 1 }],
-    ["modules", { file: "modules.wasm", sha256: "e".repeat(64), bytes: 1 }], ["modules", ["index.js", "../app.js"]], ["modules", []]]) {
+    ["modules", { file: "modules.wasm", sha256: "e".repeat(64), bytes: 1 }], ["modules", ["index.js", "../app.js"]], ["modules", []], ["starter", []], ["starter", ["../loader.js"]]]) {
     await assert.rejects(
       () => packageApp(APP, { carried: SDK_JS, manifest: { ...withTools, [k]: bad }, pieces: PIECES, subtle, ids }),
       new RegExp(`${k} entry is not the shape of a publishing tool`),
@@ -186,7 +186,7 @@ await t("**a container or webapp entry shaped like an APP artefact is refused, n
 await t("**THE REAL MANIFEST packages: the app names the four (the signer among them) and the pieces, and never the engine delegate**", async () => {
   const { files } = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
-  assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", ...NAMED].sort());
+  assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", "starter", ...NAMED].sort());
   assert.ok("signer" in named, "the app does not name the signer: it could not provision");
   assert.ok(!("delegate" in named), "the app names the deleted engine delegate");
 });
@@ -200,6 +200,39 @@ await t("THE CONTROL: this build's real manifest is exactly the four, the publis
     `sdk/artefacts.json carries ${keys.join(", ")}. If entries are MISSING the pinned SDK ` +
     "revision is too old to name what an app needs; if there are extra ones the SDK has " +
     "grown an artefact this build would never fetch.");
+});
+
+await t("**the starter's module list has ONE owner: the SDK's artefacts.json `starter` (craftworks-sdk#408)**", async () => {
+  // It lived in three places (this repo's starter files, its loader's `external`, the SDK's own test) and adding one
+  // module was three edits. Now the SDK computes it and everything here reads it.
+  const { starterFiles, coreFiles } = await import("../publish-app.js");
+  assert.ok(Array.isArray(manifest.starter) && manifest.starter.length > 0, "THE SETUP: the pinned SDK names no `starter`");
+  // A module the SDK ADDS to its starter reaches the starter container, and leaves the core bundle -- with no edit
+  // here (the one-place property: a hand list anywhere below would miss it).
+  const grown = { ...manifest, starter: [...manifest.starter, "extra.js"] };
+  assert.ok("sdk/extra.js" in starterFiles(grown, ids), "a module the SDK added to its starter is not carried");
+  // And a module the SDK moves INTO its starter leaves the core bundle: `served.js` is reached from the SDK's index too.
+  assert.ok(manifest.modules.includes("served.js") && manifest.starter.includes("served.js"), "THE SETUP: served.js is not in both lists");
+  assert.ok(!("sdk/served.js" in coreFiles(manifest, ids)), "a starter module is also in the core bundle");
+  const moved = { ...manifest, starter: manifest.starter.filter(m => m !== "rto.js") };
+  assert.ok("sdk/rto.js" in coreFiles(moved, ids), "a module the SDK took OUT of its starter did not return to the core bundle");
+  for (const m of manifest.starter) assert.ok(`sdk/${m}` in starterFiles(manifest, ids), `${m} is not carried`);
+  // The published app's artefacts.json carries the SDK's list verbatim: the loader's `external` reads it.
+  const carried = {};
+  for (const [p, from] of Object.entries(starterFiles(manifest, ids))) carried[p] = readFileSync(at(`../${from}`));
+  const { files } = await packageApp(APP, { carried, manifest, pieces: PIECES, subtle, ids });
+  assert.deepEqual(JSON.parse(files["artefacts.json"]).starter, manifest.starter, "the app's artefacts.json does not carry the SDK's starter");
+  // And no source here names a starter module by hand (an import specifier is an ENTRY, not the list).
+  for (const f of ["../publish-app.js", "../app-loader/loader.js", "../package-app.js"]) {
+    const hand = readFileSync(at(f), "utf8").split("\n").filter(l => !/^\s*import\b/.test(l) && /["'](sdk\/)?(served|pieces|rto)\.js["']/.test(l));
+    assert.deepEqual(hand, [], `${f} names a starter module by hand: ${hand.join(" | ")}`);
+  }
+});
+
+await t("**a manifest with no `starter` is refused by name: the loader could not tell its own modules (craftworks-sdk#408)**", async () => {
+  const { starter, ...old } = withTools;
+  assert.ok(starter, "THE SETUP");
+  await assert.rejects(() => packageApp(APP, { carried: SDK_JS, manifest: old, pieces: PIECES, subtle, ids }), /names no `starter`/);
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok package app\n");
