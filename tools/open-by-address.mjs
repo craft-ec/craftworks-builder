@@ -12,6 +12,7 @@
 // tunnel. The builder refuses to publish to the owner's ports (publish.js
 // RESERVED_PORTS), so there the publisher is the server's node.
 import { execFileSync } from "node:child_process";
+import { rowsExpr } from "./row-judge.mjs";
 import { openPageHost, openFreshBrowser, spawnNode } from "../tests/page-host.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -208,7 +209,7 @@ try {
     const burst = Array.from({ length: 10 }, (_, i) => `burst ${i}`);
     const tB = Date.now();
     for (const b of burst) { await addIn(owner, ownFrame, b); await sleep(150); }
-    const ownerSaved = await untilIn(owner, `const r = [...document.querySelectorAll("tbody tr")].filter(tr => tr.textContent.startsWith("burst ")); return r.length === 10 && r.every(tr => tr.textContent.includes("saved")) ? Date.now() : null;`, 180_000, 500, ownFrame);
+    const ownerSaved = await untilIn(owner, `const r = ${rowsExpr()}.filter(x => x.cell?.startsWith("burst ")); return r.length === 10 && r.every(x => x.saved) ? Date.now() : null;`, 180_000, 500, ownFrame);
     const burstSeen = await seenOnVisitor(burst, 180_000);
     check(!!ownerSaved && burstSeen.ms !== null, `a burst of 10 rows from the publisher's site: all saved at ${ownerSaved ? ownerSaved - tB : null} ms; all on ${B.label}'s open view ${burstSeen.ms} ms after that`, { burstSeen });
   }

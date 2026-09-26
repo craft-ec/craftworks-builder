@@ -200,7 +200,8 @@ await t("**TERM mid-run: the samples already written stay, the summary says INTE
 // ---- BACKED_UP, asserted by every scenario (stock-take proposal 4) --------------------------------------
 const { backedUp } = await import("../tools/live/page.mjs");
 await t("**BACKED_UP holds only when EVERY named row reads \"saved + backed up\"**; nothing named refuses", () => {
-  const S = [["alpha", "saved + backed up"], ["beta", "saved"], ["gamma", "saved + backed up"]];
+  // Rows as row-judge gives them (builder#172): judged by each record's code, never the chip's words.
+  const S = [{ cell: "alpha", code: "BACKED_UP", saved: true, backedUp: true }, { cell: "beta", code: "CLEAN", saved: true, backedUp: false }, { cell: "gamma", code: "BACKED_UP", saved: true, backedUp: true }];
   assert.equal(backedUp(S, ["alpha", "gamma"]), true);
   assert.equal(backedUp(S, ["alpha", "beta"]), false, "a row still \"saved\" passed");
   assert.equal(backedUp(S, ["delta"]), false, "a row that is not on the page passed");

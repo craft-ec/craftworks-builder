@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
+import { savedRow } from "./row-judge.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -102,7 +103,8 @@ const TITLES = titles("notes");
 const hasIn = (domain, want, gone = []) => `const r = [...(${comp("Table", domain)}?.querySelectorAll("tbody tr td:first-child") ?? [])].map(td => td.textContent); return (${JSON.stringify(want)}.every(t => r.includes(t)) && !${JSON.stringify(gone)}.some(t => r.includes(t))) || null;`;
 const has = (want, gone = []) => hasIn("notes", want, gone);
 const addTo = (domain, t) => `const f = ${comp("Form", domain)}; const i = f?.querySelector("input[name=title]"); if (!i) return "no form for ${domain}"; i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event("input", { bubbles: true })); f.querySelector("button.pri").click(); return "ok";`;
-const savedIn = (domain, t) => `return [...(${comp("Table", domain)}?.querySelectorAll("tbody tr") ?? [])].some(tr => tr.querySelector("td")?.textContent === ${JSON.stringify(t)} && tr.textContent.includes("saved")) || null;`;
+// "saved" is the ROW's RECORD, judged by the SDK (tools/row-judge.mjs, builder#172), never the row's text.
+const savedIn = (domain, t) => savedRow(comp("Table", domain), t);
 const tag = Date.now().toString(36);
 const [ADDED, EDIT_FROM, EDIT_TO, DELETED, GUEST] = [`added ${tag}`, `to-edit ${tag}`, `edited ${tag}`, `to-delete ${tag}`, `guest ${tag}`];
 
