@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { loadPage } from "../tools/realnet-load.mjs";
+import { SLOW_LOAD_MS, loadPage } from "../tools/realnet-load.mjs";
 
 let failures = 0;
 const t = async (name, f) => {
@@ -24,6 +24,24 @@ await t("**a navigation and a reload each wait the budget they are given** (not 
   assert.deepEqual(p.asked.map(a => [a.what, a.ms]), [["navigate http://x/app", 180_000], ["reload", 180_000]]);
   assert.match(said[0], /^TIME  12\. V opens the app: page load \d+ ms \(budget 180000 ms\)$/);
   assert.ok(Number(said[0].match(/load (\d+) ms/)[1]) >= 15, `the measured time is not the load's: ${said[0]}`);
+});
+
+await t("**a load over the slow threshold is SAID (NOTE SLOW) and handed on to be counted; one under it is not**", async () => {
+  const said = [], slow = [];
+  await loadPage(tab(40), "http://x/slow", { ms: 180_000, what: "12. V opens the app", slowMs: 20, say: l => said.push(l), onSlow: n => slow.push(n) });
+  await loadPage(tab(1), "http://x/fast", { ms: 180_000, what: "2. A opens the app", slowMs: 20, say: l => said.push(l), onSlow: n => slow.push(n) });
+  assert.equal(slow.length, 1, `slow loads handed on: ${JSON.stringify(slow)}`);
+  assert.match(slow[0], /^NOTE  SLOW 12\. V opens the app: page load \d+ ms \(> 20 ms\)$/);
+  assert.ok(said.includes(slow[0]), "the NOTE was not said");
+  assert.equal(SLOW_LOAD_MS, 30_000, "the stated threshold moved");
+});
+
+await t("**the demo records every slow load, and realnet's RESULT line counts them**", () => {
+  const demo = readFileSync(fileURLToPath(new URL("../tools/realnet-demo.mjs", import.meta.url)), "utf8");
+  const sh = readFileSync(fileURLToPath(new URL("../tools/realnet.sh", import.meta.url)), "utf8");
+  assert.match(demo, /onSlow: note => \{[^}]*slow-loads\.txt/, "the demo's loads do not record slow ones");
+  assert.match(sh, /slow=.*slow-loads\.txt/, "realnet.sh does not count the slow loads");
+  assert.match(sh, /^echo "RESULT .*\$\{slow\} slow page load/m, "the RESULT line does not carry the count");
 });
 
 await t("a load with no budget is refused, never left to a default", async () => {

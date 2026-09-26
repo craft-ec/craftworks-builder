@@ -17,7 +17,8 @@
 import { openPageHost, openFreshBrowser } from "../tests/page-host.mjs";
 import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
-import { loadPage } from "./realnet-load.mjs";
+import { loadPage as load } from "./realnet-load.mjs";
+import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -56,6 +57,10 @@ if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
 // Each step's wait for an ANSWER from the network: long, because a hotspot's
 // tail is long (block arrival p90 ~31 s), and said as "not within T" if hit.
 const STEP_MS = Number(process.env.STEP_MS ?? 180_000);
+// Every page load waits the step's budget; a SLOW one is also written to the run's slow-loads.txt, which realnet.sh's
+// RESULT line counts (the architect's rule: a slow open never hides behind a green demo).
+const loadPage = (tab, url, opts) =>
+  load(tab, url, { ...opts, onSlow: note => { if (process.env.RN_WIRE_DIR) appendFileSync(join(process.env.RN_WIRE_DIR, "slow-loads.txt"), `${note}\n`); } });
 const host = await openPageHost("realnet-demo", { budgetMs: Number(process.env.BUDGET_MS ?? 1_500_000) });
 // THE A-SIDE CHECK (no user-data writes through a view): every frame A's and
 // V's browsers send their node, raw (wire-capture.mjs), classified afterwards
