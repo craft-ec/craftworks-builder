@@ -5,8 +5,8 @@
 //
 // And WHY (the architect's split): the builder page's wire is captured, sent and received, and `put-acks`
 // (craftworks-sdk probe, LIVE_PUT_ACKS) pairs every PUT with the node's answer by contract -- its block kind (4 is
-// PARITY), sends, first sent, answered or never. Plus the page's own word: the web Session's `trace()` of its last
-// write and `unsaved_writes()`, read from `globalThis.__craftworks.session`.
+// PARITY), sends, first sent, answered or never. Plus the page's own word: its session's count of
+// unsaved writes (`globalThis.__craftworks.session.unsaved()`).
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
@@ -59,8 +59,9 @@ export async function run(ctx) {
   const g = await watch(ctx, tab, "after writing gamma", t1, WATCH_MS, rows => backedUp(rows, ["gamma"]));
   ctx.say(`RESULT a write after publishing: ${g.ms === null ? `gamma NOT "saved + backed up" within ${WATCH_MS / 1000} s` : `gamma "saved + backed up" at +${g.ms} ms`}`);
   // The page's own word, then the wire's.
-  const own = await tab.evaluate(`const s = globalThis.__craftworks?.session; if (!s) return "no session"; return { trace: JSON.parse(s.trace() || "null"), unsaved: s.unsaved_writes?.() ?? null };`).catch(e => `(unreadable: ${e.message})`);
-  ctx.say(`PAGE  the session's last write: ${JSON.stringify(own).slice(0, 1500)}`);
+  // The session handle's count of writes not yet saved (session.js `unsaved()`). The mount's db carries no trace().
+  const own = await tab.evaluate(`const s = globalThis.__craftworks?.session; if (!s) return "no session"; return { unsaved: s.unsaved?.() ?? "no unsaved()" };`).catch(e => `(unreadable: ${e.message})`);
+  ctx.say(`PAGE  the session's unsaved writes: ${JSON.stringify(own).slice(0, 1500)}`);
   cap.stop();
   await b.stop();
   if (process.env.LIVE_PUT_ACKS) {
