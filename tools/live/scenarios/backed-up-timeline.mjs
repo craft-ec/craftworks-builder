@@ -10,7 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
-import { ROW_STATES, STEP_MS, addTo, backedUp, browser, builderServer, comp, recordPageTrace, sleep, until } from "../page.mjs";
+import { ROWS, STEP_MS, addTo, backedUp, browser, builderServer, comp, recordPageTrace, sleep, until } from "../page.mjs";
 
 const APP = {
   name: "live backed-up-timeline",
@@ -24,7 +24,7 @@ async function watch(ctx, tab, label, t0, ms, done) {
   let last = "";
   const end = Date.now() + ms;
   while (Date.now() < end) {
-    const rows = await tab.evaluate(ROW_STATES).catch(e => [[`(unreadable: ${e.message})`, null]]);
+    const rows = await tab.evaluate(ROWS).catch(e => [[`(unreadable: ${e.message})`, null]]);
     const now = JSON.stringify(rows);
     if (now !== last) { ctx.say(`STATE ${label} +${Date.now() - t0} ms: ${now}`); last = now; }
     if (done(rows)) return { rows, ms: Date.now() - t0 };

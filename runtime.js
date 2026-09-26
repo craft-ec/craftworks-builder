@@ -224,7 +224,11 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // spinner for all three.
   const stateChip = record => {
     const s = show(rowState(phase, record));
-    return el("span", { className: `rt-state ${s.tone}`, textContent: s.label, title: s.hint });
+    const chip = el("span", { className: `rt-state ${s.tone}`, textContent: s.label, title: s.hint });
+    // The RECORD's own state code, for anything that must judge a row by its record, never by these words
+    // (builder#172: a gate that read the text passed on a user's title "saved"). What a code MEANS is the SDK's.
+    chip.dataset.rowState = record?.state ?? "";
+    return chip;
   };
 
   function form(inst, schema) {
@@ -410,7 +414,9 @@ export async function mountApp(root, sdk, app, onData = () => {}, backend = null
   // again, a pull-to-refresh, a tool checking the rule. Without it the only
   // way to re-read was to reload the tab, which is a different thing and
   // hides what is being tested.
-  globalThis.__craftworks = { db, app, phase, refresh: changed };
+  // `rowSaved` / `rowBackedUp`: what a record's state code MEANS, from the SDK (its one owner), for a check that
+  // judges rows by their records (tools/row-judge.mjs, builder#172).
+  globalThis.__craftworks = { db, app, phase, refresh: changed, rowSaved: sdk.rowSaved, rowBackedUp: sdk.rowBackedUp };
 
   // The saving line's input. Re-renders only a mount that is still wanted.
   const setSaving = n => {

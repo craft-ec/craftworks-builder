@@ -31,6 +31,7 @@
 //     in local mode (F35), and publishing is entirely delegate-originated.
 
 import assert from "node:assert";
+import { rowsExpr } from "./row-judge.mjs";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { now, openPageHost } from "../tests/page-host.mjs";
@@ -305,7 +306,7 @@ async function arm(live) {
   await publish(b, live);
 
   const mode = await liveMode(b);
-  const settled = `[...document.querySelectorAll(".rt-comp .rt-state")].filter(x => x.textContent === "saved" || x.textContent === "saved + backed up").length`;
+  const settled = `${rowsExpr()}.filter(r => r.saved).length`;
   const seen = await b.evaluate(`return document.querySelectorAll(".rt-comp tbody tr").length;`);
   let have = seen;
   const legs = { published: [], notified: [], rendered: [], total: [] };
@@ -442,7 +443,7 @@ async function controlArm() {
   const have = await rows(b);
   const mode = await liveMode(b);
 
-  const settled = `[...document.querySelectorAll(".rt-comp .rt-state")].filter(x => x.textContent === "saved" || x.textContent === "saved + backed up").length`;
+  const settled = `${rowsExpr()}.filter(r => r.saved).length`;
   const before = await a.evaluate(`return ${settled};`);
   await watchChips(a);
   const title = `control ${Date.now()}`;
@@ -517,9 +518,10 @@ async function writePath() {
   const sawPending = seenStates.includes("saving") || seenStates.includes("queued");
 
   await a.until(
-    `[...document.querySelectorAll(".rt-comp .rt-state")].filter(e => e.textContent === "saved" || e.textContent === "saved + backed up").length >= ${start + 1}`,
+    `${rowsExpr()}.filter(r => r.saved).length >= ${start + 1}`,
     "every row to reach the network", 120_000);
-  const settled = await chips(a);
+  // The rows as their RECORDS say (row-judge, builder#172), never the chips' words.
+  const settled = await a.evaluate(`return ${rowsExpr()};`);
   await shot(a, "write-path-settled");
 
   // THREE HUNDRED, through the db the app holds. Refusals are what #73 was:
@@ -574,7 +576,7 @@ async function reload() {
     document.querySelector(".rt-comp button.pri").click();
     return 1;`);
   await a.until(
-    `[...document.querySelectorAll(".rt-comp .rt-state")].some(e => e.textContent === "saved" || e.textContent === "saved + backed up")`,
+    `${rowsExpr()}.some(r => r.saved)`,
     "the write to reach the network", 120_000);
 
   // THE HEAD BEFORE, so "the same head" is a comparison and not a hope.
@@ -661,7 +663,7 @@ async function parityUnderTwoTabs() {
     }
     return { refused };`);
 
-  const backed = `[...document.querySelectorAll(".rt-comp .rt-state")].filter(x => x.textContent === "saved + backed up").length`;
+  const backed = `${rowsExpr()}.filter(r => r.backedUp).length`;
   let reached = 0;
   try {
     await a.until(`${backed} > 0`, "a row to reach parity-complete", 120_000);
@@ -770,8 +772,8 @@ check("2. the control follows the owner's rule: not live = read when needed", ()
 check("3a. a write reached the network: the chip said saving, then saved", () => {
   assert.ok(report.writePath?.sawPending,
     `the chip never said saving or queued, so the transition is not being observed at all — states the observer saw from before the click: ${JSON.stringify(report.writePath?.seenStates)}`);
-  assert.ok(report.writePath.settled.some(c => c === "saved" || c === "saved + backed up"),
-    `no row reached saved; chips were ${JSON.stringify(report.writePath.settled.slice(0, 5))}`);
+  assert.ok(report.writePath.settled.some(r => r.saved),
+    `no row reached saved by its record; rows were ${JSON.stringify(report.writePath.settled.slice(0, 5))}`);
 });
 check("3b. 300 writes, zero refusals", () => {
   assert.strictEqual(report.writePath?.refused, 0,

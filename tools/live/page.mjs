@@ -67,18 +67,9 @@ export class NotBackedUp extends Error {
   constructor(message, { address, states, published_ms, t0 }) { super(message); Object.assign(this, { address, states, published_ms, t0 }); }
 }
 
-/** The builder's row states, in page order: `[[first cell, state], ...]` (for a script's `return`). */
-export const ROW_STATES = `return [...document.querySelectorAll(".rt-comp tbody tr")].filter(tr => tr.querySelector(".rt-state")).map(tr => [tr.querySelector("td")?.textContent ?? null, tr.querySelector(".rt-state").textContent]);`;
-
-/**
- * THE BACKED_UP ASSERTION, one home: do the rows titled `titles` (at least one) ALL read "saved + backed up"? A
- * title with no row is not backed up. Every scenario asks through this, so the withheld-parity control proves it for
- * all of them.
- */
-export function backedUp(states, titles) {
-  if (!titles.length) throw new Error("backedUp: no row named, so nothing would be asserted");
-  return titles.every(t => states.some(([cell, s]) => cell === t && s === "saved + backed up"));
-}
+// The rows, and the BACKED_UP assertion, are row-judge's (builder#172): by each row's RECORD, judged by the SDK.
+import { ROWS, backedUp } from "../row-judge.mjs";
+export { ROWS, backedUp };
 
 /**
  * PUBLISH `app` (with `rows` typed into its `notes` form first) from `node` through the builder page. With
@@ -107,7 +98,7 @@ export async function publish(ctx, node, { app, rows, capture = null, label = "p
   let seen = [], backed_up_ms = null;
   const end = Date.now() + STEP_MS;
   while (Date.now() < end) {
-    seen = await tab.evaluate(ROW_STATES).catch(e => [[`(unreadable: ${e.message})`, null]]);
+    seen = await tab.evaluate(ROWS).catch(e => [[`(unreadable: ${e.message})`, null]]);
     if (backedUp(seen, rows)) { backed_up_ms = Date.now() - t0; break; }
     await sleep(500);
   }
