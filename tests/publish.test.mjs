@@ -1,4 +1,4 @@
-// Publishing: the phases, what the button says, and the three ways it ends.
+// Publishing: the phases, what the button says, and what a failure says.
 //
 // No node and no browser. The point of keeping the decisions out of the DOM
 // is that they can be checked like this, on any machine, every run.
@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadSdk } from "../sdk-loader.js";
-import { appIdOf, buttonFor, rowStateFor, publish, waitFor, PHASES, RESERVED_PORTS } from "../publish.js";
+import { appIdOf, buttonFor, rowStateFor, publish, PHASES, RESERVED_PORTS } from "../publish.js";
 import { UNPUBLISHED } from "../publish-state.js";
 
 // The REAL SDK's id rules (sdk.ids): appIdOf checks by them, never by a copy.
@@ -58,108 +58,60 @@ await t("an unpublished project's rows say so; a published one's do not", () => 
   assert.equal(rowStateFor("published"), null, "a published row must carry its OWN write state");
 });
 
-// ---- waitFor: three distinct ends, never one timeout ----
+// ---- ONE WAIT, THE SDK'S (builder#173) ----
+//
+// `open()` returns once the node says it is provisioned, and ends only on an
+// answer; its ends (refused, never there, no time end, cancel) are the SDK's
+// and are tested there (craftworks-sdk tests/js/open-provisioned.test.mjs).
+// What is the builder's: the phases it derives, and what it says on a failure.
 
-const fakeSession = over => ({
-  provisioned: () => false, refused: () => "", exhausted: () => false, ...over,
-});
-
-await t("waitFor returns when the node says it is provisioned", async () => {
-  let asked = 0;
-  const s = fakeSession({ provisioned: () => ++asked > 2 });
-  assert.equal(await waitFor(s, { everyMs: 1 }), "provisioned");
-});
-
-await t("a REFUSAL ends it with the node's own words, not a timeout", async () => {
-  const s = fakeSession({ refused: () => "delegate code rejected" });
-  await assert.rejects(() => waitFor(s, { everyMs: 1 }), e => {
-    assert.match(e.message, /delegate code rejected/);
-    return true;
-  });
-});
-
-await t("EXHAUSTED ends it as its own fact, not as a refusal or a timeout", async () => {
-  const s = fakeSession({ exhausted: () => true });
-  await assert.rejects(() => waitFor(s, { everyMs: 1 }), e => {
-    assert.match(e.message, /accepted everything and still cannot write/);
-    return true;
-  });
-});
-
-await t("a node that never answers ends on the BUDGET and says what to check", async () => {
-  let clock = 0;
-  const s = fakeSession({});
-  await assert.rejects(
-    () => waitFor(s, { everyMs: 1, budgetMs: 10, now: () => (clock += 8) }),
-    e => {
-      assert.match(e.message, /still running/);
-      return true;
-    });
-});
-
-await t("THE CONTROL: the budget does not fire on a node that answers", async () => {
-  let clock = 0;
-  const s = fakeSession({ provisioned: () => true });
-  assert.equal(
-    await waitFor(s, { everyMs: 1, budgetMs: 10, now: () => (clock += 8) }),
-    "provisioned",
-    "the budget fired on a healthy node, so the test above proves nothing about timing");
-});
-
-// ---- publish: the phases happen in order ----
+/** An `open()` that fires `events` (socket events) and then resolves, or rejects with `fail`. */
+const fakeOpen = ({ events = ["open"], fail = null } = {}) => async ({ onEvent }) => {
+  for (const kind of events) onEvent({ kind });
+  if (fail) throw new Error(fail);
+  return { db: { marker: "engine" } };
+};
+const P = { appId: "proj1", ids, onSaving: () => {}, port: 17509 };
 
 await t("publish reports each phase, in order, and hands back the engine db", async () => {
   const seen = [];
-  const session = { provisioned: () => true, refused: () => "", exhausted: () => false };
-  const { db } = await publish({}, { appId: "proj1", ids, onSaving: () => {},
-    port: 17509,
-    open: async () => ({ ...session, db: { marker: "engine" } }),
-  }, p => seen.push(p));
+  const { db } = await publish({}, { ...P, open: fakeOpen() }, p => seen.push(p));
   assert.deepEqual(seen, ["connecting", "provisioning", "opening"]);
   assert.equal(db.marker, "engine", "publish did not switch the backend");
 });
 
+await t("\"provisioning\" is DERIVED from the socket: said once, at its FIRST open, never on a re-open", async () => {
+  const seen = [];
+  await publish({}, { ...P, open: fakeOpen({ events: ["error", "closed", "open", "closed", "open"] }) }, p => seen.push(p));
+  assert.deepEqual(seen, ["connecting", "provisioning", "opening"]);
+});
+
 await t("a node that is not there fails with advice, not a stack trace", async () => {
   const seen = [];
-  await assert.rejects(() => publish({}, { appId: "proj1", ids, onSaving: () => {},
-    port: 17509,
-    open: async () => { throw new Error("ECONNREFUSED"); },
-  }, (p, e) => seen.push([p, e])));
+  await assert.rejects(() => publish({}, { ...P, open: fakeOpen({ events: ["error", "closed"], fail: "ECONNREFUSED" }) }, (p, e) => seen.push([p, e])));
   const failed = seen.find(([p]) => p === "failed");
   assert.ok(failed, "no failed phase was reported");
-  assert.match(failed[1], /node running locally|running locally|needs one running/,
-    "the failure does not say what to do about it");
+  assert.match(failed[1], /needs one running locally/, "the failure does not say what to do about it");
 });
 
-await t("a node that was NEVER there fails in a second, not after the budget", async () => {
-  // A socket that cannot connect retries for ever, which is right for a
-  // connection that dropped and wrong for one that was never there. Without
-  // this a person watches "Setting the node up…" for a minute and then
-  // learns the node was not running.
-  let clock = 0;
-  const s = fakeSession({});
-  await assert.rejects(
-    () => waitFor(s, {
-      everyMs: 1,
-      budgetMs: 60_000,
-      now: () => (clock += 10),
-      neverConnected: () => true,
-    }),
-    e => {
-      assert.match(e.message, /no node answering/);
-      return true;
-    });
-  assert.ok(clock < 1_000, `it waited ${clock}ms for a fact available at once`);
+await t("**a failure AFTER the socket opened is said in the SDK's own words** (the node's refusal), not as \"could not reach\"", async () => {
+  const seen = [];
+  await assert.rejects(() => publish({}, { ...P, open: fakeOpen({ fail: "the node refused to set up: no room" }) }, (p, e) => seen.push([p, e])),
+    /refused to set up: no room/);
+  assert.deepEqual(seen.at(-1), ["failed", "the node refused to set up: no room"]);
 });
 
-await t("THE CONTROL: a node that DOES answer is never called unreachable", async () => {
-  // Checked after `provisioned`, so a node that answered is not reported
-  // unreachable because of an earlier retry on the way up.
-  const s = fakeSession({ provisioned: () => true });
-  assert.equal(
-    await waitFor(s, { everyMs: 1, neverConnected: () => true }),
-    "provisioned",
-    "a provisioned node was reported unreachable because the socket had retried");
+await t("**ONE HOME: publish.js keeps no wait of its own** -- no budget, no clock, no timer, no refusal count, no `exhausted`; control: each planted copy is caught", async () => {
+  const code = src => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const copies = src => [/budgetMs/, /Date\.now|now\(\)/, /setTimeout|setInterval/, /refusals\s*\+=/, /exhausted/, /\bwaitFor\b/]
+    .filter(re => re.test(code(src))).map(String);
+  const src = readFileSync(new URL("../publish.js", import.meta.url), "utf8");
+  assert.deepEqual(copies(src), [], "publish.js waits (or counts refusals) a second time beside the SDK");
+  for (const planted of ["const budgetMs = 60_000;", "if (Date.now() > t) throw 0;", "await new Promise(r => setTimeout(r, 250));",
+    "refusals += 1;", "session.exhausted?.();", "await waitFor(handle);"]) {
+    assert.equal(copies(src + "\n" + planted).length, 1, `THE CONTROL: the planted \`${planted}\` was not caught`);
+  }
+  assert.equal(copies(src + "\n// budgetMs setTimeout Date.now()").length, 0, "a COMMENT naming them is not a copy");
 });
 
 

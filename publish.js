@@ -166,110 +166,43 @@ export async function publish(app, deps, onPhase = () => {}) {
     throw new Error(why);
   }
 
-  // Whether the socket has EVER opened.
+  // ONE WAIT, THE SDK'S (builder#173). `open()` returns only once the node says
+  // it is provisioned (the SDK's `untilProvisioned`), and it ends only on an
+  // ANSWER: the node's refusal, a node that is not there (two refused
+  // ATTEMPTS, never opened -- counted once per attempt, since a refused socket
+  // fires both `error` and `closed`), or a cancel. There is no time cut-off
+  // (rule 8), and a failed `open()` closes its own session, so the builder
+  // holds no handle until it has one to hand over. This file used to wait a
+  // second time with a 60 s budget and count each refused socket twice; both
+  // copies are gone, and a source test keeps them gone.
   //
-  // A socket that cannot connect retries with a backoff, for ever, which is
-  // right for a connection that dropped and wrong for one that was never
-  // there. Without this the provisioning wait runs its full budget while a
-  // person watches "Setting the node up…" for a minute, and then learns the
-  // node was never running. A short timeout on PROGRESS beats a long one on
-  // the run.
-  let connected = false, refusals = 0;
-
-  let handle;
+  // The phase is DERIVED from the socket: "connecting" until it first opens,
+  // "provisioning" after.
+  let opened = false;
   try {
     phase("connecting");
     // ONE call. It wires message -> on_inbound -> drain and tick -> drain
     // itself, so a cold read resolves without this file knowing that any of
     // those exist. A page that wired them by hand would have a screen that
     // never fills the first time it forgot one.
-    handle = await open({
+    const handle = await open({
       app: appId,
       port,
       artefacts,
       onEvent: e => {
-        if (e.kind === "open") { connected = true; refusals = 0; }
-        if (e.kind === "closed" || e.kind === "error") refusals += 1;
+        if (e.kind === "open" && !opened) { opened = true; phase("provisioning"); }
         // Every write not yet PUBLISHED, held ones included (sdk#188).
         if (e.kind === "saving") onSaving(e.count);
       },
     });
+    phase("opening");
+    // Handed over: from here the caller owns the session and must close it.
+    return { session: handle, db: handle.db };
   } catch (e) {
-    onPhase("failed", nodeAdvice(e));
+    // Before the socket ever opened, say what to check; after, the SDK's own
+    // words (the node's refusal, or a cancel) are the reason.
+    onPhase("failed", opened ? e.message : nodeAdvice(e));
     throw e;
-  }
-
-  try {
-    phase("provisioning");
-    await waitFor(handle, { neverConnected: () => !connected && refusals >= 2 });
-  } catch (e) {
-    // THE HANDLE IS OURS UNTIL IT IS HANDED OVER, so a failed handoff closes
-    // it. It owns a reconnecting socket, a tick interval and page-lifecycle
-    // listeners; the caller gets no handle on a rejection and so cannot, and
-    // every retry used to open another one alongside the last (builder#58).
-    closeQuietly(handle);
-    onPhase("failed", e.message);
-    throw e;
-  }
-
-  phase("opening");
-  // Handed over: from here the caller owns the session and must close it.
-  return { session: handle, db: handle.db };
-}
-
-/**
- * Close a session, and never let the cleanup replace the reason.
- *
- * A close that throws while reporting a failure would surface the close's
- * error instead of the one that explains what went wrong, so it is swallowed
- * here — the ORIGINAL error is what the caller rethrows.
- */
-export function closeQuietly(handle) {
-  try { handle?.close?.(); } catch (_) { /* the original error is the one that matters */ }
-}
-
-/**
- * Wait until the node says it is provisioned — or until it says it cannot be.
- *
- * Three distinct ends, never one timeout: `provisioned` is done, `refused`
- * is the node declining and says why, `exhausted` is everything having been
- * accepted while the delegate still cannot write a head. Collapsing them
- * into "it did not work" is what makes a page unfixable.
- */
-export async function waitFor(session, {
-  everyMs = 250,
-  budgetMs = 60_000,
-  now = () => Date.now(),
-  // "The socket has never opened, and has been refused more than once."
-  // Default false so `waitFor` behaves as before for a caller that cannot
-  // observe the socket. Traced for builder#73: `publish` always passes its own,
-  // so this default only reaches a direct caller of `waitFor`, and `false`
-  // means "do not fail fast" — the wait runs its whole budget and then fails
-  // LOUDLY. A default that makes a feature absent or loud is the safe kind; it
-  // cannot make anything look done.
-  neverConnected = () => false,
-} = {}) {
-  const started = now();
-  for (;;) {
-    if (session.provisioned()) return "provisioned";
-    // A node that is not there is a FACT available in a second, not one to
-    // wait a minute for. Checked after `provisioned` so a node that answered
-    // is never reported unreachable because of an earlier retry.
-    if (neverConnected()) {
-      throw new Error(
-        "there is no node answering on this machine. Publishing needs one " +
-        "running locally — it holds your key, and it is the only place this tab will send it.");
-    }
-    const refused = session.refused?.();
-    if (refused) throw new Error(`the node refused to set up: ${refused}`);
-    if (session.exhausted?.()) {
-      throw new Error(
-        "the node accepted everything and still cannot write; its engine may be a different build");
-    }
-    if (now() - started > budgetMs) {
-      throw new Error("the node did not finish setting up in time; is it still running?");
-    }
-    await new Promise(r => setTimeout(r, everyMs));
   }
 }
 
