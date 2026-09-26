@@ -25,7 +25,7 @@ try {
     assert.ok(Date.now() - t0 >= 1900, "the server's 2 s did not happen: the setup is wrong");
     assert.equal(await tab.evaluate("return document.title;"), "slow");
   });
-  await t("**a reload given a budget waits the same way**", async () => {
+  await t("**a reload given a budget waits for its load the same way** (its command is answered at once; only the load waits)", async () => {
     await tab.reload({ ms: 10_000 });
     assert.equal(await tab.evaluate("return document.title;"), "slow");
   });

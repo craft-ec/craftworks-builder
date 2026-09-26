@@ -351,15 +351,16 @@ export async function openTab(debug, label, { dump = `return document.body?.inne
   // A RELOAD is Page.reload and the new document's load, never an evaluate of
   // `location.reload()`: that evaluate's context is destroyed by the very
   // navigation it starts, so its answer is not something to wait on.
-  // BOTH waits take the caller's budget: the COMMAND too, not only the load event. Page.navigate / Page.reload are
-  // answered only once the node answers the HTTP request, and a fresh node's web path takes up to its own 30 s
-  // (F64) -- so a 30 s CDP deadline on the command raced the node's bound (batch 5's realnet, step 12).
+  // A NAVIGATION's command takes the caller's budget too, not only its load event: Page.navigate is answered only once
+  // the node answers the HTTP request, and a fresh node's web path takes up to its own 30 s (F64) -- so a 30 s CDP
+  // deadline on the command raced the node's bound (batch 5's realnet, step 12).
+  // Page.reload is answered at once (measured: the command-budget mutant survives); only its load event waits on the node.
   const reload = async ({ ms } = {}) => {
     const loaded = cdp.next("Page.loadEventFired", ms);
     // Handled from birth: if it times out while the COMMAND is still pending, nobody awaits it yet, and an unhandled
     // rejection killed the process. An `await loaded` below still throws as before.
     loaded.catch(() => {});
-    await send("Page.reload", {}, { ms });
+    await send("Page.reload", {});
     await loaded;
   };
   // A NAVIGATION likewise: Page.navigate and the new document's load, never
