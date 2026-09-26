@@ -33,7 +33,7 @@ try {
   const tests = guard => {
     rmSync(marker, { force: true });
     rmSync(join(dir, "asked"), { force: true });
-    return spawnSync(process.execPath, [runner, file], { encoding: "utf8", env: { ...process.env, DISK_GUARD: guard } });
+    return spawnSync(process.execPath, [runner, dir], { encoding: "utf8", env: { ...process.env, DISK_GUARD: guard } });
   };
   for (const rc of [1, 2]) {
     const r = tests(stub(rc));
