@@ -178,26 +178,26 @@
   <div class="pass">
     <b>Auditing</b><span><code>9D9bAjjKSVoH…</code> · full pass</span>
     <span class="bar"><i></i></span><span class="g">212 / 318 blocks asked</span>
-    <span class="slow">node not answering for 14 s (an audit op) — asked again, still waiting</span>
+    <span class="slow">node not answering the assets audit for 14 s (a Held ask) — asked again, still waiting</span>
   </div>
   <table class="at">
    <tr><th>Asset</th><th>Health</th><th>Groups<br><span style="text-transform:none;letter-spacing:0">whole · degraded · damaged</span></th><th>Last full audit</th><th>Repair</th><th>Warn below</th><th></th></tr>
    <tr><td><span class="name">Your data</span><small>your identity's tree</small><code>reg 7bb29b3b…</code></td>
-       <td><span class="h whole">whole</span></td><td class="g">14 · 0 · 0</td><td>2 min ago<small>repaired 0 · 1.2 MB (step 3)</small></td>
+       <td><span class="h whole">whole</span></td><td class="g">14 · 0 · 0</td><td>2 min ago</td>
        <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
    <tr><td><span class="name">Notes</span><small>your published app</small><code>site 2uhMr27d…</code></td>
-       <td><span class="h degraded">degraded</span><div class="warn">1 group has 1 block to spare (below 2)</div></td><td class="g">12 · 1 · 0</td><td>5 min ago<small>repaired 0 · 840 KB</small></td>
+       <td><span class="h degraded">degraded</span><div class="warn">1 group has fewer than 2 blocks to spare (lowest: 1)</div></td><td class="g">12 · 1 · 0</td><td>5 min ago<small>2 blocks pending (silent) — asked again next pass</small></td>
        <td><select><option>below 2</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
    <tr><td><span class="name">Guestbook</span><small>your published app</small><code>site 71XasNUM…</code></td>
        <td><span class="h damaged">damaged</span><div class="dmg">group <code>p:8c1f…</code>: fewer than k blocks anywhere — cannot be rebuilt</div><div class="dmg">1 block refused by the node (encoding, or a node on another contract epoch)</div></td>
-       <td class="g">9 · 0 · 1</td><td>12 min ago<small>repaired 3 · 610 KB</small></td>
+       <td class="g">9 · 0 · 1</td><td>12 min ago</td>
        <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
    <tr><td><span class="name"><code>9D9bAjjKSVoH…</code></span><small>an app you keep (named by its address: a kept record carries no name)</small></td>
        <td><span class="h auditing">auditing…</span><div class="warn" style="color:var(--mute)">212 of 318 blocks asked</div></td><td class="g">— · — · —</td><td>yesterday<small>last result: whole</small></td>
        <td><select><option>below 3</option></select></td><td><input class="n" value="2"></td><td><button disabled>Auditing</button></td></tr>
    <tr><td><span class="name">SDK 0.1.0</span><small>loaded by your apps</small><code>core k=25+m=8</code></td>
-       <td><span class="h whole">whole</span></td><td class="g">2 · 0 · 0</td><td>2 min ago<small>repaired 0 · 3.1 MB</small></td>
-       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button>Audit now</button></td></tr>
+       <td><span class="h unmeasured">not audited yet</span><div class="warn" style="color:var(--mute)">the SDK is pieces (k+m), not a tree: its audit is a separate step</div></td><td class="g">— · — · —</td><td>never</td>
+       <td><select><option>always (keep backed up)</option></select></td><td><input class="n" value="2"></td><td><button disabled>Audit now</button></td></tr>
    <tr><td><span class="name"><code>4BgcWjAqDWBN…</code></span><small>an app you keep</small></td>
        <td><span class="h unmeasured">unmeasured</span><div class="warn" style="color:var(--mute)">this node has no signer for you yet — nothing was asked, nothing assumed missing</div></td>
        <td class="g">— · — · —</td><td>never</td>
