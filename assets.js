@@ -28,38 +28,67 @@ export function ago(auditedAt, nowMs) {
  * "background" })`. Returns `{ running, rows }`.
  */
 export function assetsView({ assets, reports = new Map(), labels = new Map(), waiting = null, nowMs }) {
-  const rows = assets.map(a => {
-    const report = reports.get(a.target) ?? null;
-    const running = report?.state === "running";
-    const unmeasured = report?.state === "unmeasured" || a.health?.word === "unmeasured";
-    // The word: the live pass's when it finished this session, else the record's last full pass (both the SDK's).
-    const done = report?.state === "done" ? report : null;
-    const word = running ? "auditing" : unmeasured ? "unmeasured" : (done?.health ?? a.health?.word ?? "never audited");
-    const counts = done ?? (a.health?.word ? a.health : null);
-    const notes = [];
-    if (running) notes.push({ kind: "progress", text: `${report.asked} of ${report.of} blocks asked` });
-    if (unmeasured) notes.push({ kind: "mute", text: "this node has no signer for you yet — nothing was asked, nothing assumed missing" });
-    const warning = done?.warning ?? (running ? null : a.warning);
-    if (!running && !unmeasured && warning) notes.push({ kind: "warn", text: warning });
-    for (const g of done?.damaged ?? []) notes.push({ kind: "damaged", text: `group ${short(g)}: fewer than k blocks anywhere — cannot be rebuilt` });
-    const rejected = done?.rejected?.length ?? 0;
-    if (rejected) notes.push({ kind: "damaged", text: `${rejected} block${rejected === 1 ? "" : "s"} refused by the node (encoding, or a node on another contract epoch)` });
-    const pending = done?.pending ?? 0;
-    return {
-      target: a.target,
-      name: labels.get(a.target) ?? (a.kind === "identity" ? "Your data" : short(a.target)),
-      sub: a.kind === "identity" ? "your identity's tree" : labels.has(a.target) ? "your published app" : "an app you keep",
-      word,
-      notes,
-      groups: counts && !running ? `${counts.whole} · ${counts.degraded} · ${counts.damaged?.length ?? counts.damaged}` : "— · — · —",
-      last: ago(a.audited_at, nowMs),
-      lastNote: running && a.health?.word ? `last result: ${a.health.word}` : pending ? `${pending} block${pending === 1 ? "" : "s"} pending (silent) — asked again next pass` : null,
-      repair: repairWords(a.policy.repair),
-      warnBelow: a.policy.warn_below,
-      // Disabled only while a pass runs. NOT for unmeasured: running a pass is how a row learns it is (engineer2).
-      canAudit: !running,
-    };
-  });
+  const rows = assets.map(a => (a.kind === "identity" ? treeRow(a, reports, labels, nowMs) : notAuditedRow(a, labels, nowMs)));
+  return { running: runningLine(assets, reports, rows, waiting), rows };
+}
+
+/**
+ * An asset the SDK cannot audit yet: an APP is audited by its container's PIECES (k + m, KEEPER §2), and that audit is
+ * not built (sdk#493) -- the SDK's `keepAudit` refuses it NOT_AUDITABLE. So the row is "not audited yet", NEVER a health
+ * word, whatever its record holds (no pass of ours measured it), and its button is off. Its policy is still editable:
+ * the record is kept, and the pass will read it once it exists.
+ */
+function notAuditedRow(a, labels, nowMs) {
+  return {
+    target: a.target,
+    name: labels.get(a.target) ?? short(a.target),
+    sub: labels.has(a.target) ? "your published app" : "an app you keep",
+    word: "not audited yet",
+    notes: [{ kind: "mute", text: "an app is checked by its pieces (k + m), and that audit is not built yet — nothing here is measured" }],
+    groups: "— · — · —",
+    last: ago(0, nowMs),
+    lastNote: null,
+    repair: repairWords(a.policy.repair),
+    warnBelow: a.policy.warn_below,
+    canAudit: false,
+  };
+}
+
+/** The identity's own TREE: the asset a pass runs on (this session's page). */
+function treeRow(a, reports, labels, nowMs) {
+  const report = reports.get(a.target) ?? null;
+  const running = report?.state === "running";
+  const unmeasured = report?.state === "unmeasured" || a.health?.word === "unmeasured";
+  // The word: the live pass's when it finished this session, else the record's last full pass (both the SDK's).
+  const done = report?.state === "done" ? report : null;
+  const word = running ? "auditing" : unmeasured ? "unmeasured" : (done?.health ?? a.health?.word ?? "never audited");
+  const counts = done ?? (a.health?.word ? a.health : null);
+  const notes = [];
+  if (running) notes.push({ kind: "progress", text: `${report.asked} of ${report.of} blocks asked` });
+  if (unmeasured) notes.push({ kind: "mute", text: "this node has no signer for you yet — nothing was asked, nothing assumed missing" });
+  const warning = done?.warning ?? (running ? null : a.warning);
+  if (!running && !unmeasured && warning) notes.push({ kind: "warn", text: warning });
+  for (const g of done?.damaged ?? []) notes.push({ kind: "damaged", text: `group ${short(g)}: fewer than k blocks anywhere — cannot be rebuilt` });
+  const rejected = done?.rejected?.length ?? 0;
+  if (rejected) notes.push({ kind: "damaged", text: `${rejected} block${rejected === 1 ? "" : "s"} refused by the node (encoding, or a node on another contract epoch)` });
+  const pending = done?.pending ?? 0;
+  return {
+    target: a.target,
+    name: "Your data",
+    sub: "your identity's tree",
+    word,
+    notes,
+    groups: counts && !running ? `${counts.whole} · ${counts.degraded} · ${counts.damaged?.length ?? counts.damaged}` : "— · — · —",
+    last: ago(a.audited_at, nowMs),
+    lastNote: running && a.health?.word ? `last result: ${a.health.word}` : pending ? `${pending} block${pending === 1 ? "" : "s"} pending (silent) — asked again next pass` : null,
+    repair: repairWords(a.policy.repair),
+    warnBelow: a.policy.warn_below,
+    // Disabled only while a pass runs. NOT for unmeasured: running a pass is how a row learns it is (engineer2).
+    canAudit: !running,
+  };
+}
+
+function runningLine(assets, reports, rows, waiting) {
   const live = assets.map(a => [a, reports.get(a.target)]).find(([, r]) => r?.state === "running");
   const running = live && {
     target: live[0].target,
@@ -69,5 +98,5 @@ export function assetsView({ assets, reports = new Map(), labels = new Map(), wa
     of: live[1].of,
     waiting: waiting && /assets audit/.test(waiting.what) ? `node not answering the assets audit for ${Math.round(waiting.ms / 1000)} s — asked again, still waiting` : null,
   };
-  return { running: running ?? null, rows };
+  return running ?? null;
 }

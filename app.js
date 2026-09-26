@@ -742,9 +742,7 @@ render();
 
 // ---- THE ASSETS TAB (builder#164; KEEPER.md §1, §3) ----------------------------------------------------------------
 // A header button that swaps the main area for the assets view. The view reads the SDK's keep API on the session
-// handle. Until that API is in the pinned SDK, the tab runs on `assets-keep-stub.js` and SAYS so on the page -- the
-// stub is deleted in the PR that switches to the real surface (the architect's condition), and nothing it shows is
-// presented as measured.
+// handle (sdk#472). A pinned SDK without it shows THAT, and nothing else: no sample rows, nothing presented as measured.
 {
   const button = $("assets"), view = $("assets-view"), mainEl = document.querySelector("main");
   let mounted = null;
@@ -761,10 +759,12 @@ render();
     button.classList.toggle("on", on);
     if (!on) return;
     const handle = rt?.session;
-    const real = typeof handle?.keepAssets === "function";
-    const api = real ? handle : (await import("./assets-keep-stub.js")).keepStub();
+    if (typeof handle?.keepAssets !== "function") {
+      view.replaceChildren(Object.assign(document.createElement("div"), { className: "stubbed", textContent: handle ? "This SDK build has no keep API (sdk#472): nothing to show." : "Open a project first: the assets are your identity's, read through its session." }));
+      return;
+    }
     const host = document.createElement("div");
-    view.replaceChildren(...(real ? [] : [Object.assign(document.createElement("div"), { className: "stubbed", textContent: "Sample data: this SDK build has no keep API yet (the audit is engineer2's SDK step). Nothing below was measured." })]), host);
-    mounted = mountAssets(host, { api, labels });
+    view.replaceChildren(host);
+    mounted = mountAssets(host, { api: handle, labels });
   };
 }

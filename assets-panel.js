@@ -43,7 +43,7 @@ export function mountAssets(root, { api, labels = () => new Map(), now = () => D
         el("td", {}, r.last, r.lastNote && el("small", { textContent: r.lastNote })),
         el("td", {}, policySelect(r)),
         el("td", {}, warnInput(r)),
-        el("td", {}, el("button", { textContent: r.word === "auditing" ? "Auditing" : "Audit now", disabled: !r.canAudit, onclick: () => { api.keepAudit(r.target); paint(); } })),
+        el("td", {}, el("button", { textContent: r.word === "auditing" ? "Auditing" : "Audit now", disabled: !r.canAudit, onclick: () => { const a = api.keepAudit(r.target); note.textContent = a?.refused ? `Not audited: ${a.said}` : ""; paint(); } })),
       )));
     const addr = el("input", { placeholder: "Keep an app by its link (a …/v1/contract/web/… URL, or its site id)" });
     const pol = el("select", {}, POLICIES.map(([v, w]) => el("option", { value: v, textContent: w })));
