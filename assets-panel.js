@@ -45,7 +45,7 @@ export function mountAssets(root, { api, labels = () => new Map(), now = () => D
         el("td", {}, warnInput(r)),
         el("td", {}, el("button", { textContent: r.word === "auditing" ? "Auditing" : "Audit now", disabled: !r.canAudit, onclick: () => { api.keepAudit(r.target); paint(); } })),
       )));
-    const addr = el("input", { placeholder: "Keep an app or tree by its address (craftec://… or a site id)" });
+    const addr = el("input", { placeholder: "Keep an app by its link (a …/v1/contract/web/… URL, or its site id)" });
     const pol = el("select", {}, POLICIES.map(([v, w]) => el("option", { value: v, textContent: w })));
     const keep = el("button", { textContent: "Keep this", onclick: () => {
       const r = api.keepSet(addr.value.trim(), { repair: toPolicy(pol.value) });
