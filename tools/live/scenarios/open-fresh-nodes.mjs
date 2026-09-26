@@ -10,17 +10,13 @@
 // Before the openers, a READABILITY precheck (the architect's (3')): P's event log must show the app's
 // container touched at publish, and a separate node R's must show it touched by R's GET, each dated. If a
 // field is unreadable the run is REFUSED. Whether openers reach each other is a RESULT, never a gate.
-import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
-import { openFreshBrowser } from "../../../tests/page-host.mjs";
-import { ROOT } from "../runner.mjs";
+import { STEP_MS, browser, comp, publishRecording, sleep, until } from "../page.mjs";
 import { servedText } from "../../../sdk/served.js";
 import { LIMIT, touches, touchedIn } from "../eventlog.mjs";
 
-const STEP_MS = Number(process.env.LIVE_STEP_MS ?? 180_000);
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const ROWS = ["alpha", "beta"];
 // The app: a notes form and table (cold8's), its two rows written in the builder before publishing.
 const APP = {
@@ -28,32 +24,7 @@ const APP = {
   components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
   schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } },
 };
-const comp = (label, domain) => `[...document.querySelectorAll(".rt-comp")].find(s => (s.querySelector("h4")?.textContent ?? "").startsWith(${JSON.stringify(`${label} · ${domain}`)}))`;
-const addTo = (domain, t) => `const f = ${comp("Form", domain)}; const i = f?.querySelector("input[name=title]"); if (!i) return "no form"; i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event("input", { bubbles: true })); f.querySelector("button.pri").click(); return "ok";`;
 const hasRows = `const r = [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].map(td => td.textContent); return ${JSON.stringify(ROWS)}.every(t => r.includes(t)) || null;`;
-
-/** Poll `expr` (in `frame` when given) until it is truthy, for at most `ms`; null when it never was. */
-async function until(tab, expr, ms, frame = null, every = 250) {
-  const end = Date.now() + ms;
-  do {
-    const v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(() => null);
-    if (v) return v;
-    await sleep(every);
-  } while (Date.now() < end);
-  return null;
-}
-
-/** This builder tree, served by a static server of the run's own (port 0, read back); killed by pid at the end. */
-async function builderServer(ctx) {
-  const child = spawn("python3", ["-u", "-m", "http.server", "0", "--bind", "127.0.0.1"], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
-  ctx.onEnd(() => { try { process.kill(child.pid, "SIGKILL"); } catch {} });
-  const port = await new Promise((ok, bad) => {
-    let seen = "";
-    const timer = setTimeout(() => bad(new Error(`the builder's page server said no port within 10 s: ${seen.slice(-200)}`)), 10_000);
-    for (const s of [child.stdout, child.stderr]) s.on("data", d => { seen += d; const m = seen.match(/port (\d+)/); if (m) { clearTimeout(timer); ok(Number(m[1])); } });
-  });
-  return port;
-}
 
 /** The LAST answer the page got for `url`, from a requests.jsonl the wire capture wrote: `{ status, t }`. */
 function documentAnswer(requestsFile, url) {
@@ -61,13 +32,6 @@ function documentAnswer(requestsFile, url) {
   const ids = new Set(rows.filter(r => r.event === "sent" && r.url === url).map(r => `${r.target}:${r.id}`));
   const answers = rows.filter(r => r.event === "response" && ids.has(`${r.target}:${r.id}`));
   return answers.length ? { status: answers.at(-1).status, t: answers.at(-1).t } : null;
-}
-
-/** A fresh browser whose pid is killed at the end whatever happens. */
-async function browser(ctx, label) {
-  const b = await openFreshBrowser(label);
-  ctx.onEnd(() => { try { process.kill(b.pid, "SIGKILL"); } catch {} });
-  return b;
 }
 
 /** A node's touches of `address`, polled until at least one is in [from, to] (the event log is written in batches). */
@@ -150,19 +114,9 @@ export async function run(ctx) {
   // ---- publish once, from a fresh node P ----
   const P = await ctx.nodes.start("P");
   say(`NODE  P :${P.ws} ready in ${P.ready_ms} ms (dirs ${P.dir})`);
-  const port = await builderServer(ctx);
-  const pb = await browser(ctx, "live: the publisher's builder");
-  const builder = await pb.tab("builder");
-  await builder.navigate(`http://127.0.0.1:${port}/#node=${P.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)));
-  if (!(await until(builder, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 60_000))) throw new Error("the builder never showed the notes form");
-  for (const t of ROWS) { await builder.evaluate(addTo("notes", t)); await sleep(500); }
-  const tPub = Date.now();
-  await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
-  const pub = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3, null, 1000);
-  if (!pub?.address) throw new Error(`publish on P did not finish within ${(STEP_MS * 3) / 1000} s: ${await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 200) ?? null;`).catch(() => null)}`);
-  const tPubEnd = Date.now();
-  say(`PUB   published ${pub.address} from P in ${tPubEnd - tPub} ms`);
-  await pb.stop();
+  // A publish that is not BACKED_UP FAILS this run, but it was published: the opens are still measured.
+  const { pub, notBacked } = await publishRecording(ctx, P, { app: APP, rows: ROWS });
+  const tPub = pub.t0, tPubEnd = pub.t0 + pub.ms;
   const addr = pub.address;
   const appUrl = ws => `http://127.0.0.1:${ws}/v1/contract/web/${addr}/`;
   const frameOf = ws => `127.0.0.1:${ws}/v1/contract/web/${addr}/?__sandbox=1`;
@@ -275,5 +229,5 @@ export async function run(ctx) {
   const dead = arm.all.filter(s => !s.ok || !s.sdk_ran);
   say(`ARM   open: ${JSON.stringify(sum)} over ${clean.length} clean open(s) of ${arm.samples.length} in the last attempt; ${dead.length} of ${arm.all.length} open(s) across ${arm.attempts} attempt(s) FAILED${arm.verdict ? `; ${arm.verdict}` : ""}`);
   // Not a pass: any failed open in ANY attempt, or an arm that stayed contaminated (nothing was measured).
-  return { failed: dead.length > 0 || arm.contaminated || flagged503 > 0 };
+  return { failed: dead.length > 0 || arm.contaminated || flagged503 > 0 || !!notBacked };
 }
