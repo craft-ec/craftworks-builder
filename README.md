@@ -85,6 +85,7 @@ test run made *without* disagrees about whether the hashes should say `unknown`.
 
 | file | state |
 |---|---|
+| `assets-tab.png` | the REAL builder with the tab open (headless, the stub's sample data, its banner saying so): what `assets-panel.js` paints from `assets.js` |
 | `assets-tab-mock.png` | the DESIGN before code, rendered from `docs/mock/assets-tab.html` with the builder's own styles: one row per asset (whole · degraded with its warning · damaged with a refused block · auditing · unmeasured), the running pass and "not answering", policy edited in place, "Keep this" |
 
 ## Screenshots of the versions panel

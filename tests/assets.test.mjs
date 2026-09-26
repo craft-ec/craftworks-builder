@@ -60,9 +60,9 @@ await t("THE CONTROL: another request's silence is NOT the audit's (the line sho
   assert.equal(running.waiting, null);
 });
 
-await t("**unmeasured**: said as nothing asked, never as absent; no audit offered; a never-audited asset reads 'never'", () => {
+await t("**unmeasured**: said as nothing asked, never as absent; still auditable (a pass is how it learns); a never-audited asset reads 'never'", () => {
   const { rows } = assetsView({ assets: [asset("4BgcWjAqDWBNzjDg", "app", "off", 0, null)], reports: new Map([["4BgcWjAqDWBNzjDg", { state: "unmeasured" }]]), nowMs: NOW });
-  assert.deepEqual({ word: rows[0].word, last: rows[0].last, canAudit: rows[0].canAudit, repair: rows[0].repair }, { word: "unmeasured", last: "never", canAudit: false, repair: "off (watch only)" });
+  assert.deepEqual({ word: rows[0].word, last: rows[0].last, canAudit: rows[0].canAudit, repair: rows[0].repair }, { word: "unmeasured", last: "never", canAudit: true, repair: "off (watch only)" });
   assert.match(rows[0].notes[0].text, /nothing was asked, nothing assumed missing/);
 });
 
