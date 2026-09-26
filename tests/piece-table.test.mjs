@@ -53,12 +53,16 @@ await t("only web paths count, and only this window's; an empty window says so",
   assert.equal(piecesOf(lines, 3).t0, null, "an empty window was not empty");
 });
 
-await t("**realnet captures A's HTTP requests by default, windowed** (every run carries the table)", async () => {
+await t("**realnet captures EVERY browser's HTTP requests by default, windowed (A and V), one loop** (every run carries the tables)", async () => {
   const { readFileSync } = await import("node:fs");
   const demo = readFileSync(new URL("../tools/realnet-demo.mjs", import.meta.url), "utf8");
   const wire = readFileSync(new URL("../tools/wire-capture.mjs", import.meta.url), "utf8");
-  assert.match(demo, /captureWire\(visBrowser\.debug, \{[^}]*requests: join\(WIRE_DIR, "requests-A\.jsonl"\)/, "A's capture does not record its HTTP requests");
-  assert.match(demo, /PIECES  A, step/, "the run prints no per-piece line");
+  // EVERY captured browser records its requests (A's and V's: #451's gate is steps 9 and 12), and the table is one loop.
+  const caps = [...demo.matchAll(/captureWire\((\w+)\.debug, \{([^}]*)\}/g)];
+  assert.ok(caps.length >= 2, `THE CONTROL: the scan found ${caps.length} captures`);
+  for (const [, browser, opts] of caps) assert.match(opts, /requests: join\(WIRE_DIR, "requests-\w+\.jsonl"\)/, `${browser}'s capture does not record its HTTP requests`);
+  assert.match(demo, /for \(const wire of wires\.filter\(w => w\.requests\)\)/, "the per-piece table is not one loop over the captured browsers");
+  assert.match(demo, /PIECES  \$\{wire\.label\}, step/, "the run prints no per-piece line per browser");
   assert.match(wire, /appendFileSync\(requests, JSON\.stringify\(\{ t: Date\.now\(\), window: windowOf\(\)/, "a request line carries no step window");
 });
 
