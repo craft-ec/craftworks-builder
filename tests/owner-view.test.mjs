@@ -62,7 +62,7 @@ function viewOf(db) {
  * for `signsFor` (null: none), holding `own` as that identity's tree; the
  * app's tree is `pub`. Records what was opened.
  */
-async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
+async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }, { traces = true } = {}) {
   const pub = await appDb();
   const own = signsFor === HEAD ? pub : await emptyDb();
   const opens = [];
@@ -80,6 +80,7 @@ async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
           db: own,
           canWrite: head => ({ answer: head === "" || head === signsFor ? "yes" : "no", why: "" }),
           openOwn: async () => { opens.push("openOwn"); return ownAnswer; },
+          ...(traces ? { pageTrace: () => "the ASKED page's dump" } : {}),
           // THE SDK's PUBLISHED-VERSION FLOOR (craftworks-sdk#354), as its reader
           // keeps it: the node holds the app's head at NODE_SEQ; asked for a
           // newer one, every read WAITS (never an older answer) and
@@ -89,7 +90,7 @@ async function nodeSdk(signsFor, ownAnswer = { answer: "yes", why: "" }) {
             if (head !== HEAD) return { db: null };
             const below = seq > NODE_SEQ;
             const waiting = new Proxy(pub, { get: (d, k) => (typeof d[k] === "function" ? () => new Promise(() => {}) : d[k]) });
-            return { db: below ? waiting : viewOf(pub), waitingFor: () => (below ? `waiting for the published version (seq ${seq}); the node answered seq ${NODE_SEQ} (1 times)` : "") };
+            return { db: below ? waiting : viewOf(pub), waitingFor: () => (below ? `waiting for the published version (seq ${seq}); the node answered seq ${NODE_SEQ} (1 times)` : ""), ...(traces ? { pageTrace: () => "the TREE's page's dump" } : {}) };
           },
         };
       },
@@ -180,6 +181,18 @@ await t("the app owner's own node reads its own tree (that version or newer): it
   const opened = await openPublished(n.sdk, { ...ARGS, seq: NODE_SEQ + 4, ownData: false });
   assert.strictEqual(opened.waitingFor(), "");
   assert.strictEqual(opened.backends.publisher, n.pub);
+});
+
+// THE OPENER'S TWO PAGES, TWO READERS (builder#160): a visitor's reads run on the TREE's own page, so its dump is the
+// tree's, never the asked page's; an owner has no view page; an SDK without a reader is said by name.
+await t("**a visitor's page recordings are TWO: the asked page's and the tree's own -- an owner's view is said, an old SDK named**", async () => {
+  const visitor = await openPublished((await nodeSdk(null)).sdk, { ...ARGS, ownData: false });
+  assert.deepStrictEqual(visitor.pageTrace(), { asked: "the ASKED page's dump", view: "the TREE's page's dump" }, "a visitor's reads were not recorded from the tree's own page");
+  const owner = await openPublished((await nodeSdk(HEAD)).sdk, { ...ARGS, ownData: false });
+  assert.strictEqual(owner.pageTrace().asked, "the ASKED page's dump");
+  assert.match(owner.pageTrace().view, /^\(none: this node holds the key/, "an owner's missing view page was not said");
+  const old = await openPublished((await nodeSdk(null, undefined, { traces: false })).sdk, { ...ARGS, ownData: false });
+  assert.deepStrictEqual(old.pageTrace(), { asked: "(this SDK's session handle has no pageTrace(): craftworks-sdk#434)", view: "(this SDK's tree has no pageTrace(): builder#160)" });
 });
 
 if (failures) { process.stdout.write(`${failures} failing\n`); process.exit(1); }

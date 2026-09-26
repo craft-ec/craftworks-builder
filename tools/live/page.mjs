@@ -42,15 +42,21 @@ export async function browser(ctx, label) {
   return b;
 }
 
+/** The builder page's recording: its session handle's `pageTrace()` (craftworks-sdk#434). */
+export const BUILDER_TRACE = `const s = globalThis.__craftworks?.session; if (!s) return "(no session on this page)"; return typeof s.pageTrace === "function" ? s.pageTrace() : "(this SDK's session handle has no pageTrace(): sdk#434)";`;
+/** An OPENED app's recordings, in its frame: the loader's read-only seam (builder#160), one string, both pages. */
+export const OPENER_TRACE = `const o = globalThis.__craftworksOpen; if (!o) return "(no app loader in this frame)"; return typeof o.pageTrace === "function" ? o.pageTrace() : "(this app's loader has no pageTrace(): builder#160)";`;
+
 /**
  * THE PAGE'S RECORDING, read into the run's evidence (sdk#434): the session handle's `pageTrace()` -- each op by send
  * order, how it ENDED (Response, Timeout, Withdrawn) and its retry clock -- written whole to `<logs>/page-trace.txt`,
- * and its counts line said. An SDK whose handle has no `pageTrace()` is SAID, never skipped silently.
+ * and its counts line said. An SDK whose handle has no `pageTrace()` is SAID, never skipped silently. `frame` and `read`:
+ * an OPENED app's recordings are read in its frame through the loader's seam (`OPENER_TRACE`, builder#160).
  */
-export async function recordPageTrace(ctx, tab, label, when) {
+export async function recordPageTrace(ctx, tab, label, when, { frame = null, read = BUILDER_TRACE } = {}) {
   const dir = ctx.logsOf(label);
   ctx.fs.mkdirSync(dir, { recursive: true });
-  const dump = await tab.evaluate(`const s = globalThis.__craftworks?.session; if (!s) return "(no session on this page)"; return typeof s.pageTrace === "function" ? s.pageTrace() : "(this SDK's session handle has no pageTrace(): sdk#434)";`).catch(e => `(unreadable: ${e.message})`);
+  const dump = await (frame ? tab.evaluateIn(frame, read) : tab.evaluate(read)).catch(e => `(unreadable: ${e.message})`);
   ctx.fs.appendFileSync(join(dir, "page-trace.txt"), `==== ${when} ${new Date().toISOString()}\n${dump}\n`);
   const counts = String(dump).split("\n").filter(l => /OUTSTANDING|outcome /.test(l)).map(l => l.trim()).join("; ");
   ctx.say(`TRACE ${label} ${when}: ${counts || String(dump).slice(0, 200)} (whole: ${join(dir, "page-trace.txt")})`);

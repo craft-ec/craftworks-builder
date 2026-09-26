@@ -115,6 +115,20 @@ try {
     ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
   });
   mark("opened");
+  // THE OPENER'S PAGE RECORDINGS (builder#160): `__craftworksOpen.pageTrace()` returns ONE STRING, the dump of each
+  // page this open runs (`== asked`, `== view`; `openPublished`), read when asked. READ-ONLY by type: a string is all
+  // that leaves, so no session, db or handle is reachable from it. Not enumerable, so the phase stamps above stay
+  // plain data for whoever reads them by value. STATED PROPERTY: it lives in the APP's frame, so the published app's
+  // own code can call it too -- acceptable because the recording is vocabulary only (sites, send-order labels and
+  // numbers, no user content: the instrument's rule, OBSERVABILITY §2). Anything publishable added to what the page
+  // records must pass the publish filter's review first.
+  Object.defineProperty(phases, "pageTrace", {
+    enumerable: false,
+    value: () => {
+      const p = opened.pageTrace();
+      return `== asked\n${p.asked}\n== view\n${p.view}\n`;
+    },
+  });
 
   // 4. Repair, in the background: a piece this load asked and did not get is
   // PUT back. Never in the way of the app, and a refusal is only logged.

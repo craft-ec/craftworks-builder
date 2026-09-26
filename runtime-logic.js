@@ -208,5 +208,15 @@ export async function openPublished(sdk, { head, seq = 0, app, port, artefacts, 
     headId: () => (ownsApp ? asked.headId?.() : view.headId?.()) ?? "",
     canWrite: source => asked.canWrite(source === "mine" ? "" : head),
     why: ownsApp ? "this node holds the key to the app's data" : asked.why ?? "another person's node",
+    // THE OPENER'S PAGE RECORDINGS (builder#160), one per page, each its own page's reader -- never a merged copy:
+    // `asked`, the asked session's page (the signer asked, the user's own tree); `view`, the TREE's own page (a
+    // visitor's reads of the app's data run there, not on the asked page). Read when asked; an SDK without the
+    // reader, or an owner (no view: its reads run on the asked page), is said by name.
+    pageTrace: () => ({
+      asked: typeof asked.pageTrace === "function" ? asked.pageTrace() : "(this SDK's session handle has no pageTrace(): craftworks-sdk#434)",
+      view: ownsApp
+        ? "(none: this node holds the key to the app's data, so its reads run on the asked page)"
+        : typeof view.pageTrace === "function" ? view.pageTrace() : "(this SDK's tree has no pageTrace(): builder#160)",
+    }),
   };
 }

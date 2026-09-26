@@ -13,7 +13,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { captureWire } from "../../wire-capture.mjs";
-import { STEP_MS, browser, comp, publishRecording, sleep, until } from "../page.mjs";
+import { OPENER_TRACE, STEP_MS, browser, comp, publishRecording, recordPageTrace, sleep, until } from "../page.mjs";
 import { servedText } from "../../../sdk/served.js";
 import { LIMIT, touches, touchedIn } from "../eventlog.mjs";
 
@@ -173,6 +173,8 @@ export async function run(ctx) {
     const rows = await until(tab, hasRows, STEP_MS, frameOf(O.ws), 250);
     const t1 = Date.now();
     const stamps = await tab.evaluateIn(frameOf(O.ws), `return globalThis.__craftworksOpen ?? null;`).catch(() => null);
+    // The opener's page recordings (builder#160), whole, beside its wire.jsonl: read in the APP's frame.
+    await recordPageTrace(ctx, tab, name, rows ? "rows" : "no rows", { frame: frameOf(O.ws), read: OPENER_TRACE });
     // A dead open says what the page SHOWED (the node's own error page, when that is what came back).
     const shown = rows ? null : await tab.evaluate(`return document.body?.innerText?.slice(0, 300) ?? null;`).catch(e => `(unreadable: ${e.message})`);
     // Where the tab ENDED UP: the node's recovery page sends a top-level tab to its dashboard `/`.
