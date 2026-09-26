@@ -435,7 +435,7 @@ async function loseSteps(url, frameOf) {
         const shown = await tab.evaluateIn(frameOf(port), titles("bulk")).catch(() => []);
         // WHAT THE READER NAMES about it: the SDK's damaged() (sdk#524) on the app frame's engine handle -- `null` when
         // the SDK names nothing (no such surface yet), else its `[{block, j, k, health, why}]`.
-        const named = await tab.evaluateIn(frameOf(port), `const d = globalThis.__craftworks?.db?.damaged; return typeof d === "function" ? d() : null;`).catch(() => null);
+        const named = await tab.evaluateIn(frameOf(port), `const d = globalThis.__craftworks?.db?.damaged; return typeof d === "function" ? d() : null;`).catch(e => ({ error: e.message }));
         const ev = evidence(arm.file);
         const read = BULK.filter(r => (shown ?? []).includes(r)).length;
         if (!arm.group(ev)) { step(false, `LOSE ${arm.name}: ws-lose chose ${ev.chosen ? `a ${ev.chosen.group} group of k = ${ev.chosen.k}` : "no group"}, not ${arm.which}: a harness failure, not a data result`, summary(ev)); continue; }
@@ -443,7 +443,8 @@ async function loseSteps(url, frameOf) {
         // The rows are not read and the reader is STILL asking at the end of the watch (an OBSERVATION of rule 8's
         // wait, not an end). PINNED: nothing NAMES the wait -- `named` is empty (known defect, flipped by sdk#524: the
         // flip inverts only `unnamed` to the bulk group named DAMAGED with j < k).
-        const unnamed = !Array.isArray(named) || named.length === 0;
+        // Exactly "the call ANSWERED nothing" (null: no surface; []: none): an evaluation error is not an answer.
+        const unnamed = named === null || (Array.isArray(named) && named.length === 0);
         step(read < BULK.length && ev.notFound > half.notFound && unnamed,
           `THE CONTROL: V's node answers NotFound for ${ev.chosen.lost.length} block(s) of ${arm.which} (ws-lose, m + 1): ${read} of ${BULK.length} bulk rows read in ${WATCH_MS / 1000} s, and the reader is still asking (${half.notFound} -> ${ev.notFound} NotFound answers over the last ${WATCH_MS / 2000} s). PINNED: the wait is not yet named (sdk#524)`,
           { ...summary(ev), read, notFoundAtHalf: half.notFound, named });
