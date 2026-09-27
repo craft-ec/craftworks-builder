@@ -41,7 +41,7 @@ try {
     window.calls = 0;
     window.cancels = 0;
     // The SDK's two lists, as sdk.status gives their words (the pinned build's own lists are read in the app).
-    const words = { repairOutcome: ["healthy", "repaired", "partial", "damaged", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
+    const words = { repairOutcome: ["repaired", "partial", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
     const repair = () => { window.calls += 1; return { done: new Promise(ok => { window.answer = ok; }), cancel: () => { window.cancels += 1; } }; };
     mountAssets(host, { repair, words, tree: () => ({ name: "Notes", address: "register " + "ab".repeat(32) }) });
     return true;`);
@@ -67,7 +67,7 @@ try {
     assert.equal(r.cancel, true, "no Cancel while a pass runs");
   });
   await t("**a report with a group given up: DAMAGED, naming the group and why**", async () => {
-    await evaluate(`window.answer({ rows: 40, outcome: "damaged", missing: 6, putBack: 3, rejected: 0, givenUp: 1, parityMismatched: 0, pending: 0, damaged: [{ block: "cd".repeat(32), present: 2, k: 4, health: "damaged" }], why: "2 of 4 blocks left" }); return true;`);
+    await evaluate(`window.answer({ rows: 40, outcome: "damaged", outcomeList: "groupHealth", missing: 6, putBack: 3, rejected: 0, givenUp: 1, parityMismatched: 0, pending: 0, damaged: [{ block: "cd".repeat(32), present: 2, k: 4, health: "damaged" }], why: "2 of 4 blocks left" }); return true;`);
     await until(`document.querySelector("tr[data-health]").dataset.health === "damaged"`, "damaged");
     const r = await row();
     assert.match(r.text, /1 group could not be rebuilt: 2 of 4 blocks left/);
@@ -79,7 +79,7 @@ try {
   await t("**a second pass that put every missing block back: REPAIRED**", async () => {
     await evaluate(`document.getElementById("repair-now").click(); return true;`);
     await until(`document.querySelector("tr[data-health]").dataset.health === "repairing"`, "repairing again");
-    await evaluate(`window.answer({ rows: 40, outcome: "repaired", missing: 3, putBack: 3, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
+    await evaluate(`window.answer({ rows: 40, outcome: "repaired", outcomeList: "repairOutcome", missing: 3, putBack: 3, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
     await until(`document.querySelector("tr[data-health]").dataset.health === "repaired"`, "repaired");
     const r = await row();
     assert.match(r.text, /40 rows · 3 missing · 3 put back/);
@@ -93,7 +93,7 @@ try {
     let r = await row();
     assert.equal(r.cancels, 1);
     assert.equal(r.cancel, false, "Cancel could be asked twice");
-    await evaluate(`window.answer({ rows: 12, outcome: "cancelled", missing: 1, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 1, damaged: [], why: null }); return true;`);
+    await evaluate(`window.answer({ rows: 12, outcome: "cancelled", outcomeList: "repairOutcome", missing: 1, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 1, damaged: [], why: null }); return true;`);
     await until(`document.querySelector("tr[data-health]").dataset.health === "cancelled"`, "cancelled");
     r = await row();
     assert.match(r.text, /12 rows · 1 missing · 0 put back/);
@@ -101,9 +101,35 @@ try {
   await t("**a word the SDK does not define is said as a failure, never painted as a health word**", async () => {
     await evaluate(`document.getElementById("repair-now").click(); return true;`);
     await until(`document.querySelector("tr[data-health]").dataset.health === "repairing"`, "repairing");
-    await evaluate(`window.answer({ rows: 1, outcome: "fine", missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
-    await until(`/not a word of status.repairOutcome/.test(document.querySelector("tr[data-health]").innerText)`, "refused word");
+    await evaluate(`window.answer({ rows: 1, outcome: "fine", outcomeList: "repairOutcome", missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
+    await until(`/not a word of status\.repairOutcome/.test(document.querySelector("tr[data-health]").innerText)`, "refused word");
     assert.equal((await row()).health, "not checked");
+  });
+  await t("**THE DEMO'S ORDER: the tab OPENS with a check (nothing put back) -> DEGRADED with the missing count -> Repair now -> REPAIRED**", async () => {
+    await evaluate(`
+      const { mountAssets } = await import("/assets-panel.js");
+      const host = document.createElement("div");
+      document.body.replaceChildren(host);
+      window.checks = 0; window.calls = 0;
+      const words = { repairOutcome: ["repaired", "partial", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
+      const check = () => { window.checks += 1; return { done: new Promise(ok => { window.answer = ok; }), cancel: () => {} }; };
+      const repair = () => { window.calls += 1; return { done: new Promise(ok => { window.answer = ok; }), cancel: () => {} }; };
+      mountAssets(host, { repair, check, words, tree: () => ({ name: "Notes", address: "register " + "ab".repeat(32) }) });
+      return true;`);
+    await until(`document.querySelector("tr[data-health]").dataset.health === "checking"`, "checking on open");
+    assert.equal(await evaluate("return window.checks"), 1, "the tab did not check on open");
+    await evaluate(`window.answer({ rows: 40, outcome: "degraded", outcomeList: "groupHealth", missing: 7, putBack: 0, reput: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
+    await until(`document.querySelector("tr[data-health]").dataset.health === "degraded"`, "degraded");
+    let text = await evaluate(`return document.querySelector("tr[data-health]").innerText`);
+    assert.match(text, /7 blocks missing from your node — Repair now rebuilds them from parity/);
+    assert.match(text, /40 rows · 7 missing/);
+    assert.equal(await evaluate("return window.calls"), 0, "the check repaired something");
+    await evaluate(`document.getElementById("repair-now").click(); return true;`);
+    await until(`document.querySelector("tr[data-health]").dataset.health === "repairing"`, "repairing");
+    await evaluate(`window.answer({ rows: 40, outcome: "repaired", outcomeList: "repairOutcome", missing: 7, putBack: 7, reput: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null }); return true;`);
+    await until(`document.querySelector("tr[data-health]").dataset.health === "repaired"`, "repaired");
+    text = await evaluate(`return document.querySelector("tr[data-health]").innerText`);
+    assert.match(text, /40 rows · 7 missing · 7 put back/);
   });
   await t("**a pass that throws is said, and is not a health word**", async () => {
     await evaluate(`document.getElementById("repair-now").click(); return true;`);

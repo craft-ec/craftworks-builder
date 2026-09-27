@@ -20,16 +20,17 @@ const clock = ms => new Date(ms).toLocaleTimeString();
  *   `tree()`: `{ name, address }` of the tree the pass reads.
  * Returns `{ refresh }`.
  */
-export function mountAssets(root, { repair, words, tree, now = () => Date.now() }) {
+export function mountAssets(root, { repair, check = null, words, tree, now = () => Date.now() }) {
   let state = { phase: "never" };
   let pass = null, ticker = null;
-  const start = async () => {
-    state = { phase: "running", since: now() };
+  // `checking`: the CHECK (nothing put back) the tab runs when it opens; else Repair now's pass.
+  const start = async ({ checking = false } = {}) => {
+    state = { phase: "running", since: now(), checking };
     ticker = setInterval(paint, 1_000);
     paint();
     try {
-      pass = repair();
-      state = { phase: "done", report: await pass.done, at: now() };
+      pass = checking ? check() : repair();
+      state = { phase: "done", report: await pass.done, at: now(), checked: checking };
     } catch (e) {
       state = { phase: "failed", error: e?.message ?? String(e), at: now() };
     } finally {
@@ -61,17 +62,19 @@ export function mountAssets(root, { repair, words, tree, now = () => Date.now() 
         el("tr", { dataset: { health: row.word } },
           el("td", {}, el("span", { className: "name", textContent: row.name }), row.address && el("small", {}, el("code", { textContent: row.address }))),
           el("td", {},
-            el("span", { className: `h ${row.word.split(" ")[0]}`, textContent: row.word }),
+            el("span", { className: `h ${row.word.split(" ")[0].toLowerCase()}`, textContent: row.word }),
             row.notes.map(n => el("div", { className: n.kind === "damaged" ? "dmg" : n.kind === "warn" ? "warn" : "mute", textContent: n.text })),
             row.damaged.map(g => el("div", { className: "dmg" }, el("code", { textContent: g.block }), ` ${g.health}: ${g.text}`))),
           el("td", {}, row.last ? clock(row.last) : "—", row.counts && el("small", { className: "g", textContent: row.counts })),
           el("td", {},
-            el("button", { id: "repair-now", textContent: row.canRepair ? "Repair now" : "Repairing…", disabled: !row.canRepair, onclick: start }),
+            el("button", { id: "repair-now", textContent: row.canRepair ? "Repair now" : state.checking ? "Checking…" : "Repairing…", disabled: !row.canRepair, onclick: () => start() }),
             row.canCancel && el("button", { id: "repair-cancel", textContent: "Cancel", onclick: cancel })),
         ),
       ),
     );
   }
   paint();
+  // The tab's first look: a CHECK of the tree (nothing put back), so the loss shows before any repair.
+  if (check) start({ checking: true });
   return { refresh: paint };
 }

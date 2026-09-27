@@ -9,23 +9,33 @@ const t = (name, fn) => {
   catch (e) { failures += 1; process.stdout.write(`  FAIL ${name}\n    ${e.stack}\n`); }
 };
 // The SDK's lists as the pinned SDK exports them (a test of the pinned build checks these against sdk.status).
-const words = { repairOutcome: ["healthy", "repaired", "partial", "damaged", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
-const report = over => ({ rows: 100, outcome: "healthy", missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null, ...over });
+const words = { repairOutcome: ["repaired", "partial", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
+const report = over => ({ rows: 100, outcome: "whole", outcomeList: "groupHealth", missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null, ...over });
 const done = r => treeRow({ name: "t", address: "a", state: { phase: "done", report: r, at: 1 }, words, nowMs: 2 });
 
-t("**the word IS the report's outcome, whatever the counts say: the tab derives nothing**", () => {
-  for (const outcome of words.repairOutcome) assert.equal(done(report({ outcome })).word, outcome);
+t("**the word IS the report's outcome, from the list the report names, whatever the counts say: the tab derives nothing**", () => {
+  for (const [list, ws] of Object.entries(words)) for (const outcome of ws) assert.equal(done(report({ outcome, outcomeList: list })).word, outcome);
   // THE CONTROL: counts that would read "repaired" do not overrule the SDK's word.
-  assert.equal(done(report({ outcome: "damaged", missing: 3, putBack: 3 })).word, "damaged");
+  assert.equal(done(report({ outcome: "damaged", outcomeList: "groupHealth", missing: 3, putBack: 3 })).word, "damaged");
+});
+
+t("**a CHECK (checkAll) says DEGRADED with the missing count, and that Repair now rebuilds them; nothing put back is claimed**", () => {
+  const r = treeRow({ name: "t", address: "a", state: { phase: "done", report: report({ outcome: "degraded", missing: 7 }), at: 1, checked: true }, words, nowMs: 2 });
+  assert.equal(r.word, "degraded");
+  assert.equal(r.counts, "100 rows · 7 missing", "a check claimed a put-back count");
+  assert.ok(r.notes.some(n => /7 blocks missing from your node — Repair now rebuilds them from parity/.test(n.text)));
 });
 
 t("**a word the SDK does not define is refused, never painted (outcome and a group's health)**", () => {
-  assert.throws(() => done(report({ outcome: "fine" })), /not a word of status.repairOutcome/);
-  assert.throws(() => done(report({ outcome: "damaged", damaged: [{ block: "b".repeat(64), present: 2, k: 4, health: "broken" }] })), /not a word of status.groupHealth/);
+  assert.throws(() => done(report({ outcome: "fine" })), /not a word of status.groupHealth/);
+  assert.throws(() => done(report({ outcome: "repaired", outcomeList: "vibes" })), /not one of the SDK's/);
+  // A word from the OTHER list is refused too: the report says which list, and the tab checks that one.
+  assert.throws(() => done(report({ outcome: "repaired", outcomeList: "groupHealth" })), /not a word of status.groupHealth/);
+  assert.throws(() => done(report({ outcome: "damaged", outcomeList: "groupHealth", damaged: [{ block: "b".repeat(64), present: 2, k: 4, health: "broken" }] })), /not a word of status.groupHealth/);
 });
 
 t("**a DAMAGED report lists each group with its SDK health word and what was found; given-up and refused are said**", () => {
-  const r = done(report({ outcome: "damaged", missing: 5, putBack: 2, rejected: 1, givenUp: 1, why: "2 of 4 blocks left", damaged: [{ block: "ab".repeat(32), present: 2, k: 4, health: "damaged" }] }));
+  const r = done(report({ outcome: "damaged", outcomeList: "groupHealth", missing: 5, putBack: 2, rejected: 1, givenUp: 1, why: "2 of 4 blocks left", damaged: [{ block: "ab".repeat(32), present: 2, k: 4, health: "damaged" }] }));
   assert.deepEqual(r.damaged, [{ block: "abababababab…", health: "damaged", text: "2 of 4 blocks found" }]);
   assert.ok(r.notes.some(n => /1 group could not be rebuilt: 2 of 4 blocks left/.test(n.text)));
   assert.ok(r.notes.some(n => /1 rebuilt block refused by the node/.test(n.text)));
@@ -33,7 +43,7 @@ t("**a DAMAGED report lists each group with its SDK health word and what was fou
 });
 
 t("**pending put-backs and parity that re-encodes to another id are said, never hidden**", () => {
-  const r = done(report({ outcome: "partial", missing: 3, putBack: 1, pending: 1, parityMismatched: 1 }));
+  const r = done(report({ outcome: "partial", outcomeList: "repairOutcome", missing: 3, putBack: 1, pending: 1, parityMismatched: 1 }));
   assert.ok(r.notes.some(n => /1 put-back not answered yet/.test(n.text)));
   assert.ok(r.notes.some(n => /1 parity block re-encoded to a different id/.test(n.text)));
 });
@@ -56,7 +66,7 @@ t("**before a report: not checked; running: Repair off and Cancel on, until a ca
 const handleWith = () => {
   const calls = { repairAll: 0, cancel: 0, closed: 0 };
   let open;
-  const tree = { db: { repairAll: async () => { calls.repairAll += 1; return report({ outcome: "healthy" }); }, repairAllCancel: () => { calls.cancel += 1; } }, close: () => { calls.closed += 1; } };
+  const tree = { db: { repairAll: async () => { calls.repairAll += 1; return report({ outcome: "whole" }); }, repairAllCancel: () => { calls.cancel += 1; } }, close: () => { calls.closed += 1; } };
   return { calls, open: () => open(tree), handle: { headId: () => "ab".repeat(32), headSeq: () => 1, tree: () => new Promise(ok => { open = ok; }) } };
 };
 
@@ -75,7 +85,7 @@ await (async () => {
     const h2 = handleWith();
     const p2 = repairPass(h2.handle, { cancelled: "cancelled" });
     h2.open();
-    assert.equal((await p2.done).outcome, "healthy");
+    assert.equal((await p2.done).outcome, "whole");
     assert.deepEqual([h2.calls.repairAll, h2.calls.closed], [1, 1]);
     process.stdout.write(`  ok  ${name}\n`);
   } catch (e) { failures += 1; process.stdout.write(`  FAIL ${name}\n    ${e.stack}\n`); }

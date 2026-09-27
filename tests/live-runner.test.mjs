@@ -168,7 +168,7 @@ await t("**an unreadable header field REFUSES the run before anything starts (ex
 await t("**a box busy for the whole wait is NOT RUN (exit 3), and says how long it waited and at what load**", () => {
   const r = spawnSync(process.execPath, [runner, "stub", "--wait-min", "0"], { encoding: "utf8", env: runEnv({ LIVE_LOAD: "40" }), timeout: 60_000 });
   assert.equal(r.status, 3, r.stdout + r.stderr);
-  assert.match(r.stdout, /NOT RUN {2}box busy: 1-min load 40 on 14 cores after waiting \d+ s/);
+  assert.match(r.stdout, /NOT RUN {2}box busy \(--gate load\): 1-min load 40 on 14 cores, CPU \S+% idle, after waiting \d+ s/);
   assert.doesNotMatch(r.stdout, /NODE-DIR/, "a node was started on a busy box");
 });
 

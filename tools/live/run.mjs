@@ -9,16 +9,16 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as eventlog from "./eventlog.mjs";
-import { Nodes, Refused, ROOT, Samples, defaultReaders, header, loadGate, machine, resolvable, runArm, runDir, sdkRan, summarize } from "./runner.mjs";
+import { Nodes, Refused, ROOT, Samples, cpuIdle, defaultReaders, header, loadGate, machine, resolvable, runArm, runDir, sdkRan, summarize } from "./runner.mjs";
 
 const argv = process.argv.slice(2);
 const scenario = argv[0];
 const opt = (name, dflt) => { const i = argv.indexOf(`--${name}`); return i > 0 ? Number(argv[i + 1]) : dflt; };
 if (!scenario || scenario.startsWith("--")) {
-  console.log("usage: tools/live.sh <scenario> [--repeats R] [--nodes N] [--budget-min M] [--wait-min W]");
+  console.log("usage: tools/live.sh <scenario> [--repeats R] [--nodes N] [--budget-min M] [--wait-min W] [--gate load|idle|none]");
   process.exit(2);
 }
-const args = { repeats: opt("repeats", 3), nodes: opt("nodes", 4), budgetMin: opt("budget-min", 30), waitMin: opt("wait-min", 20) };
+const args = { repeats: opt("repeats", 3), nodes: opt("nodes", 4), budgetMin: opt("budget-min", 30), waitMin: opt("wait-min", 20), gate: (() => { const i = process.argv.indexOf("--gate"); return i > 0 ? process.argv[i + 1] : "load"; })() };
 
 let dir;
 const lines = [];
@@ -40,12 +40,12 @@ say(`HEAD  builder ${head.builder.slice(0, 12)}${head.builder_dirty ? ` (+${head
 say(`HEAD  machine ${JSON.stringify(head.machine)}; co-tenants (recorded, not refused) ${JSON.stringify(head.co_tenants)}`);
 
 // THE LOAD GATE: below the core count, or wait for it with a budget -- and say so either way.
-const gate = await loadGate({ waitS: args.waitMin * 60, pollS: Number(process.env.LIVE_POLL_S ?? 15), read: process.env.LIVE_READERS ? () => head.machine : machine });
+const gate = await loadGate({ waitS: args.waitMin * 60, pollS: Number(process.env.LIVE_POLL_S ?? 15), read: process.env.LIVE_READERS ? () => head.machine : machine, mode: args.gate });
 if (!gate.ok) {
-  say(`NOT RUN  box busy: 1-min load ${gate.load1} on ${gate.cores} cores after waiting ${gate.waited_s} s (the run starts only below the core count)`);
+  say(`NOT RUN  box busy (--gate ${gate.mode}): 1-min load ${gate.load1} on ${gate.cores} cores, CPU ${gate.cpu_idle_pct}% idle, after waiting ${gate.waited_s} s`);
   process.exit(3);
 }
-say(`LOAD  ${gate.load1} on ${gate.cores} cores${gate.waited_s ? ` after waiting ${gate.waited_s} s` : ""}`);
+say(`LOAD  ${gate.load1} on ${gate.cores} cores, CPU ${gate.cpu_idle_pct}% idle${gate.waited_s ? ` after waiting ${gate.waited_s} s` : ""}${gate.mode === "none" ? " -- the gate SKIPPED (--gate none): a slow step here is explained by these numbers" : ` (--gate ${gate.mode})`}`);
 
 const t0 = Date.now();
 const budgetLeftMs = () => t0 + args.budgetMin * 60_000 - Date.now();
@@ -60,7 +60,7 @@ const finish = (failed, how) => {
   ended = true;
   for (const fn of ends.splice(0).reverse()) { try { fn(); } catch (e) { say(`END   a scenario's clean-up failed: ${e.message}`); } }
   for (const l of nodes.end(failed).lines) say(`NODE  ${l}`);
-  say(`${how} after ${samples.n} sample(s), ${Math.round((Date.now() - t0) / 1000)} s; results in ${dir}`);
+  say(`${how} after ${samples.n} sample(s), ${Math.round((Date.now() - t0) / 1000)} s (CPU ${cpuIdle()}% idle at the end); results in ${dir}`);
 };
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
   process.on(sig, () => { finish(true, `INTERRUPTED (${sig})`); process.exit(code); });

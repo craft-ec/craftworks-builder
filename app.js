@@ -829,10 +829,12 @@ render();
     if (!handle?.headId?.()) return say("Publish this project first: repair reads its tree from your node.");
     if (!sdkReady?.status?.repairOutcome) return say("This SDK build has no repairAll(): nothing to show.");
     const repair = () => repairPass(handle, { cancelled: sdkReady.status.repairOutcome.CANCELLED });
+    const check = () => repairPass(handle, { cancelled: sdkReady.status.repairOutcome.CANCELLED, putBack: false });
     const host = document.createElement("div");
     view.replaceChildren(host);
     mountAssets(host, {
       repair,
+      check,
       words: { repairOutcome: Object.values(sdkReady.status.repairOutcome), groupHealth: Object.values(sdkReady.status.groupHealth) },
       tree: () => ({ name: app.name || "Your data", address: `register ${handle.headId()}` }),
     });
