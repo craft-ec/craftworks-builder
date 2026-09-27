@@ -348,7 +348,9 @@ await t("an app that NAMES a reserved `craftworks.` domain is refused in the SDK
   for (const name of ["craftworks.published", "craftworks.app", "craftworks.draft"]) {
     const bad = { ...app, components: [...app.components, { type: "table", domain: name, mode: "owned" }],
       schemas: { ...app.schemas, [name]: SCHEMA } };
-    await assert.rejects(run(await preview(), new sdk.Db(), { app: bad, schemas: schemasOf(bad) }),
+    // No Preview (the app's seed): the publish reaches the TARGET's define, where the SDK's rule refuses it. (A
+    // Preview of such an app could not even be opened: its in-tab Db refuses the same define.)
+    await assert.rejects(run(null, new sdk.Db(), { app: bad, schemas: schemasOf(bad) }),
       new RegExp(`\`${name.replace(".", "\\.")}\` is under the reserved \`craftworks\\.\` prefix`), name);
   }
 });
