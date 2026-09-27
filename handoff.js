@@ -55,7 +55,7 @@ import { sameRows } from "./sdk/engine-db.js";
 // WHAT A ROW STATE MEANS is the SDK's (`RowState`, one owner): never a
 // literal here. `=== "CLEAN"` stalled every publish once the SDK reported
 // `BACKED_UP` for a row saved and backed up.
-import { row_saved as rowSaved } from "./sdk/craftworks_sdk.js";
+import { row_saved as rowSaved, row_lost as rowLost } from "./sdk/craftworks_sdk.js";
 
 // Pure: both databases are passed in, so every path is testable without a
 // page or a node (tests/handoff.test.mjs, tests/handoff-across-runtimes.test.mjs).
@@ -199,59 +199,57 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
     plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
   }
 
-  // ONE LOOP: room (builder#94). The target holds a bounded number of writes
-  // it has not had confirmed — the SDK's copy refuses the next one `NO_ROOM`,
-  // retryable, by name (sdk#180). A publish larger than that is not a
-  // failure: the handoff waits for writes to END, which frees room, and makes
-  // THAT row again — never skipping it, never counting it failed. No deadline
-  // of its own: the SDK ends every write within its one budget.
+  // ROOM IS THE SDK'S (builder#175; engineer3 for sdk#519): its write path waits for room itself -- no cap, no
+  // deadline (engine-db.js `once()` + roomWaiters, pinned by its engine-db test) -- so every write here is made ONCE,
+  // as it is. The builder's old NO_ROOM retry loop is deleted (a one-home test keeps it gone).
   const total = plan.reduce((n, { copies, live }) => n + copies.filter(c => !(live && c.row.seed !== undefined)).length, 0);
-  const confirmRows = [];
-  const progress = tracker(target, confirmRows, { ...confirm, onProgress }, total);
-  const withRoom = fn => roomFor(fn, progress, confirmRows);
-  for (const { d, copies, deletes, live } of plan) {
-    await withRoom(() => target.define(d, schemas[d]));
-    for (const { slot, row } of copies) {
-      // A SEED is what a NEW app starts with. A live domain is not new: the
-      // person may have edited those rows away, and writing them again brings
-      // them back. So it is never written there — but a live copy that
-      // differs from it is still counted as kept, and the person told.
-      if (live && row.seed !== undefined) {
-        const pf = schemas[d]?.parent;
-        const held = await target.get(d, pf ? `${row.fields[pf]}${slot}` : slot);
-        if (held && !sameFields(held.fields, row.fields)) did.kept += 1;
-        continue;
+  const progress = tracker(target, [], { ...confirm, onProgress }, total);
+  try {
+    for (const { d, copies, deletes, live } of plan) {
+      await target.define(d, schemas[d]);
+      for (const { slot, row } of copies) {
+        // A SEED is what a NEW app starts with. A live domain is not new: the
+        // person may have edited those rows away, and writing them again brings
+        // them back. So it is never written there — but a live copy that
+        // differs from it is still counted as kept, and the person told.
+        if (live && row.seed !== undefined) {
+          const pf = schemas[d]?.parent;
+          const held = await target.get(d, pf ? `${row.fields[pf]}${slot}` : slot);
+          if (held && !sameFields(held.fields, row.fields)) did.kept += 1;
+          continue;
+        }
+        const r = await target.createAt(d, slot, row.fields);
+        if (r.outcome === "created") {
+          did[row.seed !== undefined ? "seeded" : "copied"] += 1;
+        } else if (!sameFields(r.record.fields, row.fields)) {
+          if (live) {
+            did.kept += 1;
+          } else {
+            await target.update(d, r.record.id, patchFor(r.record.fields, row.fields));
+            did.updated += 1;
+          }
+        }
+        // PROGRESS WHILE MAKING (builder#94, live): the make loop IS the publish (~2.6 rows a second), so the count
+        // must move while it runs -- by the SDK's wake-ups, never a clock: tracking a row binds its domain, and each
+        // change of one of this client's rows reports progress (builder#175).
+        progress.track({ domain: d, id: r.record.id });
       }
-      const r = await withRoom(() => target.createAt(d, slot, row.fields));
-      if (r.outcome === "created") {
-        did[row.seed !== undefined ? "seeded" : "copied"] += 1;
-      } else if (!sameFields(r.record.fields, row.fields)) {
-        if (live) {
-          did.kept += 1;
-        } else {
-          await withRoom(() => target.update(d, r.record.id, patchFor(r.record.fields, row.fields)));
-          did.updated += 1;
+      // Create-only once live: a stale Preview deletes nothing live.
+      if (!live) {
+        for (const slot of deletes) {
+          if (await target.delete(d, slot)) did.removed += 1;
         }
       }
-      confirmRows.push({ domain: d, id: r.record.id });
-      // PROGRESS WHILE MAKING (builder#94, live): the make loop IS the
-      // publish — at ~2.6 rows a second, 300 rows take ~2 minutes — and
-      // nothing polled during it, so the panel said "Moving your records…"
-      // with no number for 111–125 s and then jumped to 298 of 300.
-      await progress.pollIfDue();
     }
-    // Create-only once live: a stale Preview deletes nothing live.
-    if (!live) {
-      for (const slot of deletes) {
-        if (await withRoom(() => target.delete(d, slot))) did.removed += 1;
-      }
-    }
-  }
 
-  if (did.kept) {
-    onNotice(`${did.kept} ${did.kept === 1 ? "record differs" : "records differ"} from the published app and ${did.kept === 1 ? "was" : "were"} kept as published.`);
+    if (did.kept) {
+      onNotice(`${did.kept} ${did.kept === 1 ? "record differs" : "records differ"} from the published app and ${did.kept === 1 ? "was" : "were"} kept as published.`);
+    }
+    await settled(progress);
+  } finally {
+    // Every binding the tracker made is stopped, however the handoff ends (a write that threw included).
+    progress.stop();
   }
-  await settled(progress);
   // THE PUBLISH COMPLETED: every domain it touched is live from now on. By
   // `createAt`, so a second completion lands on the first marker. A crash
   // before these are written is benign: the retry runs in not-live mode from
@@ -264,84 +262,99 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   // the rows confirm, so a domain is never marked live over rows that may
   // yet be lost; a marker that does not confirm fails the publish exactly as
   // an unconfirmed row does, and the retry writes it once (`createAt`).
-  const markers = [];
-  const marking = tracker(target, markers, confirm, plan.length);
-  const markerRoom = fn => roomFor(fn, marking, markers);
-  await markerRoom(() => target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA));
-  for (const { d } of plan) {
-    const m = await markerRoom(() => target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {}));
-    markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
+  const marking = tracker(target, [], confirm, plan.length);
+  try {
+    await target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA);
+    for (const { d } of plan) {
+      const m = await target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {});
+      marking.track({ domain: PUBLISHED_DOMAIN, id: m.record.id });
+    }
+    await settled(marking);
+  } finally {
+    marking.stop();
   }
-  await settled(marking);
   return did;
 }
 
 /**
- * What the node has confirmed of `rows`, reported as it moves.
+ * What the node has confirmed of `rows`, reported as it moves -- WOKEN BY THE SDK, never by a clock (builder#175).
  *
- * "Not confirmed yet" no longer lasts for ever on a node that has gone away:
- * the SDK ends every write within its one budget — saved, rolled back, or
- * Unknown (its record absent) — and a row that ends lost is thrown here,
- * named. So a large publish is never failed for being large, and a dead node
- * fails it within the SDK's budget, saying how far it got.
+ * The SDK re-runs every binding of this client when one of ITS writes changes state (engine-db.js
+ * `reloadOwnStates`: published, backed up, lost), live or not. So tracking a row BINDS its domain (once), and each
+ * wake re-reads the tracked rows: progress is reported, and `settled` re-judges. A write ends only on an ANSWER --
+ * saved, or lost (the SDK's `rowLost`) -- and a row that ends lost is thrown, named (rule 8: no timer here; a person
+ * may cancel, `signal`).
  *
- * `rows` may grow while this is in use: the handoff adds each row it makes.
- * `onProgress({ confirmed, total })` is told each time the count moves.
+ * `rows` may grow while this is in use (`track`). `onProgress({ confirmed, total })` is told each time the count moves.
  */
-function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = pause, onProgress = () => {}, signal = null, ...rest } = {}, total = null) {
-  // NO TIMER HERE (rule 8). A write ends only on an ANSWER — saved, rolled
-  // back, or its head's witness — and the SDK re-sends until there is one; a
-  // slow network never ends it. So this waits for those ends and names them,
-  // and a person may cancel (`signal`). A deadline of the builder's own (the
-  // old 30 s of no progress) failed a real-network publish the SDK would have
-  // finished (2026-09-23). A caller passing one is refused by name.
+function tracker(target, rows, { onProgress = () => {}, signal = null, ...rest } = {}, total = null) {
+  // NO TIMER HERE (rule 8), and no CLOCK at all (builder#175): a caller passing one is refused by name.
   if ("budgetMs" in rest || "stallMs" in rest) {
     throw new Error("handoff: there is no deadline to pass — a write ends only on the node's answer (rule 8); `budgetMs` and `stallMs` are gone");
   }
+  for (const k of ["everyMs", "now", "sleep"]) {
+    if (k in rest) throw new Error(`handoff: \`${k}\` is gone -- the handoff is woken by the SDK's bindings, never a clock (builder#175)`);
+  }
+  // NO DEFAULT (builder#73): without bindings nothing would ever wake the wait.
+  if (typeof target?.bind !== "function") {
+    throw new Error("handoff: the target has no bind() -- nothing would wake the wait for its rows to be saved");
+  }
   let best = -1;
-  let polledAt = null;
-  // The fewest writes the target has held unconfirmed — ANY of this page's,
-  // not only these rows. The node confirming someone else's write is the node
-  // making progress: behind 255 of them, these rows wait 77 s on a healthy
-  // node, and counting only our own confirmations called that a stall.
-  let fewest = null;
+  const bindings = new Map();
+  // THE WAKE: a change the SDK announced since the last read (`dirty`), and whoever is waiting for the next one.
+  let dirty = false;
+  const waiters = new Set();
+  const woke = () => {
+    dirty = true;
+    for (const w of [...waiters]) w();
+    waiters.clear();
+    t.report();
+  };
+  signal?.addEventListener?.("abort", woke, { once: true });
+  // ONE read at a time: a wake while one runs asks for exactly one more (never a pile of them).
+  let reading = null, again = false;
   const t = {
-    everyMs, now, sleep, rows,
-    get best() { return best; },
+    rows,
+    /** Track a row made by this handoff: its domain is bound (once), so its changes wake this. */
+    track(row) {
+      rows.push(row);
+      if (!bindings.has(row.domain)) {
+        const b = target.bind(row.domain);
+        bindings.set(row.domain, { b, off: b.subscribe(woke) });
+      }
+    },
     /** A person stopped the publish: the one end that is not the node's. */
     cancelled() {
       if (signal?.aborted) throw new Error("cancelled: the publish was stopped; your data is still here");
     },
-    /**
-     * REPORT progress if `everyMs` has passed since the last poll. Only
-     * reports: a row lost is judged where it always was — in the room wait
-     * and once every row is made — so a failed attempt leaves exactly what
-     * it left before this existed.
-     */
-    async pollIfDue() {
-      if (polledAt !== null && now() - polledAt < everyMs) return;
-      await t.poll({ judge: false });
+    /** REPORT progress (never judges: a row lost is judged by `settled`). */
+    report() {
+      if (reading) { again = true; return; }
+      reading = (async () => {
+        try { do { again = false; await t.poll({ judge: false }); } while (again); }
+        catch (_) { /* a report that failed changes nothing: `settled` reads again */ }
+        finally { reading = null; }
+      })();
+    },
+    /** Resolve at the next wake -- at once if one came since the last read. */
+    wake() {
+      if (dirty) { dirty = false; return Promise.resolve(); }
+      return new Promise(r => waiters.add(r));
     },
     /** Read every row's state; throw on anything lost. */
     async poll({ judge = true } = {}) {
-      polledAt = now();
+      if (judge) dirty = false;
       let waiting = 0;
       let lost = 0;
       for (const row of rows) {
         const r = await target.get(row.domain, row.id);
-        // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN,
-        // which let the handoff say Published on the strength of a field that
-        // was not there — the opposite of the builder's own rule that a
-        // record with no state is unpublished, not saved. Unknown waits.
+        // NO STATE IS UNKNOWN, NOT CONFIRMED: a record with no state waits; a record gone, or one the SDK says is
+        // lost (its `rowLost`, never a literal of ours), is lost.
         const state = r?.state ?? "UNKNOWN";
-        if (!r || state === "ROLLED_BACK") lost += 1;
+        if (!r || rowLost(state)) lost += 1;
         else if (!rowSaved(state)) waiting += 1;
       }
       if (lost && judge) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
-      // The engine surface says how many writes it holds unconfirmed
-      // (`stats().pendingWrites`); a store with nothing to wait on does not.
-      const unconfirmed = typeof target.stats === "function" ? (await target.stats())?.pendingWrites : undefined;
-      if (Number.isInteger(unconfirmed) && (fewest === null || unconfirmed < fewest)) fewest = unconfirmed;
       // A LOST row is not confirmed, whether or not this poll judges it.
       const confirmed = rows.length - waiting - lost;
       // PROGRESS is a record newly confirmed — the HIGHEST count so far
@@ -352,48 +365,31 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
       }
       return { waiting, confirmed };
     },
+    /** Stop listening: every binding this tracker made. */
+    stop() {
+      for (const { b, off } of bindings.values()) {
+        off?.();
+        b.stop?.();
+      }
+      bindings.clear();
+      signal?.removeEventListener?.("abort", woke);
+    },
   };
   return t;
 }
 
-const pause = ms => new Promise(r => setTimeout(r, ms));
-
-/**
- * Make one write, and when the target has NO ROOM for it, wait for room.
- *
- * `NO_ROOM` is the SDK saying it already holds as many unconfirmed writes as
- * it will (sdk#180) — retryable, and marked so by Rust (`retryable`), not
- * recognised here by a list of codes. Room comes back as the node confirms
- * ANY write this page made — the handoff's, or writes it did not make — so
- * this looks again every `everyMs` and makes the SAME write again as soon as
- * there is room. It does NOT wait for a confirmation of its own rows: with
- * 255 other writes ahead of them, that is 77 s of freed room left unused.
- * It has no deadline of its own: writes END in the SDK, which frees room, and
- * a row of ours that ends lost is thrown by `poll`, named. Anything that is
- * not retryable is thrown as it came.
- */
-async function roomFor(fn, t, rows) {
-  for (;;) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (!(e && e.retryable === true)) throw e;
-      // Room comes back as writes END, each on the node's answer; a row of
-      // ours that ends lost is thrown by `poll`, named.
-      t.cancelled();
-      await t.sleep(t.everyMs);
-      await t.poll();
-    }
-  }
-}
-
-/** Wait until every row `t` tracks is SAVED (the SDK's rowSaved); fail, named, on anything lost. */
+/** Wait until every row `t` tracks is SAVED (the SDK's rowSaved); fail, named, on anything lost -- woken by the SDK. */
 async function settled(t) {
-  for (;;) {
-    const { waiting } = await t.poll();
-    if (!waiting) return;
-    t.cancelled();
-    await t.sleep(t.everyMs);
+  try {
+    for (;;) {
+      const { waiting } = await t.poll();
+      if (!waiting) return;
+      t.cancelled();
+      await t.wake();
+      t.cancelled();
+    }
+  } finally {
+    t.stop();
   }
 }
 
@@ -405,5 +401,7 @@ async function settled(t) {
  * ended lost is found there and not copied twice.
  */
 export async function acknowledged(target, rows, opts = {}) {
-  await settled(tracker(target, rows, opts));
+  const t = tracker(target, [], opts);
+  for (const row of rows) t.track(row);
+  await settled(t);
 }
