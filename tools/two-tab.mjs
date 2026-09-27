@@ -134,9 +134,17 @@ async function freshProfile(tab) {
   if (left !== 0) throw new Error(`the profile's storage did not clear (${left} keys left), so this arm would inherit the last one's project`);
 }
 
-/** Publish a tab and wait until the NODE has confirmed it. */
-async function publish(tab, live) {
-  await tab.navigate(url(live));
+/**
+ * THE SAME PROJECT IN A SECOND TAB (§19 P3): `#app=` IMPORTS its app as a new project, once, and the page then
+ * drops `app=` from its URL. So only the first tab of an arm loads the link; every other tab opens the builder
+ * WITHOUT it and reopens this profile's open project (its `lastOpened`) -- the first tab's, as a person's second
+ * tab would. A second tab on the `#app=` link would be a second project, and the arm would measure two apps.
+ */
+const reopenUrl = () => `http://127.0.0.1:${PAGE_PORT}/#node=${NODE_PORT}&preview=1`;
+
+/** Publish a tab and wait until the NODE has confirmed it. `reopen`: this is a further tab of the arm's project. */
+async function publish(tab, live, { reopen = false } = {}) {
+  await tab.navigate(reopen ? reopenUrl() : url(live));
   await sleep(500);
   await tab.until(`document.getElementById("publish")`, "the page to load");
   await tab.evaluate(`document.getElementById("publish").click(); return 1;`);
@@ -309,7 +317,7 @@ async function arm(live) {
   await freshProfile(a);
   const b = await openTab(`tab B (live=${live})`);
   await publish(a, live);
-  await publish(b, live);
+  await publish(b, live, { reopen: true });
 
   const mode = await liveMode(b);
   const settled = `${rowsExpr()}.filter(r => r.saved).length`;
@@ -441,7 +449,7 @@ async function controlArm() {
   await freshProfile(a);
   const b = await openTab("tab B (control)");
   await publish(a, false);
-  await publish(b, false);
+  await publish(b, false, { reopen: true });
 
   // B has READ the range once: the rule is about a range a tab holds, not
   // about one it has never looked at.

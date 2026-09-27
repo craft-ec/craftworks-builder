@@ -1,5 +1,5 @@
 import { loadSdk } from "./sdk-loader.js";
-import { storageNote } from "./storage.js";
+import { browserStorage, storageNote } from "./storage.js";
 import { publishApp } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
@@ -14,6 +14,7 @@ import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
 import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
+import { readDeviceSettings, writeDeviceSettings } from "./projects.js";
 import { mountAssets } from "./assets-panel.js";
 import { createProjectRuntime } from "./project-runtime.js";
 import { draftChanged, keyOf, keyed } from "./definition.js";
@@ -28,8 +29,8 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
 let app = { name: "", tree: { realm: "public", identity: null }, components: [], schemas: {}, seed: {} };
 // AN APP IN THE URL (`#app=<json>`): shareable, and testable. It is IMPORTED — a new project whose draft starts as
 // it — never laid over whatever project is open.
-let importApp = null;
-try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) importApp = { name: "", components: [], schemas: {}, seed: {}, ...JSON.parse(h) }; } catch (_) {}
+let importApp = null, importRaw = null;
+try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) { importApp = { name: "", components: [], schemas: {}, seed: {}, ...JSON.parse(h) }; importRaw = h; } } catch (_) {}
 // WHERE THE LAST EDIT IS. The definition is the project's draft in its owner's tree (ARCHITECTURE §19): every edit
 // goes to the canvas at once and to the runtime's draft writer, which WAITS for the tree (rule 9) and writes the
 // latest of each record. The line below says what is not in the tree yet, and why; nothing else keeps a copy.
@@ -248,8 +249,27 @@ mountProjects($("projects"), {
   projects = p;
   // THERE IS ALWAYS AN OPEN PROJECT: an app in the URL is imported as a new one; otherwise what this device had open
   // reopens; otherwise a new, empty one.
-  if (importApp) await p.create({ from: importApp });
-  else if (!(await p.reopen())) await p.create();
+  //
+  // IMPORTED ONCE. The link's `app=` is recorded as imported (`importedFrom`, beside `lastOpened` in this device's
+  // settings), so the same link on a reload REOPENS the project it became instead of importing it again as another;
+  // and the page drops `app=` from its own URL (the rest of the hash kept). In freenet's sandboxed frame (origin
+  // null) rewriting the URL is REFUSED (a SecurityError): the import stands, startup goes on, and the record alone
+  // keeps a reload from importing twice. (With no browser storage at all the record lives only as long as the tab.)
+  let opened = false;
+  if (importApp && readDeviceSettings(browserStorage).importedFrom === importRaw) opened = await p.reopen();
+  if (!opened && importApp) {
+    await p.create({ from: importApp });
+    writeDeviceSettings(browserStorage, { importedFrom: importRaw });
+  }
+  else if (!opened && !(await p.reopen())) await p.create();
+  if (importApp) {
+    try {
+      const h = new URLSearchParams(location.hash.slice(1));
+      h.delete("app");
+      const rest = h.toString();
+      history.replaceState(history.state, "", `${location.pathname}${location.search}${rest ? `#${rest}` : ""}`);
+    } catch (_) { /* refused (a sandboxed frame): `importedFrom` keeps a reload from importing twice */ }
+  }
 }).catch(e => {
   // Storage refused at load: the list cannot be kept on this device, and the person needs to know before editing.
   showStorageNotice({ kind: "not-saved", message: `this device's project list: ${reasonOf(e)}` });
