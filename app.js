@@ -501,8 +501,9 @@ async function putOnNetwork(handle, db) {
     // open-by-address acceptance).
     globalThis.__craftworksPublished = { ...put, head: handle.headId(), app: appIdOf(openedProject?.id, sdkReady?.ids) };
   } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
-  // WHAT WAS PUT, held in this tab (P3b ruling 3): only `publishApp`'s `last` reads it ("unchanged: PUT nothing"), and
-  // P5 deletes the per-publish PUT with it. A reload may PUT an unchanged app once more.
+  // WHAT WAS PUT, held in this tab (P3b ruling 3: nothing about a project is kept on the device): only `publishSite`'s
+  // `last` reads it (the site only at the first publish or when the build changed). After a reload there is no `last`,
+  // so the first Publish may put the site once more, at the same link.
   if (openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.version ?? null };
   void db;
   return warn;
