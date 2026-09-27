@@ -9,7 +9,7 @@
 //
 // Nothing here keeps a second copy of the definition: the canvas is what the person is editing, the draft is the
 // tree's, and what differs between them is DERIVED on each sync. "Changed since publish" is the same derivation,
-// draft against `craftworks.app` (`draftChanged`). There is no merge here either: two tabs or two devices of one
+// draft against the published definition (`draftChanged`). There is no merge here either: two tabs or two devices of one
 // identity write the same `c/<key>` records, and the SDK merges per record (rule 15).
 
 /** Where the builder keeps a canvas component's identity, never stored in its record. */
