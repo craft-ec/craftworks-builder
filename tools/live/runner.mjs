@@ -218,6 +218,9 @@ export function freePort(kind = "tcp") {
  * own web cache under the run dir, --disable-auto-update, and the event log on (the attribution source;
  * harness nodes only). Ended ONLY through tools/realnet-nodes.sh.
  */
+/** craftworks-sdk probe::node::PRIVATE_MARKER: the file that makes a data dir a private node's. */
+export const PRIVATE_MARKER = ".craftworks-private-node";
+
 export class Nodes {
   constructor(runDir, { bin = process.env.LIVE_FREENET ?? "freenet", eventLog = true } = {}) {
     this.runDir = runDir; this.bin = bin; this.eventLog = eventLog; this.list = [];
@@ -229,6 +232,9 @@ export class Nodes {
     for (const p of [ws, net]) if (RESERVED.includes(p)) throw new Error(`${label}: ${p} is somebody else's node`);
     const dir = join(this.runDir, "nodes", label);
     for (const d of ["data", "config", "log", "webapp_cache"]) mkdirSync(join(dir, d), { recursive: true });
+    // THE PRIVATE-NODE MARK (craftworks-sdk probe::node::PRIVATE_MARKER, its spawner's nonce): the only dirs a
+    // store-editing probe (node-forget) opens -- an allowlist the owner's node never passes.
+    writeFileSync(join(dir, "data", PRIVATE_MARKER), `${process.pid}-${Date.now()}\n`);
     const args = [mode, "--ws-api-address", "127.0.0.1", "--ws-api-port", String(ws), "--network-port", String(net),
       "--data-dir", join(dir, "data"), "--config-dir", join(dir, "config"), "--log-dir", join(dir, "log"), "--disable-auto-update",
       ...(this.eventLog ? ["--enable-event-log", "true"] : [])];
