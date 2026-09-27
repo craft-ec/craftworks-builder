@@ -28,10 +28,25 @@
 // DOM-free on purpose: `mount` and `publish` are injected, so every one of the
 // paths above is testable without a page (tests/project-runtime.test.mjs).
 
+import { appOf, draftWriter } from "./definition.js";
+
 /** Close a session, and never let the cleanup replace the reason. */
 const closeQuietly = h => { try { h?.close?.(); } catch (_) { /* the original error matters */ } };
 
-export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
+/** The wait before re-opening a tree whose open failed: doubling from 1 s, never more than 30 s apart, never given up. */
+export const reconnectDelay = attempt => Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+
+/**
+ * THE OWNER'S TREE IS OPEN FROM CREATION (ARCHITECTURE §19, app-as-data P3, core dev's ruling): the project's
+ * definition is records of its draft there, written on every edit, so the session is opened with the project and
+ * not at its first Publish. `publish` (the injected opener, publish.js's `publish`) opens it once; `connect` shares
+ * that one open between the project's creation and a Publish click, and Publish never opens a second.
+ *
+ * `fresh`: a project made in THIS tab (new, or imported): its canvas is the definition, and edits made before the
+ * tree opens are written when it does. Otherwise the tree's draft is the definition: `onDraft(app)` hands the
+ * canvas what it holds, and nothing is written until it has (an empty canvas diffed against a draft would delete it).
+ */
+export function createProjectRuntime({ mount, publish, onChange = () => {}, onDraft = () => {}, fresh = false, schedule = (fn, ms) => { const h = setTimeout(fn, ms); return () => clearTimeout(h); } }) {
   let gen = 0;
   let disposed = false;
   // "none" → "mounting" → "mounted". A mount in progress and a mount that is
@@ -51,6 +66,16 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
   // it opens, before the published app is mounted, and a remount must show
   // the count as it stands rather than start from nothing.
   let saving = 0;
+  // THE CONNECTION to the owner's tree, apart from `phase` (which is the publish's): "none" -> "connecting" ->
+  // "provisioning" -> "opening" -> "open", or "failed" with its reason, and then a retry.
+  let connection = "none", connectionError = "";
+  let connecting = null;       // the one open in flight: shared by creation and a Publish
+  let treeDb = null;           // the session's db: the owner's tree, where the draft lives
+  let attempts = 0;
+  let cancelRetry = null;
+  let publishing = null;       // a publish's phase reporter, while one waits on the connection
+  let draftLoaded = fresh;     // may the canvas be written? A fresh project's canvas IS the definition
+  const writer = draftWriter({ onState: () => onChange() });
 
   const stopMounted = () => {
     const m = mounted;
@@ -70,6 +95,83 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
     /** Writes not yet published, as the session last reported. */
     get saving() { return saving; },
     get disposed() { return disposed; },
+    /** Where the connection to the owner's tree stands, and why it failed. */
+    get connection() { return connection; },
+    get connectionError() { return connectionError; },
+    /** The owner's tree (the session's db), once open. */
+    get treeDb() { return treeDb; },
+    /** The draft writer's state: held edits, the wait, a refusal. */
+    get draft() { return { ...writer.state(), loaded: draftLoaded }; },
+
+    /**
+     * The canvas as it now is: written to the draft (the writer waits for the tree). Refused until the draft has
+     * been read into the canvas, for a project that was not made in this tab.
+     */
+    edit(app) {
+      if (disposed) return null;
+      if (!draftLoaded) throw new Error("this project's draft is still being read from your node; nothing is written until it is");
+      return writer.sync(app);
+    },
+
+    /**
+     * Open the owner's tree, once. Resolves to `{ session, db }`; a second call while one is in flight joins it,
+     * and a call after it opened returns it. A failed open is retried on its own, doubling the wait (never given
+     * up: rule 8); `deps` are the opener's (app id, port, artefacts).
+     */
+    connect(deps) {
+      if (disposed) return Promise.reject(new Error("this project is no longer open"));
+      if (session) return Promise.resolve({ session, db: treeDb });
+      if (connecting) return connecting;
+      cancelRetry?.(); cancelRetry = null;
+      connection = "connecting"; connectionError = "";
+      onChange();
+      const onSaving = n => {
+        if (disposed) return;
+        saving = n;
+        try { mounted?.setSaving?.(n); } catch (e) { error = e.message; }
+        onChange();
+      };
+      const report = (p, e = "") => {
+        if (disposed) return;
+        if (p === "failed") { connection = "failed"; connectionError = e; }
+        else connection = p;
+        publishing?.(p, e);
+        onChange();
+      };
+      connecting = (async () => {
+        let res;
+        try {
+          res = await publish(null, { ...deps, onSaving }, report);
+        } catch (e) {
+          connecting = null;
+          if (disposed) throw e;
+          connection = "failed";
+          if (!connectionError) connectionError = e.message;
+          // Retried until it opens (rule 8): a node that is starting, or one started after this tab.
+          const wait = reconnectDelay(attempts++);
+          cancelRetry = schedule(() => { cancelRetry = null; rt.connect(deps).catch(() => {}); }, wait);
+          onChange();
+          throw e;
+        }
+        if (disposed) { closeQuietly(res?.session); throw new Error("this project is no longer open"); }
+        session = res.session;
+        treeDb = res.db;
+        attempts = 0;
+        // The draft: read it, hand it to the canvas (a project from before is its draft), then write what the
+        // canvas holds from here on.
+        const held = await writer.attach(treeDb);
+        if (disposed) throw new Error("this project is no longer open");
+        if (!draftLoaded) {
+          draftLoaded = true;
+          onDraft(appOf(held));
+        }
+        connection = "open";
+        connecting = null;
+        onChange();
+        return { session, db: treeDb };
+      })();
+      return connecting;
+    },
 
     /**
      * Start a mount if none is active or in progress.
@@ -153,24 +255,23 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
         onPhase(p, e);
       };
       error = "";
-      // The session's saving count, to this runtime and whatever is mounted.
-      const onSaving = n => {
-        if (disposed) return;
-        saving = n;
-        try { mounted?.setSaving?.(n); } catch (e) { error = e.message; }
-        onChange();
-      };
+      // THE ONE CONNECTION, opened at creation (or now, if it has not opened yet): a Publish never opens a second.
+      // While it is still opening, the button says how far it got.
+      if (connection !== "open") report(connection === "none" || connection === "failed" ? "connecting" : connection);
+      publishing = report;
       let res;
       try {
-        res = await publish(app, { ...deps, onSaving }, report);
+        res = await rt.connect(deps);
       } catch (e) {
-        if (!disposed) { phase = "failed"; if (!error) error = e.message; onChange(); }
+        // A project switched away while its tree was opening: the open closed what it produced, and nothing of
+        // this publish runs.
+        if (disposed) return null;
+        phase = "failed"; error = connectionError || e.message; onPhase("failed", error); onChange();
         throw e;
+      } finally {
+        publishing = null;
       }
-      if (disposed) { closeQuietly(res?.session); return null; }
-      // Owned from here: `dispose` closes it.
-      closeQuietly(session !== res.session ? session : null);
-      session = res.session;
+      if (disposed) return null;
 
       // THE HANDOFF, and it is FATAL. The records a person made in Preview are
       // copied to the new backend and must be acknowledged there before
@@ -209,8 +310,11 @@ export function createProjectRuntime({ mount, publish, onChange = () => {} }) {
       gen += 1;
       stopMounted();
       mountState = "none";
+      cancelRetry?.(); cancelRetry = null;
+      writer.dispose();
       closeQuietly(session);
       session = null;
+      treeDb = null;
       publishedDb = null;
       saving = 0;
     },

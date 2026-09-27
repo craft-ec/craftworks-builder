@@ -34,7 +34,8 @@ function fakeMounts() {
 function fakeSession() {
   const s = {
     closed: 0,
-    db: { root: () => "r", preload: async () => {} },
+    // The session's db has the definition doors (the owner's tree holds the draft): an empty draft here.
+    db: { root: () => "r", preload: async () => {}, definition: async () => [], draftPut: async () => {}, draftDelete: async () => true },
     close: () => { s.closed += 1; },
   };
   return s;
@@ -215,15 +216,103 @@ await t("**retrying after failures leaves exactly one session open**", async () 
   assert.deepStrictEqual(sessions.map(s => s.closed), [1, 1, 1], "and switching away closes that one too");
 });
 
-await t("a second successful publish closes the session it replaces", async () => {
+// §19 P3: the owner's tree is opened ONCE, with the project; a Publish uses that connection and never opens another.
+await t("**one connection per project**: creation opens the tree, and a Publish (and a second) opens nothing more", async () => {
   const a = fakeSession(), b = fakeSession();
   const queue = [a, b];
-  const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => { const s = queue.shift(); return { session: s, db: s.db }; } });
+  let opened = 0;
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => { opened += 1; const s = queue.shift(); return { session: s, db: s.db }; } });
+  await rt.connect({});
+  assert.strictEqual(rt.connection, "open");
   await rt.publish({}, {}, NO_HANDOFF);
   await rt.publish({}, {}, NO_HANDOFF);
-  assert.strictEqual(a.closed, 1);
-  assert.strictEqual(b.closed, 0);
-  assert.strictEqual(rt.session, b);
+  assert.strictEqual(opened, 1, "a Publish opened a second connection");
+  assert.strictEqual(rt.session, a);
+  assert.strictEqual(a.closed, 0);
+  rt.dispose();
+  assert.strictEqual(a.closed, 1, "switching away closes the one connection");
+});
+
+await t("**a Publish while the tree is still opening joins that open**, and says how far it got", async () => {
+  const s = fakeSession();
+  const d = later();
+  let opened = 0;
+  const phases = [];
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: (_app, _deps, report) => { opened += 1; report("provisioning"); return d.p.then(() => ({ session: s, db: s.db })); } });
+  const conn = rt.connect({});
+  const pub = rt.publish({}, {}, { ...NO_HANDOFF, onPhase: p => phases.push(p) });
+  d.resolve();
+  await conn;
+  await pub;
+  assert.strictEqual(opened, 1);
+  assert.strictEqual(rt.phase, "published");
+  assert.ok(phases.includes("provisioning"), `the button never said how far the open had got: ${phases}`);
+});
+
+await t("**a failed open is retried on its own** (rule 8, doubling, never given up), and a project switch stops the retry", async () => {
+  const timers = [];
+  const schedule = (fn, ms) => { const tmr = { fn, ms, cancelled: false }; timers.push(tmr); return () => { tmr.cancelled = true; }; };
+  let attempt = 0;
+  const s = fakeSession();
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, schedule, publish: async () => { attempt += 1; if (attempt < 3) throw new Error("no node on port 18080"); return { session: s, db: s.db }; } });
+  await rt.connect({}).catch(() => {});
+  assert.strictEqual(rt.connection, "failed");
+  assert.match(rt.connectionError, /no node on port 18080/);
+  timers.at(-1).fn();
+  await new Promise(r => setImmediate(r));
+  timers.at(-1).fn();
+  await new Promise(r => setImmediate(r));
+  assert.deepStrictEqual(timers.map(x => x.ms), [1_000, 2_000], "the waits did not double");
+  assert.strictEqual(rt.connection, "open");
+  const rt2 = createProjectRuntime({ mount: fakeMounts().mount, schedule, publish: async () => { throw new Error("down"); } });
+  await rt2.connect({}).catch(() => {});
+  rt2.dispose();
+  assert.strictEqual(timers.at(-1).cancelled, true, "a disposed project kept retrying");
+});
+
+// The draft lives in the owner's tree. For a project from before, the TREE is the definition: the canvas gets it,
+// and nothing is written until it has -- an empty canvas diffed against the draft would delete it all. For a project
+// made in this tab (fresh), the canvas is the definition, and edits made before the tree opens are held and written.
+const treeWith = records => {
+  const held = new Map(records);
+  const writes = [];
+  return {
+    held, writes,
+    definition: async w => (w === "draft" ? [...held].map(([key, body]) => ({ key, body })) : []),
+    draftPut: async (k, b) => { writes.push(["put", k]); held.set(k, b); },
+    draftDelete: async k => { writes.push(["del", k]); return held.delete(k); },
+  };
+};
+
+await t("**an existing project opens FROM its draft**: the canvas is handed what the tree holds, and an edit before that is refused", async () => {
+  const tree = treeWith([["meta", { name: "Old", order: ["k1"] }], ["c/k1", { type: "table", domain: "tasks" }]]);
+  const s = { ...fakeSession(), db: tree };
+  let shown = null;
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => ({ session: s, db: tree }), onDraft: app => { shown = app; } });
+  assert.throws(() => rt.edit({ name: "", components: [] }), /still being read from your node/);
+  await rt.connect({});
+  assert.strictEqual(shown.name, "Old");
+  assert.deepStrictEqual(shown.components.map(c => c.type), ["table"]);
+  assert.deepStrictEqual(tree.writes, [], "opening a project wrote into its draft");
+  rt.dispose();
+});
+
+await t("**a fresh project's edits made before the tree opens are written when it does**", async () => {
+  const tree = treeWith([]);
+  const s = { ...fakeSession(), db: tree };
+  const d = later();
+  let shown = 0;
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, fresh: true, publish: () => d.p.then(() => ({ session: s, db: tree })), onDraft: () => { shown += 1; } });
+  const conn = rt.connect({});
+  rt.edit({ name: "New", components: [{ type: "form", _builder: { key: "k9" } }] });
+  assert.strictEqual(rt.draft.attached, false);
+  assert.ok(rt.draft.pending > 0);
+  d.resolve();
+  await conn;
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(shown, 0, "a fresh canvas was replaced by the tree's (empty) draft");
+  assert.deepStrictEqual([...tree.held.keys()].sort(), ["c/k9", "meta"]);
+  rt.dispose();
 });
 
 console.log("\nproject runtime: all ok");
