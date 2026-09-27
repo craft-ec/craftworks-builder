@@ -240,67 +240,11 @@ try {
     check(rl.ms !== null, `a row added in the reloaded builder shows on ${B.label}'s open view, no reload: ${rl.ms === null ? null : rl.ms + 30_000} ms`, rl);
   }
 
-  // ---- 4. A BYTE THAT DOES NOT MATCH ITS HASH IS REFUSED --------------------
-  // The same app, but its artefacts.json names a WRONG hash for the SDK wasm.
-  const tampered = await builder.evaluate(`
-    const { publishApp } = await import("./publish-app.js");
-    const { loadSdk } = await import("./sdk-loader.js");
-    const sdk = await loadSdk();
-    const { readBuilderFile: read, readSdkManifest } = await import("./builder-files.js");
-    const m = await readSdkManifest();
-    const h = window.__craftworks.session;
-    const bad = { ...m, sdk: { ...m.sdk, sha256: "0".repeat(64) } };
-    const missing = { ...m, sdk: { ...m.sdk, file: "no-such-artefact.wasm" } };
-    const app = ${JSON.stringify(APP)};
-    // The SAME app id the real publication used (one project, one app).
-    const appId = window.__craftworksPublished.app;
-    const a = await publishApp({ ...app, name: "Notes (tampered)" }, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId, manifest: bad, read, subtle: crypto.subtle });
-    const b = await publishApp({ ...app, name: "Notes (missing)" }, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId, manifest: missing, read, subtle: crypto.subtle });
-    // Published at a version no node has yet (craftworks-sdk#349): a view of it WAITS.
-    const ahead = h.headSeq() + 1000;
-    const c = await publishApp({ ...app, name: "Notes (ahead)" }, { sdk, session: h.session, headId: h.headId(), headSeq: ahead, appId, manifest: m, read, subtle: crypto.subtle });
-    return { mismatch: a.address, missing: b.address, ahead: c.address, aheadSeq: ahead, sha: m.sdk.sha256 };`, { ms: BUDGET_MS });
-  // A MISMATCH is an END: bytes that do not hash are refused, by name.
-  {
-    const tab = await fresh.tab("visitor-mismatch");
-    const addr = tampered.mismatch;
-    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`);
-    const st = await untilIn(tab, `const s = document.getElementById("status"); return s?.className === "bad" ? s.textContent : null;`, 90_000, 2000, `${addr}/?__sandbox=1`);
-    const rows = await tab.evaluateIn(`${addr}/?__sandbox=1`, `return document.querySelectorAll("tbody tr").length;`);
-    check(typeof st === "string" && /sha256|hash|mismatch|does not match/i.test(st) && rows === 0, "an SDK wasm that does not match its hash is REFUSED and the app does not load", st);
-  }
-  // A MISSING artefact is NOT an answer (rule 8, craftworks-sdk#340): it is
-  // re-asked on the RTO with no give-up, and the page SAYS it waits — naming
-  // the file and counting seconds — and loads nothing meanwhile.
-  {
-    const tab = await fresh.tab("visitor-missing");
-    const addr = tampered.missing;
-    const frame = `${addr}/?__sandbox=1`;
-    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${addr}/`);
-    const waiting = `const s = document.getElementById("status")?.textContent ?? ""; const m = /not available on this node yet \\((\\d+) s\\): no-such-artefact\\.wasm/.exec(s); return m ? Number(m[1]) : null;`;
-    const first = await untilIn(tab, waiting, 90_000, 1000, frame);
-    await sleep(5_000);
-    const later = await tab.evaluateIn(frame, waiting).catch(() => null);
-    const rows = await tab.evaluateIn(frame, `return document.querySelectorAll("tbody tr").length;`).catch(() => null);
-    const bad = await tab.evaluateIn(frame, `return document.getElementById("status")?.className === "bad";`).catch(() => null);
-    check(Number.isInteger(first) && Number.isInteger(later) && later > first && rows === 0 && bad === false,
-      "an artefact the node does not serve is WAITED on, not an end: the page names the file and counts seconds, and loads nothing",
-      { first, later, rows, bad, status: await tab.evaluateIn(frame, `return document.getElementById("status")?.textContent;`).catch(e => e.message) });
-  }
-  // ---- 5. PUBLISHED AT A NEWER VERSION THAN THE NODE HOLDS, THE VIEW WAITS --
-  // (craftworks-sdk#349) and says so in the SDK's words — never the older
-  // head's rows. Watched for 30 s: a wait has no end (rule 8), so the check is
-  // that it is STILL waiting, with no row, when the watch ends.
-  {
-    const tab = await fresh.tab("visitor-ahead");
-    const frame = `${tampered.ahead}/?__sandbox=1`;
-    await tab.navigate(`http://127.0.0.1:${B.ws}/v1/contract/web/${tampered.ahead}/`);
-    const said = await untilIn(tab, `const s = document.getElementById("status")?.textContent ?? ""; return s.includes("waiting for the published version") ? s : null;`, 90_000, 1000, frame);
-    await sleep(30_000);
-    const after = await tab.evaluateIn(frame, `return { status: document.getElementById("status")?.textContent ?? null, rows: document.querySelectorAll("tbody tr").length };`);
-    check(typeof said === "string" && said.includes(`seq ${tampered.aheadSeq}`) && /waiting for the published version/.test(after.status ?? "") && after.rows === 0,
-      "an app published at a newer version than the node holds WAITS for it, says so, and shows no older rows", { said, after });
-  }
+  // §4 (a tampered / missing SDK hash in the app's own artefacts.json) and §5 (published at a newer seq than the node
+  // holds) are GONE with app-as-data P5 (ARCHITECTURE §19): an app no longer carries its own artefacts.json or a
+  // published seq -- the site holds the BUILD's starter and a pointer with no version, and the app is data in its
+  // owner's tree. The artefact hash check is the SDK's (artefactBytes); the reader following an older head is the
+  // loader's (watchDefinition).
 } catch (e) {
   failed += 1;
   console.log(`FAIL  the run stopped: ${e.message}`);

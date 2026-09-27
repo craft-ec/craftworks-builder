@@ -153,6 +153,10 @@ rm -rf sdk && mkdir sdk
 # still produce a package that runs.
 cp "$out/pkg/web"/*.js sdk/
 cp "$out/pkg/web"/craftworks_sdk_bg.wasm sdk/
+# THE SDK'S PUBLISHING DOORS, DERIVED by the SDK from its own sources (its tools/doors.mjs; app-as-data P5): the builder
+# scans its code against THIS list (tests/sdk-doors.test.mjs), never a copy of its own. An SDK without it is refused.
+[ -f "$out/pkg/web/doors.json" ] || { echo "the SDK build at $(cat SDK_REV) ships no doors.json: pin one with the derived publishing doors (craftworks-sdk#563)" >&2; exit 1; }
+cp "$out/pkg/web/doors.json" sdk/
 
 # THE MANIFEST, which is how an app NAMES what it does not carry.
 #

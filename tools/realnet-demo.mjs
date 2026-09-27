@@ -269,7 +269,7 @@ try {
   // HARNESS nodes, O1 and O2, hold ONE throwaway key (realnet.sh pre-provisioned
   // both through the SDK's own provisioning), so they sign for ONE Register.
   // O1's builder publishes an app; O2's page republishes it CHANGED -- through
-  // the real publishApp (the path "Publish changes" takes), with O1's app id,
+  // the one publish (publishSite, the path "Publish changes" takes), with O1's app id,
   // because builder PROJECTS do not travel between browser profiles -- and the
   // link is the SAME, the publish completes (Published, never stuck), and A,
   // opening that link, shows the new structure. It proves same-key convergence
@@ -301,14 +301,20 @@ try {
   await o2.evaluate(`document.getElementById("publish").click(); return 1;`);
   const o2own = await until(o2, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
   const sameHead = first && o2own ? first.head === o2own.head : null;
+  // O2 REPUBLISHES O1's app CHANGED the way every app is published (§19 P5): a session on O1's app (the same key: the
+  // same tree), the changed definition written as its draft, and ONE publishSite -- the definition and, when the build
+  // differs, its site.
   const re2 = first && o2own ? await o2.evaluate(`
-    const { publishApp } = await import("./publish-app.js");
-    const { loadSdk } = await import("./sdk-loader.js");
+    const { publishSite } = await import("./publish-app.js");
+    const { recordsOf, keyed } = await import("./definition.js");
+    const { loadSdk, artefactsOf } = await import("./sdk-loader.js");
     const { readBuilderFile: read, readSdkManifest } = await import("./builder-files.js");
     const sdk = await loadSdk();
-    const h = window.__craftworks.session;
-    const r = await publishApp(${JSON.stringify(PAIR_CHANGED)}, { sdk, session: h.session, headId: h.headId(), headSeq: h.headSeq(), appId: ${JSON.stringify(first.app)}, manifest: await readSdkManifest(), read, subtle: crypto.subtle });
-    return { address: r.address, version: r.version, put: r.put };`, { ms: STEP_MS * 3 }).catch(async e => ({ error: e.message, site: await o2.evaluate(`return window.__craftworks.session.session.site_status(${JSON.stringify(first?.app ?? "")});`).catch(() => null) })) : null;
+    const h = await sdk.open({ app: ${JSON.stringify(first.app)}, port: ${O2.ws}, artefacts: artefactsOf(sdk), onEvent: () => {} });
+    const app = ${JSON.stringify(PAIR_CHANGED)};
+    for (const [k, body] of recordsOf({ ...app, components: keyed(app.components) })) await h.db.draftPut(k, body);
+    const r = await publishSite(${JSON.stringify(first.app)}, { sdk, db: h.db, session: h.session, manifest: await readSdkManifest(), read, subtle: crypto.subtle });
+    return { address: r.address, version: r.version, put: r.put };`, { ms: STEP_MS * 3 }).catch(async e => ({ error: e.message, site: await o2.evaluate(`return window.__craftworks.session.session.app_publish_status(${JSON.stringify(first?.app ?? "")});`).catch(() => null) })) : null;
   const pairUrl = first ? `http://127.0.0.1:${A.ws}/v1/contract/web/${first.address}/` : null;
   const pairFrame = first ? `127.0.0.1:${A.ws}/v1/contract/web/${first.address}/?__sandbox=1` : null;
   let aSees = null;
