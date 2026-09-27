@@ -28,7 +28,7 @@
 // DOM-free on purpose: `mount` and `publish` are injected, so every one of the
 // paths above is testable without a page (tests/project-runtime.test.mjs).
 
-import { appOf, draftWriter, readDraft } from "./definition.js";
+import { appOf, draftWriter } from "./definition.js";
 
 /** Close a session, and never let the cleanup replace the reason. */
 const closeQuietly = h => { try { h?.close?.(); } catch (_) { /* the original error matters */ } };
@@ -76,6 +76,8 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
   let publishing = null;       // a publish's phase reporter, while one waits on the connection
   let draftLoaded = fresh;     // may the canvas be written? A fresh project's canvas IS the definition
   const writer = draftWriter({ onState: () => onChange() });
+  let unwatchDraft = null;     // the draft's live watch, from attach to dispose
+  let watchError = null;       // the last re-read of the draft that failed, until one lands
 
   const stopMounted = () => {
     const m = mounted;
@@ -101,7 +103,7 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
     /** The owner's tree (the session's db), once open. */
     get treeDb() { return treeDb; },
     /** The draft writer's state: held edits, the wait, a refusal. */
-    get draft() { return { ...writer.state(), loaded: draftLoaded }; },
+    get draft() { return { ...writer.state(), loaded: draftLoaded, watchError }; },
 
     /**
      * The canvas as it now is: written to the draft (the writer waits for the tree). Refused until the draft has
@@ -113,12 +115,13 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
       return writer.sync(app);
     },
 
-    /** Read the draft again and hand the canvas the tree's version of what this tab is not holding (rule 15). */
-    async reloadDraft() {
+    /**
+     * THE DRAFT AS THE TREE NOW HAS IT (`held`, `Map<key, body>`): the canvas takes the tree's version of every key
+     * this tab is not still holding (rule 15: another session's edit, or this tab's lost tie-break -- the loser
+     * reloads). Returns the canvas handed over, or null when nothing it shows changed.
+     */
+    applyDraft(held) {
       if (disposed || !treeDb || !draftLoaded) return null;
-      const db = treeDb;
-      const held = await readDraft(db);
-      if (disposed || db !== treeDb) return null;
       const app = writer.rebase(held);
       if (app) onDraft(app);
       return app;
@@ -150,18 +153,10 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
         publishing?.(p, e);
         onChange();
       };
-      // RULE 15 AT THE CANVAS: a write of this tab's superseded by another session, or refused because what it read
-      // had moved, means the tree moved under it. The draft is read again and the canvas takes the tree's version of
-      // every key this tab is not still holding (the loser reloads). The events name raw keys, never a domain, so
-      // any one of them re-reads: a read of an unchanged draft changes nothing.
-      const onEvent = e => {
-        if (disposed || !treeDb || (e?.kind !== "superseded" && e?.kind !== "conflict")) return;
-        rt.reloadDraft().catch(() => { /* the next event, or a reopen, reads it again */ });
-      };
       connecting = (async () => {
         let res;
         try {
-          res = await publish(null, { ...(typeof deps === "function" ? deps() : deps), onSaving, onEvent }, report);
+          res = await publish(null, { ...(typeof deps === "function" ? deps() : deps), onSaving }, report);
         } catch (e) {
           connecting = null;
           if (disposed) throw e;
@@ -185,6 +180,17 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
           draftLoaded = true;
           onDraft(appOf(held));
         }
+        // THE DRAFT, WATCHED (the SDK's `watchDefinition`, sdk#557): every head move that changes it -- another tab or
+        // device of this identity edited it, or this tab lost a tie-break -- re-reads it, and the canvas follows with
+        // no reopen. REQUIRED: a tree that cannot be watched is refused by name, never a canvas that silently goes
+        // stale. A re-read that failed is said (`draft.watchError`) until the next one lands.
+        if (typeof treeDb.watchDefinition !== "function") throw new Error("the owner's tree offers no `watchDefinition`, so this canvas could not follow its draft");
+        unwatchDraft = treeDb.watchDefinition("draft", (rows, fail) => {
+          if (disposed) return;
+          watchError = fail ? String(fail.error?.message ?? fail.error ?? "the draft could not be read") : null;
+          if (!fail) rt.applyDraft(new Map(rows.map(r => [r.key, r.body])));
+          onChange();
+        });
         connection = "open";
         connecting = null;
         onChange();
@@ -331,6 +337,8 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
       stopMounted();
       mountState = "none";
       cancelRetry?.(); cancelRetry = null;
+      try { unwatchDraft?.(); } catch (_) { /* a watch that fails to stop is not a reason to keep the project */ }
+      unwatchDraft = null;
       writer.dispose();
       closeQuietly(session);
       session = null;

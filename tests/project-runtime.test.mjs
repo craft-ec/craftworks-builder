@@ -35,7 +35,7 @@ function fakeSession() {
   const s = {
     closed: 0,
     // The session's db has the definition doors (the owner's tree holds the draft): an empty draft here.
-    db: { root: () => "r", preload: async () => {}, definition: async () => [], draftPut: async () => {}, draftDelete: async () => true },
+    db: { root: () => "r", preload: async () => {}, definition: async () => [], draftPut: async () => {}, draftDelete: async () => true, watchDefinition: () => () => {} },
     close: () => { s.closed += 1; },
   };
   return s;
@@ -281,6 +281,10 @@ const treeWith = records => {
     definition: async w => (w === "draft" ? [...held].map(([key, body]) => ({ key, body })) : []),
     draftPut: async (k, b) => { writes.push(["put", k]); held.set(k, b); },
     draftDelete: async k => { writes.push(["del", k]); return held.delete(k); },
+    // The draft's live watch: the test fires it as a head move would (`fire(rows)` or `fire(null, { error })`).
+    watchers: new Set(),
+    watchDefinition(which, cb) { this.watchers.add(cb); return () => this.watchers.delete(cb); },
+    fire(...a) { for (const cb of this.watchers) cb(...a); },
   };
 };
 
@@ -315,25 +319,32 @@ await t("**a fresh project's edits made before the tree opens are written when i
   rt.dispose();
 });
 
-await t("**the loser reloads without a reopen**: a superseded (or conflict) event re-reads the draft into the canvas; other events do not", async () => {
+await t("**the canvas follows its draft with no reopen**: the draft's watch re-reads, the canvas takes the tree's version; a failed re-read is said; dispose unwatches", async () => {
   const tree = treeWith([["meta", { name: "Mine", order: ["k1"] }], ["c/k1", { type: "table", label: "old" }]]);
   const s = { ...fakeSession(), db: tree };
-  let emit = null;
   const shown = [];
-  const rt = createProjectRuntime({ mount: fakeMounts().mount,
-    publish: async (_app, deps) => { emit = deps.onEvent; return { session: s, db: tree }; },
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, publish: async () => ({ session: s, db: tree }),
     onDraft: app => shown.push(app.components.map(c => c.label)) });
   await rt.connect({});
   assert.deepStrictEqual(shown, [["old"]]);
-  // Another session of this identity wins k1.
-  tree.held.set("c/k1", { type: "table", label: "the other device's" });
-  emit({ kind: "saving", count: 0 });
-  emit({ kind: "open" });
-  await new Promise(r => setImmediate(r));
-  assert.strictEqual(shown.length, 1, "THE CONTROL: an event that is not the tree moving reloaded the canvas");
-  emit({ kind: "superseded", writeId: 3, keys: ["00"] });
-  await new Promise(r => setImmediate(r));
-  assert.deepStrictEqual(shown.at(-1), ["the other device's"], "the loser's canvas did not reload");
+  assert.strictEqual(tree.watchers.size, 1, "the draft is not watched");
+  // Another session of this identity changed k1 (or this tab lost it): the head moved, the watch re-read.
+  tree.fire([{ key: "meta", body: { name: "Mine", order: ["k1"] } }, { key: "c/k1", body: { type: "table", label: "the other device's" } }]);
+  assert.deepStrictEqual(shown.at(-1), ["the other device's"], "the canvas did not follow its draft");
+  tree.fire(null, { error: new Error("the draft's block could not be loaded") });
+  assert.strictEqual(rt.draft.watchError, "the draft's block could not be loaded", "a failed re-read was not said");
+  assert.strictEqual(shown.length, 2, "a failed re-read changed the canvas");
+  tree.fire([{ key: "meta", body: { name: "Mine", order: ["k1"] } }, { key: "c/k1", body: { type: "table", label: "the other device's" } }]);
+  assert.strictEqual(rt.draft.watchError, null, "the failure was still said after a re-read landed");
+  rt.dispose();
+  assert.strictEqual(tree.watchers.size, 0, "a disposed project kept its draft watched");
+});
+
+await t("**a tree that cannot be watched is refused by name**, never a canvas that silently goes stale", async () => {
+  const tree = treeWith([]);
+  delete tree.watchDefinition;
+  const rt = createProjectRuntime({ mount: fakeMounts().mount, schedule: () => () => {}, publish: async () => ({ session: fakeSession(), db: tree }) });
+  await assert.rejects(rt.connect({}), /offers no `watchDefinition`/);
   rt.dispose();
 });
 
