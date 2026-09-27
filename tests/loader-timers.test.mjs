@@ -55,7 +55,7 @@ export const mountApp = () => ${rows ? "Promise.resolve()" : "new Promise(() => 
   // The app's definition, read from its tree (§19 P5): a definition-only app with no components.
   writeFileSync(join(dir, "definition.js"), `export const appOf = () => ({ name: "T", components: [] });\n`);
   writeFileSync(join(dir, "app-code.js"), `export const codeOf = () => null;\n`);
-  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: { publisher: { definition: async () => [] } }, openMine: async () => {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)}, pageTrace: () => ({ ...globalThis.__traces }) });\n`);
+  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: { publisher: { definition: async () => [{ key: "meta", body: { name: "T" } }] } }, openMine: async () => {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)}, pageTrace: () => ({ ...globalThis.__traces }) });\n`);
   return dir;
 }
 

@@ -9,7 +9,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openPageHost } from "../tests/page-host.mjs";
+import { openFreshBrowser, openPageHost } from "../tests/page-host.mjs";
 
 /** The builder's app id: fixed, so the site's link (B's Register + this id) is the same every run. */
 export const BUILDER_APP = "craftworks-builder";
@@ -61,8 +61,30 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       await db.draftPut("meta", { name: "Craftec Builder", entry: ${JSON.stringify(`f/${BUILDER_ENTRY}`)} });
       const put = await publishSite(${JSON.stringify(BUILDER_APP)}, { sdk, db, session: h.session, manifest: await readSdkManifest(), read, subtle: crypto.subtle });
       return { ...put, files: files.length };`, { ms: STEP_MS * 3 });
-    console.log(`PASS  the builder is published as app ${BUILDER_APP}: ${r.files} code files; its site at ${r.address}, version ${r.version ?? "?"} (${Date.now() - t0} ms)`);
+    console.log(`SITE  the builder is published as app ${BUILDER_APP}: ${r.files} code files; its site at ${r.address}, version ${r.version ?? "?"} (${Date.now() - t0} ms)`);
     console.log(`ADDRESS ${r.address}`);
+    // PASS ONLY IF IT LOADS (main): a fresh browser opens the address through A, read-only, and the builder's page
+    // must reach "SDK ready" (its #sdk line) -- else FAIL with what the page said.
+    const A = Number(process.env.RN_A);
+    if (!Number.isInteger(A) || A <= 0) throw new Error("RN_A must name A's ws port: the published builder is checked through A");
+    if ([7509, 7609].includes(A) && process.env.REALNET_OWNER_OK !== "1") throw new Error(`${A} is the owner's node: reading through it needs REALNET_OWNER_OK=1`);
+    const b = await openFreshBrowser("publish-builder: the builder through A");
+    try {
+      const view = await b.tab("builder-on-a");
+      const tL = Date.now();
+      await view.navigate(`http://127.0.0.1:${A}/v1/contract/web/${r.address}/`, { ms: STEP_MS });
+      const frame = `127.0.0.1:${A}/v1/contract/web/${r.address}/?__sandbox=1`;
+      let seen = null;
+      while (Date.now() - tL < STEP_MS) {
+        seen = await view.evaluateIn(frame, `return { sdk: document.getElementById("sdk")?.textContent ?? null, status: document.getElementById("status")?.textContent ?? null, phases: globalThis.__craftworksOpen ?? null };`).catch(e => ({ error: e.message }));
+        if (/^SDK /.test(seen?.sdk ?? "")) break;
+        await new Promise(ok => setTimeout(ok, 1000));
+      }
+      if (!/^SDK /.test(seen?.sdk ?? "")) throw new Error(`the builder did not reach SDK ready through A in ${STEP_MS / 1000} s: ${JSON.stringify(seen)}`);
+      console.log(`PASS  the builder LOADS through A: "${seen.sdk}" in ${Date.now() - tL} ms`);
+    } finally {
+      await b.stop();
+    }
     failed = 0;
   } catch (e) {
     console.log(`FAIL  the builder was not published: ${e.message}`);

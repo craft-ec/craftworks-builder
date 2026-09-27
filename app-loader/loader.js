@@ -22,7 +22,9 @@ import { decoder, linkModules, openPieces, repairPieces } from "./sdk/pieces.js"
 
 
 const status = document.getElementById("status");
-const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+// An app's own code may replace the page (the builder does): the status line is put back if so, so what the loader
+// says -- a failure above all -- is never said to a detached element (rule 8: never silent).
+const say = (text, bad = false) => { if (status.isConnected === false) document.body.prepend(status); status.textContent = text; status.className = bad ? "bad" : ""; };
 // From `location.href`, never `location.origin`: a node serves an app in a
 // SANDBOXED iframe, whose origin is opaque — "null" — while its URL is the
 // node's own.
@@ -114,8 +116,23 @@ try {
     artefacts: { signer: artefact(bundle, "signer"), block: artefact(bundle, "block"), register: artefact(bundle, "register") },
     ownData: false,
   });
-  // THE APP: its published definition, read from its owner's tree by the one head walk.
-  const records = await opened.backends.publisher.definition("app");
+  // THE APP: its published definition, read from its owner's tree by the one head walk. The node may answer an OLDER
+  // head of that tree than the one the app was published at (the floor is only "the site exists"): then there is no
+  // published definition in what it read, and the loader SAYS so and FOLLOWS the tree -- a live binding of the
+  // definition (the head subscription, no timer) -- until one arrives. Never an empty page with nothing said.
+  const tree = opened.backends.publisher;
+  let records = await tree.definition("app");
+  if (!records.some(r => r.key === "meta")) {
+    say("Waiting for this app's published definition: the node has an older version of its owner's tree…");
+    const live = tree.bind("craftworks.app", { live: true });
+    try {
+      records = await new Promise((ok, no) => {
+        const again = () => tree.definition("app").then(r => { if (r.some(x => x.key === "meta")) ok(r); }, no);
+        live.subscribe(again);
+        again();
+      });
+    } finally { live.stop?.(); }
+  }
   mark("opened");
   // THE OPENER'S PAGE RECORDINGS (builder#160): `__craftworksOpen.pageTrace()` returns ONE STRING, the dump of each
   // page this open runs (`== asked`, `== view`; `openPublished`), read when asked. READ-ONLY by type: a string is all
@@ -170,7 +187,9 @@ try {
   // Mounted: a component whose read ENDED says so on the page (the runtime);
   // the status names it too, so the page is never quietly half-empty.
   const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
-  say(ended.length ? ended.join(" · ") : (app?.name ?? ""), ended.length > 0);
+  // NEVER an empty status (rule 8): what was read, by name, when nothing is shown.
+  const finalLine = app && (app.components ?? []).length === 0 ? `${app.name || "This app"} has no components yet` : (app?.name || "");
+  say(ended.length ? ended.join(" · ") : finalLine, ended.length > 0);
 } catch (e) {
   // THE FIRST THING A PERSON CAN SEND: which piece or artefact, which hash, what failed.
   say(`This app could not open: ${e.message}`, true);
