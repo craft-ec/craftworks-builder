@@ -782,10 +782,10 @@ async function listFromTheTree() {
   const written = `document.getElementById("save-state").hidden && JSON.parse(document.getElementById("def").textContent).name === ${JSON.stringify(name)}`;
   await a.until(written, "A's project written to its draft", 90_000);
   // SAVED ON THE NODE, not only accepted by this tab's engine: a fresh load reads the tree from the node.
-  // The PUBLISHED HEAD, not `saving`: measured, a door write (draftPut) left `saving` at 0 with the head's seq at 0 --
-  // not yet on the node -- and a reload then lost it. Waiting on the head is waiting on the node's answer.
-  await a.until(`window.__craftworksProject?.().connection === "open" && window.__craftworksProject().headSeq > 0`, "A's draft published in the tree's head", 120_000);
-  const savingAtHead = await a.evaluate(`return window.__craftworksProject().saving;`);
+  // SAVED ON THE NODE: nothing unsaved (the session's `saving`, which moves with each write, door writes included since sdk#565) and the
+  // head published past its start. Both the node's answers, never a fixed wait.
+  await a.until(`(() => { const p = window.__craftworksProject?.(); return p?.connection === "open" && p.saving === 0 && p.headSeq > 0 && document.getElementById("save-state").hidden; })()`, "A's draft saved on the node", 120_000);
+  const savingAtHead = await a.evaluate(`return window.__craftworksProject().headSeq;`);
   const id = await a.evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened;`);
   const headBefore = await a.evaluate(`return JSON.stringify({ head: window.__craftworksProject().head, seq: window.__craftworksProject().headSeq });`);
   // Forget THIS DEVICE's memory, and open the builder with no link.

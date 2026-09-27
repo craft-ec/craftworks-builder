@@ -75,8 +75,11 @@ function renderSaveState() {
     : d.error ? ["Not saved:", ` ${reasonOf(d.error)}. Your work is still here in this tab — `]
       : d.pending && !d.attached ? ["Not saved yet:", ` waiting for your node${secs(d.waitingSince)}${why}. Your work is still here in this tab — `]
         // The draft's watch could not re-read it after a change (another tab or device): what is shown may be behind.
-        : d.watchError ? ["Not current:", ` the draft could not be re-read from your node (${reasonOf(d.watchError)}); it is read again at its next change.`]
-          : null;
+        // ON THEIR WAY: the tree has the edits, and the node has not yet confirmed them (the session's `saving`, which
+        // counts every write not yet PUBLISHED -- a door write included, sdk#565). Closing the tab now loses them.
+        : rt.saving > 0 ? ["Not saved yet:", ` ${rt.saving} change${rt.saving === 1 ? "" : "s"} on their way to your node. Your work is still here in this tab — `]
+          : d.watchError ? ["Not current:", ` the draft could not be re-read from your node (${reasonOf(d.watchError)}); it is read again at its next change.`]
+            : null;
   host.hidden = !line;
   if (!line) { host.replaceChildren(); return; }
   const retry = el("button", { type: "button", id: "save-retry", textContent: "Retry", onclick: () => { connectTree(); save(); } });
