@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT } from "../runner.mjs";
-import { backedUp, browser, builderServer, comp, ROWS as ROW_STATES, sleep, STEP_MS, until } from "../page.mjs";
+import { backedUp, browser, builderServer, comp, OPENER_TRACE, recordPageTrace, ROWS as ROW_STATES, sleep, STEP_MS, until } from "../page.mjs";
 
 const APP = {
   name: "live assets-repair",
@@ -130,8 +130,14 @@ export async function run(ctx) {
   const rTab = await r.tab("reader");
   await rTab.navigate(`http://127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/`).catch(() => {});
   const hasRows = `const r = [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].map(td => td.textContent); return ${JSON.stringify(rows)}.every(t => r.includes(t)) || null;`;
-  const read = await until(rTab, hasRows, STEP_MS, `127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/?__sandbox=1`, 500);
+  const frame = `127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  const read = await until(rTab, hasRows, STEP_MS, frame, 500);
   say(read ? `READER a fresh reader on P shows all ${rows.length} rows` : `READER a fresh reader on P did NOT show all ${rows.length} rows within ${STEP_MS / 1000} s`);
+  // The reader's own recording, pass or fail: which reads it sent, how each ended -- a reader that stops is read, not
+  // guessed (run 2026-09-27T08-42: P's log shows its 5 NotFounds, then nothing).
+  const shown = await rTab.evaluateIn(frame, `const t = ${comp("Table", "notes")}; return { rows: t?.querySelectorAll("tbody tr").length ?? null, text: (document.body?.innerText ?? "").slice(0, 400) };`).catch(e => ({ unreadable: e.message }));
+  say(`READER shows ${JSON.stringify(shown)}`);
+  await recordPageTrace(ctx, rTab, "reader", read ? "rows" : "no rows", { frame, read: OPENER_TRACE });
   await r.stop();
 
   // 4. The Assets tab: DEGRADED -> REPAIRING -> REPAIRED, then WHOLE.
