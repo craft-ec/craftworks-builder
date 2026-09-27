@@ -292,7 +292,8 @@ await t("**a record reporting NO state is not counted as confirmed**", async () 
 await t("**a failed handoff leaves the preview in use and the phase 'failed', not 'published'**", async () => {
   const src = await preview();
   const closed = { n: 0 };
-  const target = new sdk.Db();
+  // The published tree, as a session's db: an in-tab Db, with the session's draft watch (it has no head of its own).
+  const target = Object.assign(new sdk.Db(), { watchDefinition: () => () => {} });
   const rt = createProjectRuntime({
     mount: async () => ({ db: src, stop: () => {} }),
     publish: async () => ({ session: { close: () => { closed.n += 1; } }, db: target }),
@@ -308,7 +309,8 @@ await t("**a failed handoff leaves the preview in use and the phase 'failed', no
 
 await t("and a successful one adopts the backend", async () => {
   const src = await preview();
-  const target = new sdk.Db();
+  // The published tree, as a session's db: an in-tab Db, with the session's draft watch (it has no head of its own).
+  const target = Object.assign(new sdk.Db(), { watchDefinition: () => () => {} });
   const rt = createProjectRuntime({
     mount: async () => ({ db: src, stop: () => {} }),
     publish: async () => ({ session: { close() {} }, db: target }),
