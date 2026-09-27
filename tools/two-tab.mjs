@@ -765,6 +765,62 @@ async function draftInTwoTabs() {
   return { followMs, settleMs: now() - t2, winner: settled, loser };
 }
 
+// ---- the project LIST from the tree (§19 P3b) --------------------------------
+/**
+ * THE LIST IS THE OWNER'S TREE'S (P3b): a project is an app of the tree that holds a draft, named by its own meta.
+ * A tab makes a project (imported from the link) and writes its draft; then the SAME profile with its device memory
+ * CLEARED (no lastOpened: a new browser, or a sandboxed frame) opens the builder with no link: it lists the project
+ * from the tree by its meta's name, and opens it -- the newest by meta.created -- with its draft as written.
+ */
+async function listFromTheTree() {
+  const a = await openTab("list A");
+  await freshProfile(a);
+  const design = u => u.replace("preview=1&", "").replace("&preview=1", "");
+  const name = `Listed ${Date.now().toString(36)}`;
+  const linked = `http://127.0.0.1:${PAGE_PORT}/#node=${NODE_PORT}&app=` + encodeURIComponent(JSON.stringify({ ...APP, name }));
+  await a.navigate(linked);
+  const written = `document.getElementById("save-state").hidden && JSON.parse(document.getElementById("def").textContent).name === ${JSON.stringify(name)}`;
+  await a.until(written, "A's project written to its draft", 90_000);
+  // SAVED ON THE NODE, not only accepted by this tab's engine: a fresh load reads the tree from the node.
+  // SAVED ON THE NODE: nothing unsaved (the session's `saving`, which moves with each write, door writes included since sdk#565) and the
+  // head published past its start. Both the node's answers, never a fixed wait.
+  await a.until(`(() => { const p = window.__craftworksProject?.(); return p?.connection === "open" && p.saving === 0 && p.headSeq > 0 && document.getElementById("save-state").hidden; })()`, "A's draft saved on the node", 120_000);
+  const savingAtHead = await a.evaluate(`return window.__craftworksProject().headSeq;`);
+  const id = await a.evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened;`);
+  const headBefore = await a.evaluate(`return JSON.stringify({ head: window.__craftworksProject().head, seq: window.__craftworksProject().headSeq });`);
+  // Forget THIS DEVICE's memory, and open the builder with no link.
+  await a.evaluate(`localStorage.clear(); sessionStorage.clear(); return 1;`);
+  const t0 = now();
+  await a.navigate(design(reopenUrl()));
+  await a.evaluate(`location.reload(); return 1;`).catch(() => {});
+  try {
+    await a.until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === ${JSON.stringify(name)} && JSON.parse(document.getElementById("def").textContent).components.length === ${APP.components.length}`,
+      "the builder, remembering nothing, to open the tree's newest project with its draft", 120_000);
+  } catch (e) {
+    // WHICH part did not happen: the list never read, or read and something else opened.
+    await a.evaluate(`document.getElementById("projects-chip").click(); return 1;`).catch(() => {});
+    await sleep(15_000);   // the list, read AGAIN well after the reload: does the tree hold A's app by then?
+    const saw = await a.evaluate(`return JSON.stringify({
+      name: JSON.parse(document.getElementById("def")?.textContent || "{}").name,
+      open: JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null,
+      waiting: !!document.getElementById("projects-waiting"),
+      rows: [...document.querySelectorAll(".proj-row")].map(r => r.textContent),
+      list: (({ apps, ...s }) => s)(window.__craftworksList?.() ?? {}),
+      appsNow: await (window.__craftworksList?.().apps?.() ?? null),
+      listHead: window.__craftworksList?.().head ?? null,
+      projectHead: window.__craftworksProject?.().head ?? null,
+      line: document.getElementById("save-state")?.textContent ?? "" });`).catch(err => String(err));
+    throw new Error(`${e.message.split("\n")[0]} -- the page: ${saw}; the project made was ${id}, its head before the reload ${headBefore}`);
+  }
+  const reopened = await a.evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened;`);
+  if (reopened !== id) throw new Error(`it opened ${reopened}, not the project made (${id})`);
+  await a.evaluate(`document.getElementById("projects-chip").click(); return 1;`);
+  await a.until(`[...document.querySelectorAll(".proj-row b")].some(b => b.textContent === ${JSON.stringify(name)})`, "the list to name the project from its meta", 60_000);
+  const listed = await a.evaluate(`return document.querySelectorAll(".proj-row").length;`);
+  a.close();
+  return { id, name, openMs: now() - t0, listed, headBefore, savingAtHead };
+}
+
 // ---- both arms -------------------------------------------------------------
 const report = { failures: [] };
 const step = async (name, fn) => {
@@ -782,6 +838,16 @@ const step = async (name, fn) => {
 const results = [];
 // `ONLY=draft`: the draft step alone (a real-network run of the step that changed, rule 0), with its setup.
 const ONLY = process.env.ONLY ?? "";
+if (ONLY === "" || ONLY === "list") {
+  report.list = await step("the project list from the tree", listFromTheTree);
+  if (report.list) console.log(`  [list done] device memory cleared: the builder opened ${report.list.id} (the newest, "${report.list.name}") from the tree in ${report.list.openMs} ms; the list shows ${report.list.listed} project(s), named from meta (A's head before the reload ${report.list.headBefore})`);
+  if (ONLY === "list") {
+    if (report.failures.length) { console.log(`\n${report.failures.length} FAILING:`); for (const f of report.failures) console.log(`  - ${f}`); await host.done(1); }
+    console.log("\nthe list step passes.");
+    rmSync(node.dir, { recursive: true, force: true });
+    await host.done(0);
+  }
+}
 report.draft = await step("the draft in two tabs", draftInTwoTabs);
 if (report.draft) console.log(`  [draft done] X and Y both shown in both tabs ${report.draft.followMs} ms after the edits (no reopen); Z settled on ${report.draft.winner} in ${report.draft.settleMs} ms, tab ${report.draft.loser}'s canvas reloaded to it`);
 if (ONLY === "draft") {

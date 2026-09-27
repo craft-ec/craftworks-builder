@@ -91,14 +91,15 @@ const SHOTS = [
   },
   {
     name: "draft-waiting-for-node",
-    what: "§19 P3: the project's definition is its draft in the owner's tree, which opens with the project. With no node running, every edit stays in the tab and the line under the bar says so — waiting, for how long, and why — and it clears when the draft is written. The list names each project by its draft's meta.",
+    what: "§19 P3: the project's definition is its draft in the owner's tree, which opens with the project. With no node running, every edit stays in the tab and the line under the bar says so — waiting, for how long, and why — and it clears when the draft is written. The list is the owner's tree's: with no node it says it is waiting for it (P3b).",
     // A REAL failure, as above: nothing listens on NODE_PORT.
     hash: () => `#node=${NODE_PORT}&app=${encodeURIComponent(JSON.stringify(APP))}`,
     setup: `
       await new Promise(r => setTimeout(r, 2500));
       document.getElementById("projects-chip").click();
       await new Promise(r => setTimeout(r, 300));`,
-    wait: `document.getElementById("save-state")?.textContent.includes("waiting for your node") && document.querySelectorAll(".proj-row").length > 0`,
+    // The list is the TREE's (P3b): with no node it says it is waiting for it, and lists nothing on a guess.
+    wait: `document.getElementById("save-state")?.textContent.includes("waiting for your node") && !!document.getElementById("projects-waiting")`,
   },
   {
     name: "live-binding-marked",

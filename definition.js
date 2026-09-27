@@ -3,7 +3,7 @@
 // The builder's canvas is written, edit by edit, as records of the app's DRAFT, through the SDK's definition doors
 // (`draftPut` / `draftDelete`: the only writes of the reserved domains). One record per thing an edit touches:
 //
-//   meta          { name, order: [component key…] }
+//   meta          { name, order: [component key…], created, forked_from, tree, versions }
 //   c/<key>       { type, …the component's own fields }     one per canvas component; <key> is its canvas key
 //   d/<domain>    { schema, seed }                           one per data domain the app declares
 //
@@ -44,7 +44,7 @@ export const canonical = v =>
  * The draft records a canvas IS: `Map<key, body>`. Every component must be keyed (`keyed`) first.
  * A domain gets a record when the app declares a schema or a seed for it.
  */
-export function recordsOf({ name = "", components = [], schemas = {}, seed = {} }) {
+export function recordsOf({ name = "", components = [], schemas = {}, seed = {}, created = null, forkedFrom = null, tree = null, versions = null }) {
   const out = new Map();
   const order = [];
   for (const c of components) {
@@ -54,7 +54,9 @@ export function recordsOf({ name = "", components = [], schemas = {}, seed = {} 
     out.set(`c/${key}`, fields);
     order.push(key);
   }
-  out.set("meta", { name, order });
+  // WHAT IDENTIFIES THE PROJECT rides in its meta (P3b, core dev's ruling 2): when it was made, what it was forked
+  // from, its tree binding and the versions it was made with. There is no second record of them anywhere.
+  out.set("meta", { name, order, created, forked_from: forkedFrom, tree, versions });
   for (const d of new Set([...Object.keys(schemas ?? {}), ...Object.keys(seed ?? {})])) {
     out.set(`d/${d}`, { schema: schemas?.[d] ?? null, seed: seed?.[d] ?? null });
   }
@@ -81,6 +83,10 @@ export function appOf(records) {
   order.push(...[...components.keys()].filter(k => !named.has(k)).sort());
   return {
     name: typeof meta.name === "string" ? meta.name : "",
+    created: Number.isFinite(meta.created) ? meta.created : null,
+    forkedFrom: meta.forked_from ?? null,
+    tree: meta.tree ?? null,
+    versions: meta.versions ?? null,
     components: order.map(k => ({ ...components.get(k), [BUILDER]: { key: k } })),
     schemas,
     seed,

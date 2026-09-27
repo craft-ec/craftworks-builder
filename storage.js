@@ -2,8 +2,9 @@
 // node's sandboxed frame, origin null, and there READING `localStorage` throws a SecurityError -- app.js stopped at
 // its first touch and the SDK never started). Every storage touch in the builder goes through `browserStorage`: the
 // browser's own when this document may use it, otherwise an in-memory store with the same surface, and
-// `storageNote()` says so. TEMPORARY: §19 P3 moves the definition into the owner's tree and deletes LocalDb; this
-// module goes with it.
+// `storageNote()` says so. Since §19 P3b every PROJECT fact is in the owner's tree; what is left here is the device's
+// conveniences (which project was open last, which `#app=` link it last imported), and without storage those last
+// only as long as the tab.
 
 /** In-memory `Storage`: what a sandboxed document gets. Lost when the tab closes. */
 export class MemoryStorage {
@@ -36,7 +37,7 @@ const probed = probeStorage();
 export const browserStorage = probed.storage ?? new MemoryStorage();
 
 /** What the person is told when there is no browser storage here; "" when there is. */
-export const NO_STORAGE_NOTE = "no browser storage here: projects live only while this tab is open";
+export const NO_STORAGE_NOTE = "no browser storage here: this device will not remember which project was open; your projects are in your tree";
 export const storageNote = () => (probed.storage ? "" : NO_STORAGE_NOTE);
 /** Why the browser's storage could not be used (the browser's own words), or null. */
 export const storageWhy = () => probed.why;

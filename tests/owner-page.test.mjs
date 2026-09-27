@@ -161,34 +161,25 @@ try {
     { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   await shot("54-1-A-published");
 
-  // THERE IS ALWAYS AN OPEN PROJECT (§19 P3): the page made one, and Publish
-  // published IT, under its id — no adopting of an app that belonged to none.
-  const store = `(() => {
-    const ns = "craftec.builder.db.v1/r/";
-    const rows = p => Object.keys(localStorage).filter(k => k.startsWith(ns + p + "/")).map(k => JSON.parse(localStorage.getItem(k)));
-    const device = JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}");
-    return { projects: rows("project").map(r => r.id),
-             publications: rows("project.publication").map(r => r.fields.pid),
-             open: device.lastOpened ?? null };
-  })()`;
+  // THE OPEN PROJECT PUBLISHED AS ITSELF (§19 P3b): its id IS its app id (32 hex), minted when it was made, and it
+  // is still the open one. Nothing about it is kept on this device but that (`lastOpened`): the list and every fact
+  // of the project are the owner's tree's, and what was put lives in the tab until P5.
+  const store = `(() => ({ open: JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null,
+    stores: Object.keys(localStorage).filter(k => k.startsWith("craftec.builder.db.")).length }))()`;
   const a = await evaluate(`return ${store}`);
-  assert.strictEqual(a.projects.length, 1, `one project: ${JSON.stringify(a)}`);
-  assert.strictEqual(a.open, a.projects[0], "and it is the open one");
-  assert.deepStrictEqual(a.publications, [a.projects[0]], "with one publication record, under its id");
-  await evaluate(`document.getElementById("projects-chip").click();`);
-  await until(`document.getElementById("projects-pop")?.textContent.includes("Project 1")`, "the project listed by its draft's name",
-    { show: `document.getElementById("projects-pop")?.textContent` });
-  console.log("ok page: the open project publishes under its own id, and its publication is recorded", JSON.stringify(a));
+  assert.match(a.open ?? "", /^[0-9a-f]{32}$/, `the open project's id is not its app id: ${JSON.stringify(a)}`);
+  assert.strictEqual(a.stores, 0, "a device-side project store is back");
+  console.log("ok page: the open project publishes as itself, its id its app id, nothing of it stored on the device", JSON.stringify(a));
 
   await until(`!!document.getElementById("projects-new")`, "the New project button");
   await evaluate(`document.getElementById("projects-new").click();`);
   // WAIT ON THE SWITCH ITSELF — B open and A's session closed — not on "the
   // canvas has no cards", which is a proxy that can be true before the switch
   // has run. On timeout the message prints what the page actually showed.
-  const state = `({ name: JSON.parse(document.getElementById("def").textContent).name,
+  const state = `({ open: JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null,
     cards: document.querySelectorAll("#canvas .comp").length, closed: window.__closed,
     label: document.getElementById("publish").textContent })`;
-  await until(`(() => { const s = ${state}; return s.name === "Project 2" && s.cards === 0 && s.closed >= 1; })()`,
+  await until(`(() => { const s = ${state}; return s.open !== ${JSON.stringify(a.open)} && s.cards === 0 && s.closed >= 1; })()`,
     "B to open and A's session to close", { show: state });
   await shot("54-2-new-project-B");
   const b = await evaluate(`
@@ -202,14 +193,14 @@ try {
   assert.strictEqual(b.closed, 1, "A's session is closed by the switch, not left running beside B");
   console.log("ok page: after A publishes, New project B is not Published and A's session is closed (builder#54)", JSON.stringify(b));
 
-  // B, opened as a NEW project, publishes too, and makes no project beyond A and B.
+  // B, opened as a NEW project, publishes too, as itself.
   await evaluate(`document.getElementById("publish").click();`);
   await until(PUBLISHED, "B to publish",
     { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   const after = await evaluate(`return ${store}`);
-  assert.strictEqual(after.projects.length, 2, `A and B, and no third: ${JSON.stringify(after)}`);
-  assert.strictEqual(after.publications.filter(p => p === after.open).length, 1, "B's one publication, under B");
-  console.log("ok page: Publish with a project open creates no second project", JSON.stringify(after.projects.length));
+  assert.match(after.open ?? "", /^[0-9a-f]{32}$/);
+  assert.notStrictEqual(after.open, a.open, "B published as A");
+  console.log("ok page: B publishes as itself", JSON.stringify(after));
   }
 
   // ---- `stop` releases EVERY subscription a mount made ---------------------
