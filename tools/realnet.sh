@@ -3,7 +3,11 @@
 # attaches this run's output). From a builder checkout, on the branch under
 # test:
 #
-#   REALNET_OWNER_OK=1 tools/realnet.sh
+#   REALNET_OWNER_OK=1 tools/realnet.sh [--only <step>[,<step>...]]
+#
+# --only runs those steps and the setup each needs, nothing else (the owner's rule 0: a real-network run tests ONLY
+# the step that changed): tools/realnet-steps.mjs is the ONE table of steps, their setup and the private nodes they
+# use, and a node no chosen step uses is never started. An unknown step is refused before anything starts.
 #
 # It builds THIS tree (an SDK branch is tested by pinning its rev in SDK_REV),
 # prints the revisions it ACTUALLY ran (read back from the build), then runs
@@ -27,6 +31,14 @@
 # (17619)  REALNET_B_REMOTE (7509)  CRAFTWORKS_SDK  CRAFTWORKS_CONTRACTS
 # STEP_MS (180000)  BUDGET_MS (1500000).
 set -u
+ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only) [ $# -ge 2 ] || { echo "REFUSED  --only needs a step name (node tools/realnet-steps.mjs lists them)"; exit 2; }; ONLY="${ONLY:+$ONLY,}$2"; shift 2;;
+    --only=*) ONLY="${ONLY:+$ONLY,}${1#--only=}"; shift;;
+    *) echo "REFUSED  unknown argument $1 (the one option: --only <step>)"; exit 2;;
+  esac
+done
 HOST=${REALNET_HOST:-root@46.224.172.252}
 A=${REALNET_A:-7509}
 # 17619, not 17609: 17609 is the owner's standing demo tunnel.
@@ -48,6 +60,11 @@ BR=${REALNET_B_REMOTE:-7509}
 LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here" || exit 2
+# THE PLAN, before anything starts: which steps run and which private nodes they use (V, O = the pair, LOSE).
+if ! planned=$(node tools/realnet-steps.mjs "$ONLY" 2>&1); then echo "REFUSED  $planned; nothing started"; exit 2; fi
+STEPS=$(sed -n 's/^steps //p' <<<"$planned"); NODES=" $(sed -n 's/^nodes //p' <<<"$planned") "
+uses() { case "$NODES" in *" $1 "*) return 0;; esac; return 1; }
+echo "STEPS ${ONLY:+only $ONLY, with its setup: }$STEPS"
 # EVERY BROWSER A RUN STARTS names its owner: a TMPDIR of the run's own (the
 # system default is where the 06:30 orphan's profile could not be tied to
 # anyone), and a PID file page-host writes each browser into.
@@ -198,9 +215,9 @@ start_private() { # label ws net
   if ! nc -z 127.0.0.1 "$ws" 2>/dev/null; then echo "FAIL  $label's node did not start: $(tail -3 "$dir/log/console.out")"; exit 1; fi
   echo "RAN   $label = a private node on this machine :$ws (pid $pid, freenet $(freenet --version 2>/dev/null | head -1 | sed 's/Freenet version: //') from $(command -v freenet); joined to the real network; dirs + web cache under $dir)"
 }
-start_private V "$VWS" "$VNET"
-start_private O1 "$O1WS" "$O1NET"
-start_private O2 "$O2WS" "$O2NET"
+uses V && start_private V "$VWS" "$VNET"
+uses O && start_private O1 "$O1WS" "$O1NET"
+uses O && start_private O2 "$O2WS" "$O2NET"
 # THE LOSE-DATA STEP's proxies (builder#176): each between a FRESH V page and V's node, answering NotFound for one
 # group's blocks (the SDK's probe ws-lose). Listening is checked with lsof, never by connecting: a connection through
 # the proxy would dial V, and the demo fails on a client connected to V before V's page opens.
@@ -217,11 +234,15 @@ start_lose() { # name port group lose [domain]
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || { echo "FAIL  the ws-lose proxy $name did not start: $(tail -2 "$run/lose-$name.jsonl")"; exit 1; }
   echo "RAN   ws-lose $name = :$port -> V :$VWS (pid $p; --group $3 --lose $4 ${dom[*]}; its log $run/lose-$name.jsonl)"
 }
-start_lose data-m "$LDM" data m bulk
-start_lose data-m1 "$LDM1" data m+1 bulk
-start_lose root-m "$LRM" root m
+if uses LOSE; then
+  start_lose data-m "$LDM" data m bulk
+  start_lose data-m1 "$LDM1" data m+1 bulk
+  start_lose root-m "$LRM" root m
+fi
 # ONE throwaway key on both, through the SDK's own provisioning (provision-signer):
 # they must name the SAME Register, or the pair measures nothing.
+regs=()
+if uses O; then
 seed=$(openssl rand -hex 32)
 cmd="/v1/contract/command?encodingProtocol=native"
 for n in "$O1WS" "$O2WS"; do
@@ -232,11 +253,12 @@ for n in "$O1WS" "$O2WS"; do
 done
 if [ "${regs[0]}" != "${regs[1]}" ]; then echo "FAIL  the pair names two Registers (${regs[0]:0:12}, ${regs[1]:0:12}): nothing to converge"; exit 1; fi
 echo "RAN   O1 :$O1WS and O2 :$O2WS hold ONE throwaway key: Register ${regs[0]:0:16}"
+fi
 
 # ---- the demo ------------------------------------------------------------------
 echo "== demo"
-RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
-  RN_O1="$O1WS" RN_O2="$O2WS" RN_PAIR_REGISTER="${regs[0]}" \
+REALNET_ONLY="$ONLY" RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
+  RN_O1="$O1WS" RN_O2="$O2WS" RN_PAIR_REGISTER="${regs[0]:-}" \
   RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
   RN_BLOCK_WASM="$here/sdk/block.wasm" RN_REGISTER_WASM="$here/sdk/register.wasm" \
   RN_PIECES="$here/sdk/pieces.json" RN_WEBAPP_WASM="$here/sdk/webapp.wasm" \
@@ -262,5 +284,5 @@ echo "B journal since $start (read-only), not rate-limit noise, last 10:"
 remote "journalctl -u freenet-blob --since '$start' --no-pager -o cat | grep -v 'RATE LIMIT' | cut -c1-200 | tail -10"
 # SLOW page loads (tools/realnet-load.mjs): not a failure, never silent -- counted on the RESULT line.
 slow=$( [ -f "$run/slow-loads.txt" ] && wc -l < "$run/slow-loads.txt" | tr -d ' ' || echo 0)
-echo "RESULT $( [ $fail = 0 ] && echo passes || echo breaks ) — builder $(git rev-parse --short HEAD), sdk ${built:0:12}; ${slow} slow page load(s) (NOTE SLOW)"
+echo "RESULT $( [ $fail = 0 ] && echo passes || echo breaks )${ONLY:+ (only $ONLY: $STEPS)} — builder $(git rev-parse --short HEAD), sdk ${built:0:12}; ${slow} slow page load(s) (NOTE SLOW)"
 exit $fail

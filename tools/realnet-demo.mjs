@@ -10,6 +10,9 @@
 //
 //   RN_B=<B's ws, through the tunnel> RN_A=<A's ws> RN_V=<V's ws> RN_O1=<ws> RN_O2=<ws> node tools/realnet-demo.mjs
 //
+// REALNET_ONLY=<step,...> runs those steps and the setup each needs, nothing else (tools/realnet-steps.mjs, the ONE
+// table; realnet.sh --only): a change is tested alone (the owner's rule 0). V and O1/O2 are needed only by their steps.
+//
 // A is only READ: its page GETs, subscribes and asks A's signer whose node it
 // is — nothing is ever typed on A. The user who WRITES does it on V, a
 // private node on this machine joined to the real network. When A is one of the owner's ports that needs REALNET_OWNER_OK=1, the
@@ -25,6 +28,7 @@ import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from 
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { plan } from "./realnet-steps.mjs";
 
 /** Every CLIENT connected to the node on `port` now: `{ pid, command, peer }` (lsof, read-only). */
 function clientsOn(port) {
@@ -49,10 +53,15 @@ const V = { ws: Number(process.env.RN_V), label: process.env.RN_V_LABEL ?? "V (a
 // so they sign for ONE Register. NOT how a person adds a device (Phase 6).
 const O1 = { ws: Number(process.env.RN_O1), label: "O1" };
 const O2 = { ws: Number(process.env.RN_O2), label: "O2" };
-for (const n of [A, B, V, O1, O2]) if (!Number.isInteger(n.ws) || n.ws <= 0) { console.log("FAIL  RN_B, RN_A, RN_V, RN_O1 and RN_O2 must each name a ws port"); process.exit(2); }
+// WHICH STEPS RUN: the plan's (every step when REALNET_ONLY is unset), each with the setup it needs.
+let RUN;
+try { RUN = plan(process.env.REALNET_ONLY ?? ""); } catch (e) { console.log(`FAIL  ${e.message}`); process.exit(2); }
+const runs = name => RUN.steps.includes(name);
+const needed = [A, B, ...(RUN.nodes.includes("V") ? [V] : []), ...(RUN.nodes.includes("O") ? [O1, O2] : [])];
+for (const n of needed) if (!Number.isInteger(n.ws) || n.ws <= 0) { console.log(`FAIL  RN_${n === O1 ? "O1" : n === O2 ? "O2" : n.label} must name a ws port: the steps ${RUN.steps.join(", ")} use it`); process.exit(2); }
 // The A-check's inputs: the Block code, and the SDK's load-piece list with the webapp code (sdk#347's repair).
 for (const e of ["RN_CLASSIFY", "RN_BLOCK_WASM", "RN_PIECES", "RN_WEBAPP_WASM"]) if (!process.env[e]) { console.log(`FAIL  ${e} is required: the A-check cannot judge a PUT without it`); process.exit(2); }
-if ([7509, 7609].includes(V.ws)) { console.log(`FAIL  ${V.ws} is the owner's node: the user who WRITES is never on it`); process.exit(2); }
+if (RUN.nodes.includes("V") && [7509, 7609].includes(V.ws)) { console.log(`FAIL  ${V.ws} is the owner's node: the user who WRITES is never on it`); process.exit(2); }
 if ([7509, 7609].includes(B.ws)) { console.log(`FAIL  ${B.ws} is the owner's node: the demo never PUBLISHES there`); process.exit(2); }
 if ([7509, 7609].includes(A.ws) && process.env.REALNET_OWNER_OK !== "1") {
   console.log(`FAIL  ${A.ws} is the owner's node: reading through it needs REALNET_OWNER_OK=1 (the owner's standing permission for real-network runs)`);
@@ -113,16 +122,25 @@ const [ADDED, EDIT_FROM, EDIT_TO, DELETED, GUEST] = [`added ${tag}`, `to-edit ${
 // its value is a block of its own, and the three form ONE group of k = 3 data members + m parity -- the group ws-lose
 // makes absent at V. Their own domain, so no other step's rows change.
 const BULK = [0, 1, 2].map(i => `bulk ${i} ${tag} ${"x".repeat(1400)}`);
+// THE APP'S NOTES AS THEY ARE NOW: the publish's two, and the edits' once that step ran -- so a step run without
+// "edits" (--only) checks the rows that exist, never rows no step made.
+let rowsWant = ["alpha", "beta"], rowsGone = [];
+const TABLES = `return [...document.querySelectorAll(".rt-comp h4")].filter(h => h.textContent.startsWith("Table ·")).length;`;
+// WHICH NODE SERVES WHICH VERSION: read-only GETs of the site's app.json from each named node.
+const servedOf = async (address, nodes) => Promise.all(nodes.map(async ([label, ws]) => [label, await siteServed(ws, address)]));
 
 try {
   console.log(`app owner ${B.label} ws ${B.ws}; user ${A.label} ws ${A.ws}; rows tagged ${tag}; each step waits at most ${STEP_MS / 1000} s`);
+  console.log(`STEPS ${RUN.only.length ? `only ${RUN.only.join(", ")}, with its setup: ` : "all: "}${RUN.steps.join(", ")}`);
+  let builder = null, pub = null, vis = null, own = null, onSite = null, url = null, frameOf = null;
+  if (runs("publish")) {
   // 1. PUBLISH ON B, from the builder.
   // THE BUILDER'S WIRE, "B" (main, for engineer2's diff of step 9: the builder's page is the one that SIGNS and PUTs
   // or UPDATEs the site, so its Sign (label, seq/prev), its site op and its ReadHead{Site} are only visible here).
   // RECORDING ONLY, started before its tab opens, as A's and V's are: the builder's writes go to B through its own
   // node as today, and no verdict reads this capture (the A-side check reads A and V).
   wires.push({ label: "B", file: join(WIRE_DIR, "wire-B.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), cap: await captureWire(host.debug, { out: join(WIRE_DIR, "wire-B.jsonl"), received: join(WIRE_DIR, "wire-B.received.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), windowOf, label: "B" }) });
-  const builder = await host.tab("builder");
+  builder = await host.tab("builder");
   // The app's notes, and a GUESTBOOK whose data is each USER's own
   // (`source: "mine"`, builder#113/#115): every person writes their own tree.
   const APP = { name: `Notes ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" },
@@ -136,15 +154,17 @@ try {
   for (const t of BULK) { await builder.evaluate(addTo("bulk", t)); await sleep(500); }
   const t1 = Date.now();
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
-  const pub = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
+  pub = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
   if (!step(!!pub?.address, `publish on ${B.label} from the builder (${Date.now() - t1} ms)`, pub?.address ?? await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null))) throw new Error("nothing to open");
-  const url = ws => `http://127.0.0.1:${ws}/v1/contract/web/${pub.address}/`;
-  const frameOf = ws => `127.0.0.1:${ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  url = ws => `http://127.0.0.1:${ws}/v1/contract/web/${pub.address}/`;
+  frameOf = ws => `127.0.0.1:${ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  }
 
   // 2. OPEN BY ADDRESS THROUGH A, in a fresh profile: the rows, as a view.
+  if (runs("view")) {
   visBrowser = await openFreshBrowser("realnet-demo: another user on A");
   wires.push({ label: "A", file: join(WIRE_DIR, "wire-A.jsonl"), requests: join(WIRE_DIR, "requests-A.jsonl"), cap: await captureWire(visBrowser.debug, { out: join(WIRE_DIR, "wire-A.jsonl"), received: join(WIRE_DIR, "wire-A.received.jsonl"), requests: join(WIRE_DIR, "requests-A.jsonl"), windowOf, label: "A" }) });
-  const vis = await visBrowser.tab("user-a");
+  vis = await visBrowser.tab("user-a");
   const t2 = Date.now();
   await loadPage(vis, url(A.ws), { ms: STEP_MS, what: `2. ${A.label} opens the app` });
   const seen = await until(vis, has(["alpha", "beta"]), STEP_MS, 500, frameOf(A.ws));
@@ -154,16 +174,20 @@ try {
   // may be writable; nothing is typed on A.)
   const visUi = await vis.evaluateIn(frameOf(A.ws), `const t = ${comp("Table", "notes")}; return { notesForm: !!${comp("Form", "notes")}, notesButtons: [...(t?.querySelectorAll("button") ?? [])].map(b => b.textContent).filter(x => ["Edit", "Delete"].includes(x)).length, status: document.getElementById("status")?.textContent?.slice(0, 200) };`).catch(e => ({ error: e.message }));
   step(!!seen && visUi.notesForm === false && visUi.notesButtons === 0, `${A.label} opens it by address and shows the app's rows, as a VIEW (${Date.now() - t2} ms)`, seen ? visUi : { status: visUi, rows: await vis.evaluateIn(frameOf(A.ws), TITLES).catch(() => null) });
+  }
 
   // 3. THE APP OWNER'S SITE ON B opens EDITABLE, in its own browser.
+  if (runs("owner-site")) {
   pubBrowser = await openFreshBrowser("realnet-demo: the app owner's site on B");
-  const own = await pubBrowser.tab("owner");
+  own = await pubBrowser.tab("owner");
   const t3 = Date.now();
   await loadPage(own, url(B.ws), { ms: STEP_MS, what: `3. ${B.label} opens the site` });
   const editable = await until(own, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, STEP_MS, 500, frameOf(B.ws));
   await phases(own, frameOf(B.ws), `the owner's site on ${B.label}`);
   if (!step(!!editable, `the app owner's site on ${B.label} opens EDITABLE (${Date.now() - t3} ms)`, editable ? undefined : await own.evaluateIn(frameOf(B.ws), `return document.body?.innerText?.slice(0, 200);`).catch(e => e.message))) throw new Error("no editable site to write from");
-  const onSite = js => own.evaluateIn(frameOf(B.ws), js);
+  onSite = js => own.evaluateIn(frameOf(B.ws), js);
+  }
+  if (runs("edits")) {
   const add = t => onSite(addTo("notes", t));
   const savedOnSite = t => until(own, savedIn("notes", t), STEP_MS, 500, frameOf(B.ws));
   // Each change: saved on the site, then on A's OPEN view with no reload.
@@ -184,20 +208,26 @@ try {
     [EDIT_TO], [EDIT_FROM], EDIT_TO);
   await change("DELETE a row", () => onSite(`const tr = [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr") ?? [])].find(r => r.querySelector("td")?.textContent === ${JSON.stringify(DELETED)}); if (!tr) return "no row"; [...tr.querySelectorAll("button")].find(b => b.textContent === "Delete").click(); return "ok";`),
     [], [DELETED], null);
+  rowsWant = ["alpha", "beta", ADDED, EDIT_TO]; rowsGone = [EDIT_FROM, DELETED];
+  }
 
   // 7. A RELOADED reader reads all three from the network.
+  if (runs("view-reload")) {
   const t7 = Date.now();
   await loadPage(vis, null, { ms: STEP_MS, what: `${A.label} reloads` });
-  const reread = await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws));
-  step(!!reread, `${A.label} RELOADED reads the add, the edit and the delete (${Date.now() - t7} ms)`, reread ? undefined : await vis.evaluateIn(frameOf(A.ws), TITLES).catch(e => e.message));
+  const reread = await until(vis, has(rowsWant, rowsGone), STEP_MS, 500, frameOf(A.ws));
+  step(!!reread, `${A.label} RELOADED reads ${runs("edits") ? "the add, the edit and the delete" : "the published rows"} (${Date.now() - t7} ms)`, reread ? undefined : await vis.evaluateIn(frameOf(A.ws), TITLES).catch(e => e.message));
+  }
 
   // 8. The builder RELOADED reopens connected, and the rows are still there.
+  if (runs("builder-reopen")) {
   const t8 = Date.now();
   await loadPage(builder, null, { ms: STEP_MS, what: "the builder reloads" });
   await sleep(1500);
   const again = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS);
-  const rows = again ? await until(builder, has([ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS) : null;
+  const rows = again ? await until(builder, has(rowsWant, rowsGone), STEP_MS) : null;
   step(!!again && !!rows && again.address === pub.address, `the builder RELOADED reopens connected at the same address, with the rows (${Date.now() - t8} ms)`, { address: again?.address === pub.address ? "same" : again?.address, put: again?.put, rows: !!rows });
+  }
 
   // 8b. THE APP'S STRUCTURE CHANGES, ITS LINK DOES NOT (builder#117; the owner's
   // "google.com doesn't change when its structure changes"). The builder adds a
@@ -205,8 +235,8 @@ try {
   // site is published again at the SAME address (its next version), and A,
   // RELOADED, opens the new structure there with the same rows. (The promise
   // is a reload: an open page keeps the app it loaded.)
+  if (runs("structure")) {
   const t8b = Date.now();
-  const TABLES = `return [...document.querySelectorAll(".rt-comp h4")].filter(h => h.textContent.startsWith("Table ·")).length;`;
   const beforeTables = await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null);
   await builder.evaluate(`window.__craftworksPublished = null; return 1;`);
   await builder.evaluate(`[...document.querySelectorAll("#palette .chip")].find(b => b.textContent.startsWith("Table"))?.click(); return 1;`);
@@ -216,12 +246,11 @@ try {
   // WHICH NODE SERVES WHICH VERSION (the architect; batch 7a's step 9): read-only GETs of the site's app.json from
   // the publisher's node and from A's, right after the republish and again at the step's end. A failure then names
   // its side: the publisher's register never moved, or A's node serves a stale state.
-  const servedOf = async (address, nodes) => Promise.all(nodes.map(async ([label, ws]) => [label, await siteServed(ws, address)]));
   const served9 = re?.address ? await servedOf(re.address, [["B (publisher)", B.ws], ["A", A.ws]]) : null;
   if (served9) console.log(servedLine("right after step 9's republish", served9));
   await loadPage(vis, null, { ms: STEP_MS, what: `${A.label} reloads` });
   const grew = re ? await until(vis, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) > ${Number(beforeTables ?? 0)} && 1) || null;`, STEP_MS, 500, frameOf(A.ws)) : null;
-  const rowsKept = grew ? await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws)) : null;
+  const rowsKept = grew ? await until(vis, has(rowsWant, rowsGone), STEP_MS, 500, frameOf(A.ws)) : null;
   const served9end = re?.address ? await servedOf(re.address, [["B (publisher)", B.ws], ["A", A.ws]]) : null;
   if (served9end) console.log(servedLine("at step 9's end, after A's reload and its waits", served9end));
   // WHAT THE BUILDER'S PAGE SAID (main, for engineer2's lead: a structure change may be a data-tree commit, and a FINAL
@@ -245,6 +274,9 @@ try {
   // link is the SAME, the publish completes (Published, never stuck), and A,
   // opening that link, shows the new structure. It proves same-key convergence
   // across two nodes; it is NOT how a person adds a device (Phase 6's keyset).
+  }
+
+  if (runs("same-key")) {
   const t8c = Date.now();
   const PAIR = { name: `Pair ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" }],
     schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] } } };
@@ -290,6 +322,8 @@ try {
     : { served: false, after: 0, reads: 0, last: null, publisher: `O2 (the publisher) serves no app.json to wait for: ${servedWords(o2Served)}` };
   if (aServed) console.log(`SITE  step 10: the publisher O2 serves ${servedWords(o2Served)}; ${A.label} ${aServed.publisher ? "was not waited on" : aServed.served ? `serves the SAME version after ${aServed.after} ms` : `still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s`} (${aServed.reads} read(s))`);
   // Its OWN tab on A's browser: `vis` keeps showing the main app for the steps after this.
+  // A's browser: the view step's, or one of its own when this step runs without it (--only same-key).
+  visBrowser ??= await openFreshBrowser("realnet-demo: another user on A (the pair's app)");
   const pairView = aServed?.served ? await visBrowser.tab("user-a: the pair's app") : null;
   if (pairView) {
     await loadPage(pairView, pairUrl, { ms: STEP_MS, what: "10. the pair's app on A" });
@@ -301,6 +335,8 @@ try {
     `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms)${aServed && !aServed.served ? ` -- ${aServed.publisher ?? `${A.label} still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s, the publisher ${servedWords(o2Served)}`}` : ""} -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
     { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, o2Served, aServed, aSees: !!aSees, served: served10 && Object.fromEntries(served10), aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
 
+  }
+
   // 9. A USER WRITES THEIR OWN TREE (Phase 3 item 5): on V — a node that
   // is neither the app owner's nor the machine owner's — the app's rows are a
   // view, and the guestbook (source: mine) takes the user's entry into
@@ -310,6 +346,7 @@ try {
   // nothing of this run has opened it yet — a client here is a stray (an
   // earlier run's browser found V's port and provisioned its signer before
   // step 9). Named, and the run fails.
+  if (runs("user-writes")) {
   const strays = clientsOn(V.ws);
   step(strays.length === 0, `no client is connected to ${V.label} before its page opens (${strays.length} found)`, strays.length ? strays.map(c => ({ ...c, command: spawnSync("ps", ["-o", "command=", "-p", String(c.pid)], { encoding: "utf8" }).stdout.trim().slice(0, 200) })) : undefined);
   vBrowser = await openFreshBrowser("realnet-demo: a user who writes their own data, on V");
@@ -350,11 +387,12 @@ try {
   // hold exactly the app's rows, and the guest entry is in neither.
   const pubNotes = await own.evaluateIn(frameOf(B.ws), TITLES).catch(() => null);
   const aNotes = await vis.evaluateIn(frameOf(A.ws), TITLES).catch(() => null);
-  const want = ["alpha", "beta", ADDED, EDIT_TO].sort();
+  const want = [...rowsWant].sort();
   step(JSON.stringify([...(pubNotes ?? [])].sort()) === JSON.stringify(want) && JSON.stringify([...(aNotes ?? [])].sort()) === JSON.stringify(want),
     `the app's notes are untouched by the user's write (on ${B.label}'s site and ${A.label}'s view)`, { ownerSite: pubNotes, onA: aNotes });
+  }
   wireCheck();
-  await loseSteps(url, frameOf);
+  if (runs("lose-data")) await loseSteps(url, frameOf);
 } catch (e) {
   console.log(`FAIL  the run stopped after step ${stepN}: ${e.message}`);
   failed += 1;
@@ -475,11 +513,15 @@ function wireCheck() {
   for (const [w, st] of [["A", A.stats], ["V", Vw.stats]]) {
     if (st.gone?.length || st.notOurs?.length) console.log(`NOTE  capture ${w}: ${st.gone?.length ?? 0} target(s) closed while attached, ${st.notOurs?.length ?? 0} not ours (${[...new Set((st.notOurs ?? []).map(x => x.type))].join(", ")}), network not captured`);
   }
-  step(A.rows.length > 0 && fails.length === 0,
+  // Each verdict reads the window of ITS step: the A-side check A's view (step "view"), the V control V's write
+  // ("user-writes"). A run without that step (--only) says so, and has no such verdict.
+  if (!runs("view")) console.log(`NOTE  no A-side check: the step "view" did not run`);
+  else step(A.rows.length > 0 && fails.length === 0,
     // The BOUNDARY (architect): this proves every target in THIS run's browser sent no user-data write through A;
     // it cannot see a writer outside that browser (an earlier orphan, another harness, a native tool).
     `A view steps: ${fails.length ? `${fails.length} user-data write(s) through A` : "no write through A"} from this run's browser (${repairs} repair PUTs)`,
     fails.length ? fails.slice(0, 8) : A.rows.length ? { requests: A.rows.length, sockets: A.stats.sockets, targets: A.stats.targets } : "NOTHING was captured from A: the check saw no frame at all");
+  if (!runs("user-writes")) { console.log(`NOTE  no V window checks: the step "user-writes" did not run`); return pieceTables(); }
   const v9 = Vw.rows.filter(r => r.window === vOpenWindow && r.verdict === "fail");
   // V's OPEN window (open → before its first user write). REPORT-ONLY until sdk#350 (opening commits nothing on a
   // key-holding node); REALNET_V_OPEN_ENFORCE=1 makes it a step. A MUTANT run is the proof the capture and the decoder
@@ -491,6 +533,9 @@ function wireCheck() {
   const v10 = Vw.rows.filter(r => r.window === vWriteWindow);
   const seen = { blockPuts: v10.filter(r => r.op === "put" && r.code === "block").length, commits: v10.filter(r => r.op === "update" || (r.op === "signer" && r.signer === "sign") || (r.op === "put" && r.code === "other")).length };
   step(seen.blockPuts >= 1 && seen.commits >= 1, `THE CONTROL: V's write (step ${vWriteWindow}) is SEEN on the wire: ${seen.blockPuts} block PUT(s), ${seen.commits} sign/update/register PUT(s)`, seen);
+  pieceTables();
+}
+function pieceTables() {
   console.log(`WIRE  frames kept in ${WIRE_DIR}`);
   // THE PER-PIECE VIEW OF EVERY WINDOW ON EVERY CAPTURED BROWSER (sdk#451's measurement, main; A's and V's, the
   // architect: #451's gate is steps 9 AND 12): which pieces each page asked, each ask's status and time, and the gap
