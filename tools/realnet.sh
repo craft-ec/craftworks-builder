@@ -204,18 +204,21 @@ start_private O2 "$O2WS" "$O2NET"
 # THE LOSE-DATA STEP's proxies (builder#176): each between a FRESH V page and V's node, answering NotFound for one
 # group's blocks (the SDK's probe ws-lose). Listening is checked with lsof, never by connecting: a connection through
 # the proxy would dial V, and the demo fails on a client connected to V before V's page opens.
-start_lose() { # name port group lose
-  local name=$1 port=$2 p
+start_lose() { # name port group lose [domain]
+  local name=$1 port=$2 p dom=()
+  # A DATA arm names its group by IDENTITY: the bulk domain's records (7c's realnet: "the first group of k >= 2" was the
+  # tree's shape -- the root's children, k = 2 -- not the bulk rows).
+  [ -n "${5:-}" ] && dom=(--domain "$5")
   case "$port" in 7509|7609) echo "FAIL  $port is the owner's node: ws-lose never uses it"; exit 2;; esac
-  "$probe_bin/ws-lose" "$port" "$VWS" --group "$3" --lose "$4" 2> "$run/lose-$name.jsonl" &
+  "$probe_bin/ws-lose" "$port" "$VWS" --group "$3" --lose "$4" "${dom[@]}" 2> "$run/lose-$name.jsonl" &
   p=$!
   lpids+=("$p"); lports+=("$port")
   for _ in $(seq 1 40); do lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && break; kill -0 "$p" 2>/dev/null || break; perl -e 'select undef,undef,undef,0.25'; done
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || { echo "FAIL  the ws-lose proxy $name did not start: $(tail -2 "$run/lose-$name.jsonl")"; exit 1; }
-  echo "RAN   ws-lose $name = :$port -> V :$VWS (pid $p; --group $3 --lose $4; its log $run/lose-$name.jsonl)"
+  echo "RAN   ws-lose $name = :$port -> V :$VWS (pid $p; --group $3 --lose $4 ${dom[*]}; its log $run/lose-$name.jsonl)"
 }
-start_lose data-m "$LDM" data m
-start_lose data-m1 "$LDM1" data m+1
+start_lose data-m "$LDM" data m bulk
+start_lose data-m1 "$LDM1" data m+1 bulk
 start_lose root-m "$LRM" root m
 # ONE throwaway key on both, through the SDK's own provisioning (provision-signer):
 # they must name the SAME Register, or the pair measures nothing.

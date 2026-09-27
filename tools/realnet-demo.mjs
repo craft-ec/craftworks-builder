@@ -393,11 +393,13 @@ async function loseSteps(url, frameOf) {
     const c = l.find(x => x.chosen) ?? null;
     const distinct = new Set(l.filter(x => x.not_found).map(x => x.not_found));
     const notFound = l.reduce((n, x) => Math.max(n, x.not_found_total ?? 0), 0);
-    return { chosen: c && { group: c.chosen, k: c.k, lost: c.lost }, notFound, distinct: [...distinct] };
+    return { chosen: c && { group: c.chosen, k: c.k, lost: c.lost, lostData: c.lost_data ?? [] }, notFound, distinct: [...distinct] };
   };
-  // NON-VACUITY (the architect on #179): the loss HAPPENED -- every block the proxy made lost was asked, and answered
-  // NotFound, and nothing else was. Otherwise the arm proves nothing: VOID, never a pass.
-  const happened = ev => !!ev.chosen && ev.distinct.length === ev.chosen.lost.length && ev.chosen.lost.every(id => ev.distinct.includes(id));
+  // NON-VACUITY (the architect on #179): the loss HAPPENED -- every lost DATA member was asked and answered NotFound
+  // (so a row read is a decode), and nothing outside the lost set was. Not every lost PARITY block need be asked: a
+  // repair ends at k, and the page withdraws its GETs still queued (7c's realnet: 6 of 8 lost answered). Otherwise the
+  // arm proves nothing: VOID, never a pass.
+  const happened = ev => !!ev.chosen && ev.chosen.lostData.length > 0 && ev.chosen.lostData.every(id => ev.distinct.includes(id)) && ev.distinct.every(id => ev.chosen.lost.includes(id));
   // THE GROUP IT MUST BE: a data arm's is THE bulk rows' group (k = BULK.length: engineer1 on #179 -- "the first group
   // with k >= 2" is the tree's shape, not the bulk rows); the root arm's is the root's group of one.
   const isBulk = ev => ev.chosen?.group === "data" && ev.chosen.k === BULK.length;
