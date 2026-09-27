@@ -66,7 +66,9 @@ export async function run(ctx) {
   const { say } = ctx;
   if (!process.env.LIVE_FORGET || !existsSync(process.env.LIVE_FORGET)) throw new Error(`LIVE_FORGET must name node-forget (craftworks-sdk probe/); got ${process.env.LIVE_FORGET ?? "unset"}`);
   if (!existsSync(BLOCK_WASM)) throw new Error(`no ${BLOCK_WASM}: build the builder first`);
-  let P = await ctx.nodes.start("P");
+  // LOCAL: P never joins the network. On the network the peers the publish put a block on hand it back (run
+  // 2026-09-27T08-16: P forgot 8, its GETs then answered found 6, silent 2) -- a loss must be of the only copy.
+  let P = await ctx.nodes.start("P", { mode: "local" });
 
   // 1. A plain publish, in a browser kept for the whole run (the project is in its profile).
   const port = await builderServer(ctx);
@@ -102,7 +104,7 @@ export async function run(ctx) {
   // The mount's db (runtime.js's seam): "" until the store can state its root, so waited for.
   const root = await until(tab, `return globalThis.__craftworks?.db?.root?.() || null;`, 60_000, null, 500);
   if (!root) { say("FAIL  the page states no tree root: node-forget cannot tell the head's tree from older versions"); return { failed: true }; }
-  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws}, backed up in ${Date.now() - t0} ms; root ${root}`);
+  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws} (local), backed up in ${Date.now() - t0} ms; root ${root}`);
 
   // 2. P loses m blocks of GROUPS groups, from its own store, while it is stopped.
   let forgot = [];
@@ -137,8 +139,11 @@ export async function run(ctx) {
   const shots = join(ctx.dir, "shots");
   mkdirSync(shots, { recursive: true });
   const capture = async name => {
-    const png = await tab.send("Page.captureScreenshot", { format: "png" }).catch(() => null);
-    if (png?.data) writeFileSync(join(shots, `${name}.png`), Buffer.from(png.data, "base64"));
+    // CDP answers `{ result: { data } }` (tools/shots.mjs); a capture that fails is SAID, never skipped silently.
+    const r = await tab.send("Page.captureScreenshot", { format: "png" }).catch(e => ({ error: e.message }));
+    const data = r?.result?.data;
+    if (data) writeFileSync(join(shots, `${name}.png`), Buffer.from(data, "base64"));
+    else say(`SHOT  ${name}: not captured (${JSON.stringify(r).slice(0, 200)})`);
   };
   const first = await assetsCheck(tab);
   await capture("1-degraded");
