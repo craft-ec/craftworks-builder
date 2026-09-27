@@ -80,19 +80,13 @@ function patchFor(from, to) {
  */
 export const sameFields = (a, b) => sameRows([a ?? {}], [b ?? {}]);
 
-/**
- * The reserved domain the "is this domain live?" markers live in, in the
- * target. Never a domain an app may have: an app that names it is refused.
- */
-export const PUBLISHED_DOMAIN = "craftworks.published";
-const PUBLISHED_SCHEMA = { type: "Published", fields: [] };
-const markerSlot = (slotFrom, d) => slotFrom(0, "domain", d);
+// THE "IS THIS DOMAIN LIVE?" MARKERS are the SDK's (sdk#547, ARCHITECTURE §19): its reserved domain, which the builder
+// never names, written and read only through its doors -- `markPublished(d)`, `isPublished(d)`, and
+// `publishedState(d)` (the marker's record WITH its write state: a marker is confirmed SAVED, builder#88, never
+// merely present).
 
-/** Is domain `d` live in `target`: has a publish into it completed? Reads only. */
-async function isLive(target, slotFrom, d) {
-  if (!(await target.schema(PUBLISHED_DOMAIN))) return false;
-  return Boolean(await target.get(PUBLISHED_DOMAIN, markerSlot(slotFrom, d)));
-}
+/** Is domain `d` live in `target`: has a publish into it completed? Reads only (the SDK's door). */
+const isLive = (target, d) => target.isPublished(d);
 
 /**
  * The slot seed row `i` of domain `d` is published at. `seedMs` is the project
@@ -174,9 +168,6 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   need(!source || typeof source.seedOf === "function", "source.seedOf — a Preview that cannot say which rows are the seed");
   const did = { copied: 0, updated: 0, kept: 0, removed: 0, seeded: 0 };
   const domains = domainsIn(app, schemas);
-  if (domains.includes(PUBLISHED_DOMAIN)) {
-    throw new Error(`\`${PUBLISHED_DOMAIN}\` is reserved for the builder's own records; rename that domain to publish`);
-  }
 
   // EVERY SLOT FIRST. Only two SOURCE rows can collide with each other — the
   // same namespace, the same millisecond, the same eight hash bytes — so a
@@ -196,7 +187,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
       copies.push({ slot, row: r });
     }
     const deletes = source ? (await source.deleted(d)).map(t => slotOf(d, t)).filter(slot => !bySlot.has(slot)) : [];
-    plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
+    plan.push({ d, copies, deletes, live: await isLive(target, d) });
   }
 
   // ONE LOOP: room (builder#94). The target holds a bounded number of writes
@@ -267,10 +258,9 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   const markers = [];
   const marking = tracker(target, markers, confirm, plan.length);
   const markerRoom = fn => roomFor(fn, marking, markers);
-  await markerRoom(() => target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA));
   for (const { d } of plan) {
-    const m = await markerRoom(() => target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {}));
-    markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
+    const m = await markerRoom(() => target.markPublished(d));
+    markers.push({ marker: d });
   }
   await settled(marking);
   return did;
@@ -313,7 +303,9 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
   // here is added only after the handoff's own write of it (`createAt` /
   // `update`), so the saved state read is of THAT write.
   const saved = new Set();
-  const key = row => `${row.domain}\u0000${row.id}`;
+  // A MARKER row is `{ marker: d }`, read through the SDK's door (its record with its state), never by a domain name.
+  const key = row => ("marker" in row ? `marker\u0000${row.marker}` : `${row.domain}\u0000${row.id}`);
+  const read = row => ("marker" in row ? target.publishedState(row.marker) : target.get(row.domain, row.id));
   const t = {
     everyMs, now, sleep, rows,
     get best() { return best; },
@@ -338,7 +330,7 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
       let lost = 0;
       for (const row of rows) {
         if (saved.has(key(row))) continue;
-        const r = await target.get(row.domain, row.id);
+        const r = await read(row);
         // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN,
         // which let the handoff say Published on the strength of a field that
         // was not there — the opposite of the builder's own rule that a

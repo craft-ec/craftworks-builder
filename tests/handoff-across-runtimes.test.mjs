@@ -13,7 +13,9 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
-import { handoff, previewDb, SlotCollision, PUBLISHED_DOMAIN, sameFields } from "../handoff.js";
+import { handoff, previewDb, SlotCollision, sameFields } from "../handoff.js";
+// The SDK's reserved marker domain, named HERE only to look inside the tree (the builder's source never names it).
+const PUBLISHED_DOMAIN = "craftworks.published";
 import { openApp, schemasOf, preloadManifest } from "../runtime-logic.js";
 
 const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
@@ -250,24 +252,30 @@ await t("**S2: the SAME project id from a device with no history: the live edit 
 
 // ---- the marker is ACKNOWLEDGED, like any row (builder#88) -------------------
 
-/** A node over a real Db that accepts the MARKER write and then loses it — once. Counts writes. */
+/**
+ * A node over a real Db that accepts the MARKER write and then loses it — once. Counts writes. The loss is what the
+ * node would show (the marker's record absent, the domain not published): the SDK refuses an ordinary delete of the
+ * reserved domain, so the rollback is this node's answer, not a write.
+ */
 function losesTheMarker() {
   const db = new sdk.Db();
   let lose = true;
+  const lost = new Map();   // marker id -> its domain, while the node shows it rolled back
   const writes = { rows: 0, markers: 0 };
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "createAt") return async (d, ...a) => {
-      const r = await v.call(o, d, ...a);
-      if (d === PUBLISHED_DOMAIN) {
-        writes.markers += 1;
-        if (lose) await o.delete(d, r.record.id);   // the node rolled it back
-      } else writes.rows += 1;
+    if (k === "markPublished") return async d => {
+      const r = await v.call(o, d);
+      writes.markers += 1;
+      if (lose) lost.set(r.record.id, d);   // the node rolled it back
       return r;
     };
+    if (k === "createAt") return async (...a) => { writes.rows += 1; return v.apply(o, a); };
+    if (k === "publishedState") return async d => ([...lost.values()].includes(d) ? null : v.call(o, d));
+    if (k === "isPublished") return async d => ([...lost.values()].includes(d) ? false : v.call(o, d));
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  return { db, target, writes, heal: () => { lose = false; } };
+  return { db, target, writes, heal: () => { lose = false; lost.clear(); } };
 }
 
 await t("**a marker the node LOSES fails the publish — it is not reported done over a domain that reads not-live**", async () => {
@@ -275,7 +283,7 @@ await t("**a marker the node LOSES fails the publish — it is not reported done
   await src.put("tasks", { title: "first" });
   const node = losesTheMarker();
   await assert.rejects(run(src, node.target), /did not reach the node/);
-  assert.strictEqual(await node.db.get(PUBLISHED_DOMAIN, sdk.slotFrom(0, "domain", "tasks")), null, "and indeed nothing marks it live");
+  assert.strictEqual(await node.target.isPublished("tasks"), false, "and indeed nothing marks it live");
   // Through the runtime: the phase says so.
   const { createProjectRuntime } = await import("../project-runtime.js");
   const lost = losesTheMarker();
@@ -314,7 +322,7 @@ await t("a SECOND completion leaves ONE marker per domain", async () => {
 
 await t("THE CONTROL: a publish that did not complete marks nothing live", async () => {
   const { dst } = await attempted();
-  assert.strictEqual(await dst.schema(PUBLISHED_DOMAIN), null, "no marker domain before a completion");
+  assert.strictEqual(await dst.isPublished("tasks"), false, "no marker before a completion");
 });
 
 await t("**the reserved domain is never an APP's**: not preloaded, not bound by the published app — though it IS in the tree", async () => {
@@ -338,12 +346,15 @@ await t("**the reserved domain is never an APP's**: not preloaded, not bound by 
   assert.ok(!bound.has(PUBLISHED_DOMAIN), `the published app read the reserved domain: ${[...bound]}`);
 });
 
-await t("an app that NAMES the reserved domain is refused by name, before anything is written", async () => {
-  const bad = { ...app, components: [...app.components, { type: "table", domain: PUBLISHED_DOMAIN, mode: "owned" }],
-    schemas: { ...app.schemas, [PUBLISHED_DOMAIN]: SCHEMA } };
-  const dst = new sdk.Db();
-  await assert.rejects(run(await preview(), dst, { app: bad, schemas: schemasOf(bad) }), /is reserved/);
-  assert.deepStrictEqual(await dst.domains(), []);
+await t("an app that NAMES a reserved `craftworks.` domain is refused in the SDK's words (its name rule, sdk#547 -- the builder keeps no copy)", async () => {
+  for (const name of ["craftworks.published", "craftworks.app", "craftworks.draft"]) {
+    const bad = { ...app, components: [...app.components, { type: "table", domain: name, mode: "owned" }],
+      schemas: { ...app.schemas, [name]: SCHEMA } };
+    // No Preview (the app's seed): the publish reaches the TARGET's define, where the SDK's rule refuses it. (A
+    // Preview of such an app could not even be opened: its in-tab Db refuses the same define.)
+    await assert.rejects(run(null, new sdk.Db(), { app: bad, schemas: schemasOf(bad) }),
+      new RegExp(`\`${name.replace(".", "\\.")}\` is under the reserved \`craftworks\\.\` prefix`), name);
+  }
 });
 
 await t("fields are compared STRUCTURALLY: key order, nested included, is not a difference", async () => {
