@@ -31,14 +31,11 @@ function fakeMounts() {
 }
 
 /** A fake SDK session, as `open()` returns it. */
-function fakeSession({ provisioned = true, refused = null, exhausted = false, closeThrows = false } = {}) {
+function fakeSession() {
   const s = {
     closed: 0,
     db: { root: () => "r", preload: async () => {} },
-    provisioned: () => provisioned,
-    refused: () => refused,
-    exhausted: () => exhausted,
-    close: () => { s.closed += 1; if (closeThrows) throw new Error("close blew up"); },
+    close: () => { s.closed += 1; },
   };
   return s;
 }
@@ -180,41 +177,24 @@ await t("publishing remounts on the new backend", async () => {
 });
 
 // ---- builder#58: no session outlives its owner -----------------------------
+//
+// A failed `open()` closes its OWN session (the SDK's, tested there: "a REFUSAL
+// ends it in the node's words, and the session is closed"), and publish holds
+// no handle until open() has one to hand over (builder#173). So what is the
+// builder's is the SUCCESSFUL one: owned by the runtime, closed when replaced
+// or disposed.
 
-await t("**the issue's own reproduction: a refused publish closes the session it opened**", async () => {
-  let closed = 0;
-  await publish({}, { appId: "proj1", ids, onSaving: () => {},
-    port: 18080,
-    open: async () => ({ provisioned: () => false, refused: () => "test refusal", close: () => { closed++; } }),
-  }).catch(() => {});
-  assert.strictEqual(closed, 1, "it was 0: the handle was dropped with its socket and timers running");
-});
+/** An `open()` as the SDK's behaves: on failure it closes the session it made, then rejects. */
+const ART = { signer: "s.wasm", block: "b.wasm", register: "r.wasm" };
+const sdkOpen = (s, fail) => async () => { if (fail) { s.close(); throw new Error(fail); } return s; };
 
-for (const [why, opts, msg] of [
-  ["refusal", { provisioned: false, refused: "no room" }, /refused to set up: no room/],
-  ["exhaustion", { provisioned: false, exhausted: true }, /still cannot write/],
-]) {
-  await t(`a ${why} closes the session and keeps the ORIGINAL error, even when close throws`, async () => {
-    const s = fakeSession({ ...opts, closeThrows: true });
-    await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, open: async () => s }), msg,
-      "the close's own failure must not replace the reason that explains what went wrong");
-    assert.strictEqual(s.closed, 1);
-  });
-}
-
-await t("waitFor times out, and ANY error out of the wait closes the session", async () => {
-  // `waitFor` itself, driven with a clock that has already run out.
-  const s = fakeSession({ provisioned: false });
-  const { waitFor } = await import("../publish.js");
-  let now = 0;
-  await assert.rejects(waitFor(s, { everyMs: 0, budgetMs: 10, now: () => (now += 100) }), /in time/);
-  // `publish` does not expose the budget, so the close is proved for any
-  // error the wait throws — which is the property that matters: every exit
-  // that is not a handover closes the handle.
-  const s2 = fakeSession({ provisioned: false, refused: null });
-  s2.exhausted = () => { throw new Error("did not finish setting up in time"); };
-  await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, open: async () => s2 }), /in time/);
-  assert.strictEqual(s2.closed, 1);
+await t("**a refused publish leaves nothing open**: the SDK closed its session, and publish never held it", async () => {
+  const s = fakeSession();
+  const seen = [];
+  await assert.rejects(publish({}, { appId: "proj1", ids, onSaving: () => {}, port: 18080, artefacts: ART, open: sdkOpen(s, "the node refused to set up: no room") }, (p, e) => seen.push([p, e])),
+    /refused to set up: no room/);
+  assert.strictEqual(s.closed, 1, "closed twice (or never): the builder must not close a session it never held");
+  assert.deepStrictEqual(seen.at(-1)[0], "failed");
 });
 
 await t("**retrying after failures leaves exactly one session open**", async () => {
@@ -222,12 +202,12 @@ await t("**retrying after failures leaves exactly one session open**", async () 
   let attempt = 0;
   const open = async () => {
     attempt += 1;
-    const s = fakeSession(attempt < 3 ? { provisioned: false, refused: "busy" } : {});
+    const s = fakeSession();
     sessions.push(s);
-    return s;
+    return sdkOpen(s, attempt < 3 ? "the node refused to set up: busy" : null)();
   };
   const rt = createProjectRuntime({ mount: fakeMounts().mount, publish });
-  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", ids, port: 18080, open }, NO_HANDOFF).catch(() => {});
+  for (let i = 0; i < 3; i += 1) await rt.publish({}, { appId: "proj1", ids, port: 18080, artefacts: ART, open }, NO_HANDOFF).catch(() => {});
   assert.strictEqual(rt.phase, "published");
   assert.deepStrictEqual(sessions.map(s => s.closed), [1, 1, 0],
     "the two failed attempts closed theirs; the one that succeeded is OWNED, not orphaned");
