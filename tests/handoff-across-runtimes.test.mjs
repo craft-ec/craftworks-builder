@@ -13,6 +13,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
+import { wakingOnRead } from "./waking-target.mjs";
 import { handoff, previewDb, SlotCollision, PUBLISHED_DOMAIN, sameFields } from "../handoff.js";
 import { openApp, schemasOf, preloadManifest } from "../runtime-logic.js";
 
@@ -21,7 +22,7 @@ const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`)
 const SCHEMA = { type: "Task", fields: [{ name: "title", kind: "text", required: true }] };
 const app = { components: [{ type: "table", domain: "tasks", mode: "owned" }], schemas: { tasks: SCHEMA }, seed: { tasks: [{ title: "seed" }] } };
 const titles = async db => (await db.scan("tasks")).map(r => r.fields.title).sort();
-const confirm = { everyMs: 0 };
+const confirm = {};
 
 const PID = "r0projectid0000";
 const SEED_MS = Date.now() - 86_400_000;
@@ -60,12 +61,12 @@ const attempted = async () => {
   const dst = new sdk.Db();
   // Pending a while, then the node ANSWERS them rolled back: the attempt fails, named.
   let reads = 0;
-  const unconfirmed = new Proxy(dst, { get(o, k) {
+  const unconfirmed = wakingOnRead(new Proxy(dst, { get(o, k) {
     const v = Reflect.get(o, k);
     if (k === "get") return async (...a) => { const r = await v.apply(o, a); return r && { ...r, state: ++reads > 20 ? "ROLLED_BACK" : "PENDING" }; };
     return typeof v === "function" ? v.bind(o) : v;
-  } });
-  await assert.rejects(run(src, unconfirmed, { confirm: { everyMs: 0 } }), /did not reach the node/);
+  } }));
+  await assert.rejects(run(src, unconfirmed), /did not reach the node/);
   return { src, dst };
 };
 
