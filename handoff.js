@@ -305,6 +305,15 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
   // making progress: behind 255 of them, these rows wait 77 s on a healthy
   // node, and counting only our own confirmations called that a stall.
   let fewest = null;
+  // A row read SAVED stays saved (builder#100): a published write does not
+  // un-publish. What `get` answers LATER can change — another tab deletes the
+  // row (absent), or its range is forgotten — and re-reading it counted a
+  // published row as lost and failed a publish that had succeeded. So a row
+  // is remembered once it reads saved and is never read again. Every row
+  // here is added only after the handoff's own write of it (`createAt` /
+  // `update`), so the saved state read is of THAT write.
+  const saved = new Set();
+  const key = row => `${row.domain}\u0000${row.id}`;
   const t = {
     everyMs, now, sleep, rows,
     get best() { return best; },
@@ -328,6 +337,7 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
       let waiting = 0;
       let lost = 0;
       for (const row of rows) {
+        if (saved.has(key(row))) continue;
         const r = await target.get(row.domain, row.id);
         // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN,
         // which let the handoff say Published on the strength of a field that
@@ -336,6 +346,7 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
         const state = r?.state ?? "UNKNOWN";
         if (!r || state === "ROLLED_BACK") lost += 1;
         else if (!rowSaved(state)) waiting += 1;
+        else saved.add(key(row));
       }
       if (lost && judge) throw new Error(`${lost} of ${rows.length} records did not reach the node; your data is still here`);
       // The engine surface says how many writes it holds unconfirmed
