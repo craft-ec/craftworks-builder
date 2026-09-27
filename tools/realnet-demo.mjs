@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
-import { savedRow } from "./row-judge.mjs";
+import { savedRow, stopOnNoJudge } from "./row-judge.mjs";
 import { evidence as loseEvidence, happened, held, voidHeld as voidHeldLine } from "./lose-evidence.mjs";
 import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from "./site-served.mjs";
 import { appendFileSync } from "node:fs";
@@ -94,7 +94,7 @@ async function phases(tab, frame, who) {
 }
 async function until(tab, expr, ms, every = 500, frame = null) {
   const end = Date.now() + ms; let v;
-  do { v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(e => ({ error: e.message })); if (v && !v.error) return v; await sleep(every); } while (Date.now() < end);
+  do { v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(e => (stopOnNoJudge(e), { error: e.message })); if (v && !v.error) return v; await sleep(every); } while (Date.now() < end);
   return null;
 }
 // EVERY CHECK NAMES ITS COMPONENT, by the heading the runtime gives it

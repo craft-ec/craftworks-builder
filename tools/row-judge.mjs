@@ -8,14 +8,33 @@
 // Page-side scripts (strings a tab evaluates in the app frame).
 
 /**
+ * THE WORDS A FRAME WITHOUT THE SDK'S JUDGE THROWS (builder#177, the architect on #174): no `rowSaved`/`rowBackedUp`
+ * on the app frame is a harness failure, never "not saved yet" -- a gate that read it as "not saved" waited out its
+ * whole budget and then blamed the node.
+ */
+export const NO_JUDGE = "row-judge: no SDK judge on this frame";
+
+/**
+ * FOR EVERY `until`'s CATCH (one home): a missing judge ENDS the wait, named; any other evaluation failure is "not yet"
+ * (`null`). The wait loops swallow a script's errors by design (a page mid-load throws), so this is where a missing
+ * judge gets out.
+ */
+export function stopOnNoJudge(e) {
+  const said = String(e?.message ?? e);
+  if (said.includes(NO_JUDGE)) throw new Error(`${NO_JUDGE}: globalThis.__craftworks has no rowSaved/rowBackedUp (the app frame did not load the SDK's runtime)`);
+  return null;
+}
+
+/**
  * An EXPRESSION: the rows under `scope` (a page-script expression for an element; the whole document by default),
  * each `{ cell, code, saved, backedUp }` -- its first cell, its record's state code, and the SDK's judgement of it.
  */
 export const rowsExpr = (scope = "document") => `(() => {
   const k = globalThis.__craftworks;
+  if (typeof k?.rowSaved !== "function" || typeof k?.rowBackedUp !== "function") throw new Error(${JSON.stringify(NO_JUDGE)});
   return [...((${scope})?.querySelectorAll("tbody tr") ?? [])].filter(tr => tr.querySelector(".rt-state")).map(tr => {
     const code = tr.querySelector(".rt-state").dataset.rowState ?? "";
-    return { cell: tr.querySelector("td")?.textContent ?? null, code, saved: !!k?.rowSaved?.(code), backedUp: !!k?.rowBackedUp?.(code) };
+    return { cell: tr.querySelector("td")?.textContent ?? null, code, saved: !!k.rowSaved(code), backedUp: !!k.rowBackedUp(code) };
   });
 })()`;
 
