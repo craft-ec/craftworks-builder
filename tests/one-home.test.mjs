@@ -19,7 +19,7 @@ const SKIP = ["tests/", "docs/", "sdk/"];
 // with the EXACT number of such lines it may hold and why. A second copy in an
 // excepted file is still red. Each is removed by the work it names.
 const EXEMPT = {
-  "local-db.js": [1, "the builder's OWN local store's record-id rule (never an SDK id)"],
+  // (none: local-db.js, the last, went with the device's project store in P3b)
 };
 
 /** What the scan finds wrong in one file: every copy, or for an excepted one a count other than its own. */
@@ -55,8 +55,11 @@ await t("the detector's control: each shape is caught; the calls it points to ar
   for (const l of ['  await servedText({ url: "./a" })', "  sdk.ids.app(id)", "  // fetch( in a comment"]) assert.equal(copies(l).length, 0, l);
   // An excepted file: its own count passes, ONE MORE copy in it is red.
   const one = '  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {';
-  assert.deepEqual(wrong("local-db.js", one), []);
-  assert.equal(wrong("local-db.js", `${one}\n  const r = await fetch("./x");`).length, 1, "a second copy in an excepted file passed");
+  EXEMPT["planted.js"] = [1, "a planted exception, for this control only"];
+  try {
+    assert.deepEqual(wrong("planted.js", one), []);
+    assert.equal(wrong("planted.js", `${one}\n  const r = await fetch("./x");`).length, 1, "a second copy in an excepted file passed");
+  } finally { delete EXEMPT["planted.js"]; }
   assert.equal(wrong("app.js", one).length, 1, "a copy in a file with no exception passed");
 });
 

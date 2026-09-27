@@ -40,7 +40,9 @@ const canvas = () => ({
   schemas: { tasks: SCHEMA },
   seed: { tasks: [{ title: "one" }] },
 });
-const strip = app => ({ ...app, components: app.components.map(({ [BUILDER]: _k, ...c }) => c) });
+// The canvas's definition, without its keys and without what identifies the project (its meta's other fields,
+// checked on their own below).
+const strip = ({ created: _c, forkedFrom: _f, tree: _t, versions: _v, ...app }) => ({ ...app, components: app.components.map(({ [BUILDER]: _k, ...c }) => c) });
 
 await t("**a canvas is its records, and the records are the canvas**: meta, c/<key> per component, d/<domain> per domain; order and keys survive", async () => {
   const app = canvas();
@@ -230,6 +232,16 @@ await t("**keys are unique on a canvas**: a copied component is a new one", asyn
   keyed(app.components);
   assert.notStrictEqual(app.components[2][BUILDER].key, app.components[0][BUILDER].key);
   assert.strictEqual(recordsOf(app).size, 5);
+});
+
+await t("**what identifies a project rides in its meta** (P3b): created, forked_from, tree, versions, and back", async () => {
+  const app = { ...canvas(), created: 1700000000000, forkedFrom: { project: "src" }, tree: { realm: "public", identity: null }, versions: { sdkRev: "s1" } };
+  const recs = recordsOf(app);
+  assert.deepStrictEqual(Object.keys(recs.get("meta")).sort(), ["created", "forked_from", "name", "order", "tree", "versions"]);
+  const back = appOf(recs);
+  assert.deepStrictEqual([back.created, back.forkedFrom, back.tree, back.versions], [app.created, app.forkedFrom, app.tree, app.versions]);
+  const bare = appOf(recordsOf(canvas()));
+  assert.deepStrictEqual([bare.created, bare.forkedFrom, bare.tree, bare.versions], [null, null, null, null], "a meta without them reads back invented values");
 });
 
 await t("diff compares bodies canonically: field order is not a change", async () => {

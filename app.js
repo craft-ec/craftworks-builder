@@ -8,11 +8,11 @@ import { COMPONENTS, RANGES, byType, mapping, treeView } from "./catalogue.js";
 import { mountApp, sourceOf } from "./runtime.js";
 import { defaultSchema, KINDS, preloadManifest, schemasOf } from "./runtime-logic.js";
 import { handoff } from "./handoff.js";
-import { LIVE_NOTE, isLive, reconnectsOnOpen } from "./publish-state.js";
+import { LIVE_NOTE, isLive } from "./publish-state.js";
 import { appIdOf, buttonFor, publish } from "./publish.js";
 import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
-import { LocalDb } from "./local-db.js";
+import { LIST_APP } from "./project-list.js";
 import { mountProjects } from "./projects-panel.js";
 import { readDeviceSettings, writeDeviceSettings } from "./projects.js";
 import { mountAssets } from "./assets-panel.js";
@@ -35,13 +35,11 @@ try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) {
 // WHERE THE LAST EDIT IS. The definition is the project's draft in its owner's tree (ARCHITECTURE §19): every edit
 // goes to the canvas at once and to the runtime's draft writer, which WAITS for the tree (rule 9) and writes the
 // latest of each record. The line below says what is not in the tree yet, and why; nothing else keeps a copy.
-/** Keep the open project's tree binding and version stamp on this device's list (not its definition). */
-const persistMeta = () =>
-  Promise.resolve(projects?.persist?.()).catch(e => showStorageNotice({ kind: "not-saved", message: `this project's list entry: ${e.message}` }));
+// What identifies the project (created, forked from, its tree binding and version stamp) rides in the same draft,
+// in its meta (P3b): there is no list entry of its own to keep.
 const save = () => {
   keyed(app.components);
   try { rt.edit(app); } catch (e) { showStorageNotice({ kind: "not-saved", message: e.message }); }
-  persistMeta();
   renderSaveState();
 };
 
@@ -67,6 +65,8 @@ if (storageNote()) showStorageNotice({ kind: "no-storage", message: storageNote(
 function renderSaveState() {
   const host = document.getElementById("save-state");
   if (!host) return;
+  // NO PROJECT OPEN yet (the list is still being read from the node): there is no draft to be behind on.
+  if (!openedProject) { host.hidden = true; host.replaceChildren(); return; }
   const d = rt.draft;
   const why = rt.connection === "failed" && rt.connectionError ? ` — ${reasonOf(rt.connectionError)}; trying again` : "";
   const secs = since => (since === null ? "" : ` (${Math.max(0, Math.round((Date.now() - since) / 1000))} s)`);
@@ -133,6 +133,13 @@ const newRuntime = ({ fresh = false } = {}) => {
     onDraft: held => {
       if (r !== rt) return;
       app.name = held.name; app.components = held.components; app.schemas = held.schemas; app.seed = held.seed;
+      // What identifies the project comes with its draft (its meta): when it was made (the handoff's seed slots
+      // derive from it), what it was forked from, its tree binding and versions.
+      app.created = held.created; app.forkedFrom = held.forkedFrom;
+      app.tree = held.tree ?? { realm: "public", identity: null };
+      if (held.versions) app.versions = held.versions; else delete app.versions;
+      if (openedProject && held.created != null) openedProject.created = held.created;
+      stampIfNew(); versionsPanel?.refresh(); offerUpgrade();
       sel = app.components.length ? 0 : -1;
       rt.invalidate();
       render();
@@ -146,12 +153,46 @@ let rt = newRuntime();
 /** Open the open project's owner's tree (the runtime shares one open with a Publish). Needs the SDK and the project. */
 function connectTree() {
   if (!sdkReady || !openedProject) return;
-  rt.connect(treeDeps).catch(() => { /* said on the unsaved line; the runtime retries */ });
+  const mine = rt;
+  rt.connect(treeDeps).then(({ db }) =>
+    // PUBLISHED? DERIVED (§19, P3b ruling 3): the project's published definition holds anything. A published project
+    // reopens connected (`reconnect`), as it always has; nothing on this device records that it was published.
+    db.definition("app").then(rows => {
+      if (mine !== rt || !rows.length || openedProject.published) return;
+      openedProject.published = true;
+      renderAddr(); reconnect();
+    }),
+  ).catch(() => { /* said on the unsaved line; the runtime retries */ });
 }
+
+// THE LIST'S SESSION (P3b ruling 5): the owner's tree opened under the fixed list app, before any project is open,
+// to read which projects exist (`project-list.js`). The same opener and retries as a project's (a project runtime of
+// its own, with nothing to mount and nothing it writes).
+let listRt = null, listReady = null, whenListOpen = null;
+const listOpened = new Promise(r => { whenListOpen = r; });
+function connectList() {
+  if (!sdkReady || listRt) return;
+  listRt = createProjectRuntime({
+    mount: async () => null, publish, fresh: true,
+    onChange: () => {
+      if (listRt.connection === "open" && !listReady) { listReady = listRt.treeDb; whenListOpen(listReady); projects?.refresh?.(); }
+    },
+  });
+  listRt.connect(() => depsFor(LIST_APP)).catch(() => { /* retried by the runtime */ });
+}
+// The acceptance seam for the list's session, READ-ONLY (as `__craftworks` is the mount's): where it stands, and why.
+globalThis.__craftworksList = () => ({ connection: listRt?.connection ?? "none", error: listRt?.connectionError ?? "", ready: Boolean(listReady),
+  // A fresh read of the tree's apps, for the tools (never used by the page).
+  apps: () => listReady?.definitionApps?.() ?? Promise.resolve(null), head: listRt?.session?.headId?.() ?? null });
+// And the open project's: its tree's connection, its draft writer, and the writes not yet saved on the node.
+globalThis.__craftworksProject = () => ({ id: openedProject?.id ?? null, connection: rt.connection, draft: rt.draft, saving: rt.saving,
+  head: rt.session?.headId?.() ?? null, headSeq: rt.session?.headSeq?.() ?? null });
 /** What opening the owner's tree needs: this project's app id, the SDK's opener and artefacts, the named node. */
-const treeDeps = () => ({
+const treeDeps = () => depsFor(appIdOf(openedProject?.id, sdkReady?.ids));
+/** The same, for any app of the tree: the project's (above), or the list app's (`connectList`). */
+const depsFor = appId => ({
   // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's tree this project's data lives in.
-  appId: appIdOf(openedProject?.id, sdkReady?.ids), ids: sdkReady?.ids,
+  appId, ids: sdkReady?.ids,
   open: sdkReady.open,
   artefacts: artefactsOf(sdkReady),
   // NAMED, never defaulted. The node is a decision: it gets a delegate installed and a signing key handed to it.
@@ -207,7 +248,9 @@ let projects = null;
  */
 function openInPage(project, { fresh = false, from = null } = {}) {
   rt.dispose();
-  openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project), publication: project.publication ?? null };
+  // `created` for a new project; an existing one's comes with its draft (`onDraft`). `published` is derived once its
+  // tree is open (`connectTree`); the record of a publication lives in this tab until P5 (`putOnNetwork`).
+  openedProject = { id: project.id, created: project.created ?? null, published: false, publication: null };
   rt = newRuntime({ fresh });
   openedAt = Date.now();
   changedSincePublish = false;
@@ -219,8 +262,9 @@ function openInPage(project, { fresh = false, from = null } = {}) {
     components: keyed(start.components ?? []),
     schemas: start.schemas ?? {},
     seed: start.seed ?? {},
-    tree: project.tree ?? { realm: "public", identity: null },
-    ...(project.versions ? { versions: project.versions } : {}),
+    created: fresh ? (project.created ?? Date.now()) : null,
+    forkedFrom: fresh ? (project.forkedFrom ?? null) : null,
+    tree: { realm: "public", identity: null },
   };
   sel = app.components.length ? 0 : -1;
   // A project with no stamp yet is stamped with what it is being made with NOW.
@@ -234,26 +278,15 @@ function openInPage(project, { fresh = false, from = null } = {}) {
 }
 
 mountProjects($("projects"), {
-  // THIS DEVICE's list: what identifies each project, and its publications. Notices are what the store knows that
-  // is not the fault of any one write, and a person can act on each.
-  db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
+  // THE OWNER'S TREE's list (P3b): the list app's db, null until its session is open.
+  list: () => listReady,
   open: openInPage,
-  // Each row's name and count: its `meta`, read from its draft in the owner's tree (the open project's from the
-  // canvas). "…" until the tree is open.
-  metaOf: async pid => {
-    if (pid === openedProject?.id && rt.draft.loaded) return { name: app.name, order: app.components.map(keyOf) };
-    const db = rt.treeDb;
-    if (!db || !sdkReady) return undefined;
-    const rows = await db.definition("draft", appIdOf(pid, sdkReady.ids));
-    return rows.find(r => r.key === "meta")?.body ?? null;
-  },
-  getProjectMeta: () => ({ tree: app.tree, versions: app.versions ?? null }),
   getApp: () => ({ name: app.name, components: app.components, schemas: app.schemas, seed: app.seed }),
   onChange: () => render(),
 }).then(async p => {
   projects = p;
-  // THERE IS ALWAYS AN OPEN PROJECT: an app in the URL is imported as a new one; otherwise what this device had open
-  // reopens; otherwise a new, empty one.
+  // AN OPEN PROJECT: an app in the URL is imported as a new one; otherwise what this device had open reopens;
+  // otherwise, once the tree's list is read, its NEWEST project (by meta.created), or a new one (P3b ruling 4).
   //
   // IMPORTED ONCE. The link's `app=` is recorded as imported (`importedFrom`, beside `lastOpened` in this device's
   // settings), so the same link on a reload REOPENS the project it became instead of importing it again as another;
@@ -261,12 +294,12 @@ mountProjects($("projects"), {
   // null) rewriting the URL is REFUSED (a SecurityError): the import stands, startup goes on, and the record alone
   // keeps a reload from importing twice. (With no browser storage at all the record lives only as long as the tab.)
   let opened = false;
-  if (importApp && readDeviceSettings(browserStorage).importedFrom === importRaw) opened = await p.reopen();
+  if (importApp && readDeviceSettings(browserStorage).importedFrom === importRaw) opened = p.reopen();
   if (!opened && importApp) {
     await p.create({ from: importApp });
     writeDeviceSettings(browserStorage, { importedFrom: importRaw });
   }
-  else if (!opened && !(await p.reopen())) await p.create();
+  else if (!opened && !p.reopen()) listOpened.then(() => p.openNewestOrCreate());
   if (importApp) {
     try {
       const h = new URLSearchParams(location.hash.slice(1));
@@ -302,9 +335,11 @@ function stampIfNew() {
   // recorded prollyRev and formatTag as null and called the project stamped.
   // A record with holes in it is worse than an unstamped project, because the
   // unstamped one says so.
-  if (app.versions || !bakedInfo || !sdkSelfReport) return;
+  // And only a project whose draft has been read: an existing one's stamp comes WITH its draft (meta.versions), so
+  // stamping before would stamp over what it was made with.
+  if (app.versions || !bakedInfo || !sdkSelfReport || !rt.draft.loaded) return;
   app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
-  persistMeta();
+  save();
   versionsPanel?.refresh();
 }
 
@@ -329,7 +364,7 @@ function offerUpgrade() {
   const btn = el("button", { id: "upgrade-accept", textContent: "Update this project" });
   btn.onclick = () => {
     app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
-    persistMeta();
+    save();
     offerUpgrade();
     versionsPanel?.refresh();
   };
@@ -356,6 +391,7 @@ loadSdk().then(
     offerUpgrade();
     versionsPanel?.refresh();
     render();
+    connectList();
     connectTree();
     reconnect();
   },
@@ -462,14 +498,10 @@ async function putOnNetwork(handle, db) {
     // open-by-address acceptance).
     globalThis.__craftworksPublished = { ...put, head: handle.headId(), app: appIdOf(openedProject?.id, sdkReady?.ids) };
   } catch (e) { warn = `the app was not put on the network: ${e.message}`; }
-  try {
-    const rec = await projects?.published?.({
-      sourceRoot: db?.root?.() ?? null,
-      sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-      ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: handle.headId(), headSeq: put.version ?? null } : {}),
-    });
-    if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.version ?? null };
-  } catch (e) { warn = warn || `history: ${e.message}`; }
+  // WHAT WAS PUT, held in this tab (P3b ruling 3): only `publishApp`'s `last` reads it ("unchanged: PUT nothing"), and
+  // P5 deletes the per-publish PUT with it. A reload may PUT an unchanged app once more.
+  if (openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.version ?? null };
+  void db;
   return warn;
 }
 

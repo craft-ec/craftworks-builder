@@ -1,4 +1,4 @@
-// FOUR INJECTED DEPENDENCIES WITH NO DEFAULT (builder#73).
+// THREE INJECTED DEPENDENCIES WITH NO DEFAULT (builder#73; a fourth, LocalDb's `onNotice`, went with LocalDb in P3b).
 //
 // Each used to default to a no-op that made a safety step look DONE:
 //   handoff  — publish copied nothing, adopted the new backend, said Published
@@ -12,7 +12,6 @@
 // the only thing refusing.
 import assert from "node:assert";
 import { createProjectRuntime } from "../project-runtime.js";
-import { LocalDb } from "../local-db.js";
 
 const node = () => new Proxy({ hidden: false, style: {}, contains: () => false, replaceChildren() {} },
   { get: (t, p) => (p in t ? t[p] : () => {}), set: (t, p, v) => { t[p] = v; return true; } });
@@ -51,18 +50,3 @@ await t("**mountApp without `alive` throws, naming it — the guard never fails 
   assert.ok(h && typeof h.stop === "function");
 });
 
-await t("**a LocalDb that raises a notice with no `onNotice` throws, naming it — never swallowed**", async () => {
-  const m = new Map();
-  const st = { get length() { return m.size; }, key: i => [...m.keys()][i] ?? null,
-    getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) };
-  st.setItem("craftec.builder.db.v1", "{not json");                  // an unreadable legacy store: a notice
-  assert.throws(() => new LocalDb(st), /no `onNotice`.*unreadable-legacy/);
-  const heard = [];
-  new LocalDb(st, undefined, { onNotice: n => heard.push(n.kind) });   // THE CONTROL
-  assert.deepStrictEqual(heard, ["unreadable-legacy"]);
-  // And a store that raises NO notice needs no listener: most callers never pass one.
-  const quiet = new Map();
-  assert.doesNotThrow(() => new LocalDb({ get length() { return quiet.size; }, key: () => null, getItem: () => null, setItem: (k, v) => quiet.set(k, v), removeItem() {} }));
-});
-
-console.log("\nno unsafe defaults: all ok");

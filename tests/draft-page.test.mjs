@@ -1,7 +1,8 @@
 // THE PAGE, for §19 P3: the builder's definition is its project's DRAFT in the owner's tree, written through the
 // project runtime's draft writer. In headless Chrome over the real page, with NO NODE — the case a person meets first:
 //
-//   - there is always an open project (none was stored: a new one is made), named as its draft's meta names it;
+//   - with nothing remembered and no node, no project is opened (the list is the TREE's, P3b) and the list says it is
+//     waiting for the node; a NEW project can still be made and edited;
 //   - an edit is kept in the tab and the line SAYS it is not in the tree yet, and why ("waiting for your node",
 //     counting, with the opener's reason) — builder#56's rule, on the new path;
 //   - a NEW project inherits nothing of the one that was open (builder#53's rule): no components, no schemas;
@@ -33,10 +34,17 @@ try {
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge");
   assert.strictEqual(await evaluate(pageProof), nonce, "the page is not served from this tree");
 
-  // 1. An open project, made because none was stored, named by its draft's meta.
-  await until(`JSON.parse(document.getElementById("def").textContent).name === "Project 1"`, "a first project, named in its definition");
+  // 1. Nothing remembered, no node: the list is the tree's, so it WAITS and says so; no project is opened on a guess.
   await evaluate(`document.getElementById("projects-chip").click()`);
-  await until(`[...document.querySelectorAll(".proj-row b")].some(b => b.textContent === "Project 1")`, "the list names the project from its meta");
+  await until(`!!document.getElementById("projects-waiting")`, "the list waiting for the node");
+  assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 0);
+  const openId = () => evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null`);
+  assert.strictEqual(await openId(), null, "a project was opened with nothing remembered and no list to choose from");
+  //    A NEW project can be made: named "Untitled" (the list, which would number it, is not read yet).
+  await evaluate(`document.getElementById("projects-new").click()`);
+  await until(`JSON.parse(document.getElementById("def").textContent).name === "Untitled"`, "a new project");
+  const firstId = await openId();
+  assert.match(firstId ?? "", /^[0-9a-f]{32}$/, "a new project's id is not its 32-hex app id");
 
   // 2. An edit: kept in the tab, and the line says it is not in the tree yet, and why.
   await evaluate(`document.body.click()`);
@@ -52,7 +60,8 @@ try {
   await evaluate(`document.getElementById("projects-chip").click()`);
   await until(`!!document.getElementById("projects-new")`, "the New project button");
   await evaluate(`document.getElementById("projects-new").click()`);
-  await until(`JSON.parse(document.getElementById("def").textContent).name === "Project 2"`, "the second project");
+  await until(`JSON.parse(document.getElementById("def").textContent).components.length === 0`, "the second project");
+  assert.notStrictEqual(await openId(), firstId, "New project reopened the first");
   const second = await def();
   assert.deepStrictEqual([second.components, second.schemas, second.seed], [[], {}, {}], "a new project inherited the open one's definition");
 
@@ -66,12 +75,9 @@ try {
   await send("Page.reload", {});
   await until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === "From a link"`, "the imported app");
   assert.deepStrictEqual((await def()).components.map(c => c.type), ["table"]);
-  const openId = () => evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null`);
   const importedId = await openId();
   await until(`!location.hash.includes("app=")`, "the link's app= removed from the page's URL once imported");
   assert.strictEqual(await evaluate(`return location.hash`), "#preview=0", "the rest of the hash was not kept");
-  await evaluate(`document.getElementById("projects-chip").click()`);
-  await until(`document.querySelectorAll(".proj-row").length === 3`, "three projects: the import did not replace one");
   // A RELOAD reopens the imported project (with no node its draft is not read yet: it is the project that is
   // compared, and how many there are), and imports nothing.
   await send("Page.reload", {});
@@ -79,9 +85,6 @@ try {
   await until(`document.getElementById("save-reason")?.textContent.includes("reading it from your node")`, "the reopened project reading its draft");
   await sleep(1500);   // time for a second import to happen, if one were going to
   assert.strictEqual(await openId(), importedId, "a reload opened another project than the one imported");
-  await evaluate(`document.getElementById("projects-chip").click()`);
-  await until(`document.querySelectorAll(".proj-row").length > 0`, "the list after the reload");
-  assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 3, "a reload imported the app again as another project");
 
   // 5. FREENET'S SANDBOXED FRAME refuses `history.replaceState` with a URL (a SecurityError, origin null): the
   //    builder still starts and imports, and the recorded `importedFrom` alone keeps a reload from importing twice.
@@ -105,12 +108,9 @@ try {
   await until(`document.getElementById("save-reason")?.textContent.includes("reading it from your node")`, "the reopened project reading its draft");
   await sleep(1500);
   assert.strictEqual(await openId(), sandboxedId, "a reload of the same link, its URL not rewritable, opened another project");
-  await evaluate(`document.getElementById("projects-chip").click()`);
-  await until(`document.querySelectorAll(".proj-row").length > 0`, "the list after the reload");
-  assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 4, "the same link imported twice when its URL could not be rewritten");
   await send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
 
-  process.stdout.write("ok the page: an open project always, the not-saved line says why, a new project inherits nothing, #app= imports once (and in a sandboxed frame)\n");
+  process.stdout.write("ok the page: nothing opened on a guess (the list is the tree's), the not-saved line says why, a new project inherits nothing, #app= imports once (and in a sandboxed frame)\n");
   done(0);
 } catch (e) {
   // `done` EXITS with the code it is given: a failure must hand it 1, or it ends the run green.
