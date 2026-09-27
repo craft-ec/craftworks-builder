@@ -172,9 +172,6 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   need(!source || typeof source.seedOf === "function", "source.seedOf — a Preview that cannot say which rows are the seed");
   const did = { copied: 0, updated: 0, kept: 0, removed: 0, seeded: 0 };
   const domains = domainsIn(app, schemas);
-  if (domains.includes(PUBLISHED_DOMAIN)) {
-    throw new Error(`\`${PUBLISHED_DOMAIN}\` is reserved for the builder's own records; rename that domain to publish`);
-  }
 
   // EVERY SLOT FIRST. Only two SOURCE rows can collide with each other — the
   // same namespace, the same millisecond, the same eight hash bytes — so a

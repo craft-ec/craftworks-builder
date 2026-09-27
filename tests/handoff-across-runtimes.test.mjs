@@ -344,12 +344,13 @@ await t("**the reserved domain is never an APP's**: not preloaded, not bound by 
   assert.ok(!bound.has(PUBLISHED_DOMAIN), `the published app read the reserved domain: ${[...bound]}`);
 });
 
-await t("an app that NAMES the reserved domain is refused by name, before anything is written", async () => {
-  const bad = { ...app, components: [...app.components, { type: "table", domain: PUBLISHED_DOMAIN, mode: "owned" }],
-    schemas: { ...app.schemas, [PUBLISHED_DOMAIN]: SCHEMA } };
-  const dst = new sdk.Db();
-  await assert.rejects(run(await preview(), dst, { app: bad, schemas: schemasOf(bad) }), /is reserved/);
-  assert.deepStrictEqual(await dst.domains(), []);
+await t("an app that NAMES a reserved `craftworks.` domain is refused in the SDK's words (its name rule, sdk#547 -- the builder keeps no copy)", async () => {
+  for (const name of ["craftworks.published", "craftworks.app", "craftworks.draft"]) {
+    const bad = { ...app, components: [...app.components, { type: "table", domain: name, mode: "owned" }],
+      schemas: { ...app.schemas, [name]: SCHEMA } };
+    await assert.rejects(run(await preview(), new sdk.Db(), { app: bad, schemas: schemasOf(bad) }),
+      new RegExp(`\`${name.replace(".", "\\.")}\` is under the reserved \`craftworks\\.\` prefix`), name);
+  }
 });
 
 await t("fields are compared STRUCTURALLY: key order, nested included, is not a difference", async () => {
