@@ -431,7 +431,9 @@ async function putOnNetwork(handle, db) {
     // THE PUBLISHED DEFINITION follows what was put: the draft, in ONE write, made after the handoff's rows are
     // saved (this runs in `after`). "Changed since publish" is the draft against it (§19 P3; P5 makes this write
     // the whole of Publish).
-    await rt.treeDb?.publishDefinition?.();
+    // REQUIRED, never a silent no-op: without the door the published definition would stay behind the site.
+    if (typeof rt.treeDb?.publishDefinition !== "function") throw new Error("publish: the owner's tree has no `publishDefinition` door, so the published definition cannot follow the app");
+    await rt.treeDb.publishDefinition();
     changedSincePublish = false;
     // The acceptance seam: what was published, for the tools that open it
     // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT, and the

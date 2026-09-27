@@ -58,6 +58,19 @@ await t("publish hands every count the session reports to onSaving, in order", a
   assert.deepStrictEqual(seen, [3, 2, 1, 0]);
 });
 
+await t("publish hands EVERY session event to onEvent (the runtime reloads its draft on superseded / conflict)", async () => {
+  let emit;
+  const seen = [];
+  await publish({}, {
+    appId: "proj1", ids,
+    port: 18080, artefacts: { signer: "s.wasm", block: "b.wasm", register: "r.wasm" },
+    onSaving: () => {}, onEvent: e => seen.push(e.kind),
+    open: async ({ onEvent }) => { emit = onEvent; onEvent({ kind: "open" }); return { provisioned: () => true, db: {}, close() {} }; },
+  });
+  for (const kind of ["superseded", "conflict", "saving", "rolledBack"]) emit({ kind, count: 0 });
+  assert.deepStrictEqual(seen, ["open", "superseded", "conflict", "saving", "rolledBack"]);
+});
+
 await t("publish without onSaving is refused BEFORE anything opens — never a page that looks saved", async () => {
   let opened = 0;
   const phases = [];

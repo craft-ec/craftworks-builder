@@ -315,4 +315,26 @@ await t("**a fresh project's edits made before the tree opens are written when i
   rt.dispose();
 });
 
+await t("**the loser reloads without a reopen**: a superseded (or conflict) event re-reads the draft into the canvas; other events do not", async () => {
+  const tree = treeWith([["meta", { name: "Mine", order: ["k1"] }], ["c/k1", { type: "table", label: "old" }]]);
+  const s = { ...fakeSession(), db: tree };
+  let emit = null;
+  const shown = [];
+  const rt = createProjectRuntime({ mount: fakeMounts().mount,
+    publish: async (_app, deps) => { emit = deps.onEvent; return { session: s, db: tree }; },
+    onDraft: app => shown.push(app.components.map(c => c.label)) });
+  await rt.connect({});
+  assert.deepStrictEqual(shown, [["old"]]);
+  // Another session of this identity wins k1.
+  tree.held.set("c/k1", { type: "table", label: "the other device's" });
+  emit({ kind: "saving", count: 0 });
+  emit({ kind: "open" });
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(shown.length, 1, "THE CONTROL: an event that is not the tree moving reloaded the canvas");
+  emit({ kind: "superseded", writeId: 3, keys: ["00"] });
+  await new Promise(r => setImmediate(r));
+  assert.deepStrictEqual(shown.at(-1), ["the other device's"], "the loser's canvas did not reload");
+  rt.dispose();
+});
+
 console.log("\nproject runtime: all ok");

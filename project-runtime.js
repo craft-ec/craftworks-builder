@@ -28,7 +28,7 @@
 // DOM-free on purpose: `mount` and `publish` are injected, so every one of the
 // paths above is testable without a page (tests/project-runtime.test.mjs).
 
-import { appOf, draftWriter } from "./definition.js";
+import { appOf, draftWriter, readDraft } from "./definition.js";
 
 /** Close a session, and never let the cleanup replace the reason. */
 const closeQuietly = h => { try { h?.close?.(); } catch (_) { /* the original error matters */ } };
@@ -113,6 +113,17 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
       return writer.sync(app);
     },
 
+    /** Read the draft again and hand the canvas the tree's version of what this tab is not holding (rule 15). */
+    async reloadDraft() {
+      if (disposed || !treeDb || !draftLoaded) return null;
+      const db = treeDb;
+      const held = await readDraft(db);
+      if (disposed || db !== treeDb) return null;
+      const app = writer.rebase(held);
+      if (app) onDraft(app);
+      return app;
+    },
+
     /**
      * Open the owner's tree, once. Resolves to `{ session, db }`; a second call while one is in flight joins it,
      * and a call after it opened returns it. A failed open is retried on its own, doubling the wait (never given
@@ -139,10 +150,18 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
         publishing?.(p, e);
         onChange();
       };
+      // RULE 15 AT THE CANVAS: a write of this tab's superseded by another session, or refused because what it read
+      // had moved, means the tree moved under it. The draft is read again and the canvas takes the tree's version of
+      // every key this tab is not still holding (the loser reloads). The events name raw keys, never a domain, so
+      // any one of them re-reads: a read of an unchanged draft changes nothing.
+      const onEvent = e => {
+        if (disposed || !treeDb || (e?.kind !== "superseded" && e?.kind !== "conflict")) return;
+        rt.reloadDraft().catch(() => { /* the next event, or a reopen, reads it again */ });
+      };
       connecting = (async () => {
         let res;
         try {
-          res = await publish(null, { ...(typeof deps === "function" ? deps() : deps), onSaving }, report);
+          res = await publish(null, { ...(typeof deps === "function" ? deps() : deps), onSaving, onEvent }, report);
         } catch (e) {
           connecting = null;
           if (disposed) throw e;

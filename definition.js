@@ -184,6 +184,28 @@ export function draftWriter({ onState = () => {}, now = () => Date.now() } = {})
       await kick();
       return held;
     },
+    /**
+     * THE TREE MOVED UNDER THIS TAB (rule 15: another session's write won, and the loser reloads): `held` is the
+     * draft as the tree now has it. Every key this writer is NOT still holding an edit for takes the tree's version;
+     * a key it holds keeps this tab's edit, and is written again. Returns the canvas the merged draft describes, or
+     * null when nothing the canvas shows changed. The base becomes the tree's, so nothing stale is written back.
+     */
+    rebase(held) {
+      if (disposed || !db) return null;
+      const merged = new Map(held);
+      if (want) {
+        const { put, del } = diff(base, want);
+        for (const [k, body] of put) merged.set(k, body);
+        for (const k of del) merged.delete(k);
+      }
+      const before = want ?? base;
+      base = new Map(held);
+      want = merged;
+      const moved = diff(before, merged);
+      tell();
+      kick();
+      return moved.put.length + moved.del.length ? appOf(merged) : null;
+    },
     /** Resolves when nothing is being written (it may still be holding changes for a tree not attached). */
     async idle() { while (running) await running; },
     dispose() { disposed = true; db = null; },

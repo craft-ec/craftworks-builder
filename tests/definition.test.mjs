@@ -236,3 +236,42 @@ await t("diff compares bodies canonically: field order is not a change", async (
   const { put, del } = diff(new Map([["meta", { name: "a", order: [] }]]), new Map([["meta", { order: [], name: "a" }]]));
   assert.deepStrictEqual([put, del], [[], []]);
 });
+
+// RULE 15 AT THE CANVAS: another session's write to the draft wins, and this tab (the loser) reloads -- the tree's
+// version for every key it is not still holding, its own held edit kept and written.
+await t("**the loser reloads**: a rebase takes the tree's version of what this tab is not holding, and keeps what it is", async () => {
+  const c = counted();
+  const b = draftWriter();
+  // Tab A's door to the tree, with its writes HELD until the test lets them go (an edit still in flight).
+  let release, gate = null;
+  const aTree = { ...c.tree, draftPut: async (k, v) => { if (gate) await gate; return c.tree.draftPut(k, v); } };
+  const a = draftWriter();
+  await a.attach(aTree);
+  const appA = canvas();
+  await a.sync(appA);
+  await a.idle();
+  const [x, y] = appA.components.map(k => k[BUILDER].key);
+  await b.attach(c.tree);
+  const appB = appOf(await readDraft(c.db));
+
+  // A edits X; its write is held in flight. B changes Y, and it lands.
+  gate = new Promise(r => { release = r; });
+  appA.components[0].label = "A's X, held";
+  a.sync(appA);
+  appB.components[1].label = "B's Y";
+  await b.sync(appB);
+  await b.idle();
+
+  // The session says the tree moved under A (superseded / conflict): A re-reads its draft and rebases.
+  const shown = a.rebase(await readDraft(c.db));
+  assert.ok(shown, "the canvas was not handed the tree's version");
+  const byKey = Object.fromEntries(shown.components.map(k => [k[BUILDER].key, k.label]));
+  assert.strictEqual(byKey[y], "B's Y", "the loser's canvas did not reload the winner's Y");
+  assert.strictEqual(byKey[x], "A's X, held", "a held edit was dropped by the reload");
+  gate = null;
+  release();
+  await a.idle();
+  const tree = Object.fromEntries(appOf(await readDraft(c.db)).components.map(k => [k[BUILDER].key, k.label]));
+  assert.deepStrictEqual([tree[x], tree[y]], ["A's X, held", "B's Y"], "after the rebase the tree holds both; A wrote no stale Y back");
+  assert.strictEqual(a.rebase(await readDraft(c.db)), null, "an unchanged tree reloaded the canvas");
+});
