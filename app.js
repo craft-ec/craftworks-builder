@@ -1,4 +1,5 @@
 import { loadSdk } from "./sdk-loader.js";
+import { browserStorage, storageNote } from "./storage.js";
 import { publishApp } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
@@ -24,7 +25,7 @@ const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
 let app = { name: "Untitled app", tree: { realm: "public", identity: null }, components: [], schemas: {}, seed: {} };
-try { const s = localStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
+try { const s = browserStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
 // An app definition can arrive in the URL (`#app=<json>`): shareable, and testable.
 try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) app = { ...app, ...JSON.parse(h) }; } catch (_) {}
 // WHETHER THE LAST EDIT IS ON THIS DEVICE (builder#56).
@@ -48,7 +49,7 @@ const markUnsaved = (gen, e) => { if (gen === saveGen) { unsaved = { reason: rea
 const save = () => {
   const gen = ++saveGen;
   let refused = null;
-  try { localStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (e) { refused = e; }
+  try { browserStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (e) { refused = e; }
   // And into the open project's RECORDS, if one is open.
   Promise.resolve(projects?.persist?.()).then(
     () => (refused ? markUnsaved(gen, refused) : markSaved(gen)),
@@ -65,6 +66,8 @@ function showStorageNotice(n) {
   host.hidden = false;
   host.replaceChildren(...storageNotices.map(x => el("div", { className: `note-${x.kind}`, textContent: x.message })));
 }
+// NO BROWSER STORAGE HERE (a sandboxed document, e.g. the builder served from a freenet node): said, never a stop.
+if (storageNote()) showStorageNotice({ kind: "no-storage", message: storageNote() });
 
 /** The unsaved line: shown only while the last edit is not on this device. */
 function renderSaveState() {
