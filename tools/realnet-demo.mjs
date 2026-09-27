@@ -20,7 +20,7 @@ import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { savedRow, stopOnNoJudge } from "./row-judge.mjs";
-import { evidence as loseEvidence, happened, held, voidHeld as voidHeldLine } from "./lose-evidence.mjs";
+import { evidence as loseEvidence, happened, held, namedDamaged, voidHeld as voidHeldLine } from "./lose-evidence.mjs";
 import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from "./site-served.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -378,8 +378,8 @@ try {
 //   * root, m lost: the root's group of one (the root + 7 of its 8 parity) -> every row still reads;
 //   * data, m + 1 lost (THE CONTROL): 2 of the group's 11 left, below k -> the bulk rows must NOT read. A NotFound is
 //     not final (sdk page/src/lib.rs:1143 re-asks a missed block on a backoff; the engine rebuilds only at k): the read
-//     WAITS (rule 8). PINNED: known defect "the wait is not named", flipped by sdk#524 (the reader then names the
-//     group's j of k).
+//     WAITS (rule 8), and the reader NAMES the wait (sdk#524, the pin flipped): the group's lost members DAMAGED at
+//     j of k, j < k.
 async function loseSteps(url, frameOf) {
   const WATCH_MS = Number(process.env.LOSE_WATCH_MS ?? 60_000);
   const log = file => {
@@ -435,12 +435,10 @@ async function loseSteps(url, frameOf) {
         if (!happened(ev)) { step(false, `LOSE ${arm.name}: VOID -- the NotFound answers were not the lost blocks (${ev.distinct.length} distinct answered, ${ev.chosen.lost.length} lost)`, summary(ev)); continue; }
         if (!held(ev)) { step(false, voidHeld(arm, ev), summary(ev)); continue; }
         // The rows are not read and the reader is STILL asking at the end of the watch (an OBSERVATION of rule 8's
-        // wait, not an end). PINNED: nothing NAMES the wait -- `named` is empty (known defect, flipped by sdk#524: the
-        // flip inverts only `unnamed` to the bulk group named DAMAGED with j < k).
+        // wait, not an end) -- and NAMES it (sdk#524, the pin flipped): the bulk group's lost members DAMAGED, j < k.
         // Exactly "the call ANSWERED nothing" (null: no surface; []: none): an evaluation error is not an answer.
-        const unnamed = named === null || (Array.isArray(named) && named.length === 0);
-        step(read < BULK.length && ev.notFound > half.notFound && unnamed,
-          `THE CONTROL: V's node answers NotFound for ${ev.chosen.lost.length} block(s) of ${arm.which} (ws-lose, m + 1): ${read} of ${BULK.length} bulk rows read in ${WATCH_MS / 1000} s, and the reader is still asking (${half.notFound} -> ${ev.notFound} NotFound answers over the last ${WATCH_MS / 2000} s). PINNED: the wait is not yet named (sdk#524)`,
+        step(read < BULK.length && ev.notFound > half.notFound && namedDamaged(named, ev),
+          `THE CONTROL: V's node answers NotFound for ${ev.chosen.lost.length} block(s) of ${arm.which} (ws-lose, m + 1): ${read} of ${BULK.length} bulk rows read in ${WATCH_MS / 1000} s, and the reader is still asking (${half.notFound} -> ${ev.notFound} NotFound answers over the last ${WATCH_MS / 2000} s), and it NAMES the wait: ${Array.isArray(named) ? named.map(d => `${String(d.block).slice(0, 16)} ${d.health} ${d.j} of ${d.k}`).join(", ") || "nothing" : JSON.stringify(named)} (sdk#524)`,
           { ...summary(ev), read, notFoundAtHalf: half.notFound, named });
       }
     } finally {
