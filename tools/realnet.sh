@@ -151,7 +151,9 @@ echo "RAN   builder $(git rev-parse --short HEAD) ($(git rev-parse --abbrev-ref 
 # THE A-SIDE CHECK's one decoder, from THIS SDK revision's own source (the
 # format and its encoders are the SDK's): classify-frames, and frame-put for
 # the Register-PUT mutant.
-if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe --bin classify-frames --bin frame-put --bin provision-signer --bin ws-lose) > "$run/probe-build.log" 2>&1; then
+# ws-lose only for a plan that uses the proxies (the lose-data step): an SDK pinned before it has none to build.
+probes=(--bin classify-frames --bin frame-put --bin provision-signer); uses LOSE && probes+=(--bin ws-lose)
+if ! (cd ".sdk-build/$pinned" && env -u CARGO_TARGET_DIR cargo build -q --release -p probe "${probes[@]}") > "$run/probe-build.log" 2>&1; then
   echo "FAIL  the SDK's classify-frames did not build: $(tail -3 "$run/probe-build.log")"; exit 1
 fi
 probe_bin="$here/.sdk-build/$pinned/target/release"
