@@ -16,7 +16,7 @@ export const addTo = (domain, t) => `const f = ${comp("Form", domain)}; const i 
 export async function until(tab, expr, ms, frame = null, every = 250) {
   const end = Date.now() + ms;
   do {
-    const v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(() => null);
+    const v = await (frame ? tab.evaluateIn(frame, expr) : tab.evaluate(expr)).catch(stopOnNoJudge);
     if (v) return v;
     await sleep(every);
   } while (Date.now() < end);
@@ -68,7 +68,7 @@ export class NotBackedUp extends Error {
 }
 
 // The rows, and the BACKED_UP assertion, are row-judge's (builder#172): by each row's RECORD, judged by the SDK.
-import { ROWS, backedUp } from "../row-judge.mjs";
+import { ROWS, backedUp, stopOnNoJudge } from "../row-judge.mjs";
 export { ROWS, backedUp };
 
 /**

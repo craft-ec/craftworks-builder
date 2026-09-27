@@ -12,7 +12,7 @@
 // tunnel. The builder refuses to publish to the owner's ports (publish.js
 // RESERVED_PORTS), so there the publisher is the server's node.
 import { execFileSync } from "node:child_process";
-import { rowsExpr } from "./row-judge.mjs";
+import { rowsExpr, stopOnNoJudge } from "./row-judge.mjs";
 import { openPageHost, openFreshBrowser, spawnNode } from "../tests/page-host.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -73,7 +73,7 @@ let builderTab = null;
 async function until(tab, expr, ms, everyMs = 1000) {
   const end = Date.now() + ms;
   let v;
-  do { v = await tab.evaluate(expr).catch(e => ({ error: e.message })); if (v && !v.error) return v; await sleep(everyMs); } while (Date.now() < end);
+  do { v = await tab.evaluate(expr).catch(e => (stopOnNoJudge(e), { error: e.message })); if (v && !v.error) return v; await sleep(everyMs); } while (Date.now() < end);
   return v;
 }
 
@@ -81,7 +81,7 @@ async function until(tab, expr, ms, everyMs = 1000) {
 async function untilIn(tab, expr, ms, everyMs = 1000, frame = "__sandbox=1") {
   const end = Date.now() + ms;
   let v;
-  do { v = await tab.evaluateIn(frame, expr).catch(e => ({ error: e.message })); if (v && !v.error) return v; await sleep(everyMs); } while (Date.now() < end);
+  do { v = await tab.evaluateIn(frame, expr).catch(e => (stopOnNoJudge(e), { error: e.message })); if (v && !v.error) return v; await sleep(everyMs); } while (Date.now() < end);
   return v;
 }
 

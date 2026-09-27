@@ -31,7 +31,7 @@
 //     in local mode (F35), and publishing is entirely delegate-originated.
 
 import assert from "node:assert";
-import { rowsExpr } from "./row-judge.mjs";
+import { NO_JUDGE, rowsExpr } from "./row-judge.mjs";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { now, openPageHost } from "../tests/page-host.mjs";
@@ -198,15 +198,21 @@ const liveMode = tab => tab.evaluate(
  * starts after it. A poll begun after the click can miss a state that lasted
  * less than its first look; an observer installed first cannot.
  */
+// Each chip's RECORD code (`data-row-state`, builder#172), never its words (builder#177): the observer watches the
+// attribute too, since a row's code changes in place.
 const watchChips = tab => tab.evaluate(`
   window.__chipsSeen = [];
-  const note = () => { for (const e of document.querySelectorAll(".rt-comp .rt-state")) window.__chipsSeen.push(e.textContent); };
+  const note = () => { for (const e of document.querySelectorAll(".rt-comp .rt-state")) window.__chipsSeen.push(e.dataset.rowState ?? ""); };
   window.__chipObs?.disconnect();
   window.__chipObs = new MutationObserver(note);
-  window.__chipObs.observe(document.body, { subtree: true, childList: true, characterData: true });
+  window.__chipObs.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["data-row-state"] });
   note();
   return 1;`);
 const chipsSeen = tab => tab.evaluate(`return [...new Set(window.__chipsSeen ?? [])];`);
+/** Did any chip show a record the SDK judges NOT saved (a write still pending)? By the SDK's rowSaved, never words. */
+const sawUnsaved = tab => tab.evaluate(`const k = globalThis.__craftworks;
+  if (typeof k?.rowSaved !== "function") throw new Error(${JSON.stringify(NO_JUDGE)});
+  return (window.__chipsSeen ?? []).some(c => c && !k.rowSaved(c));`);
 
 /** What each row's chip says about its own write. */
 const chips = tab => tab.evaluate(
@@ -515,7 +521,7 @@ async function writePath() {
   // shorter than a poll's first look is still seen.
   await sleep(5000);
   const seenStates = await chipsSeen(a);
-  const sawPending = seenStates.includes("saving") || seenStates.includes("queued");
+  const sawPending = await sawUnsaved(a);
 
   await a.until(
     `${rowsExpr()}.filter(r => r.saved).length >= ${start + 1}`,
@@ -771,7 +777,7 @@ check("2. the control follows the owner's rule: not live = read when needed", ()
 });
 check("3a. a write reached the network: the chip said saving, then saved", () => {
   assert.ok(report.writePath?.sawPending,
-    `the chip never said saving or queued, so the transition is not being observed at all — states the observer saw from before the click: ${JSON.stringify(report.writePath?.seenStates)}`);
+    `no chip ever showed a record the SDK judges unsaved, so the transition is not being observed at all — record codes the observer saw from before the click: ${JSON.stringify(report.writePath?.seenStates)}`);
   assert.ok(report.writePath.settled.some(r => r.saved),
     `no row reached saved by its record; rows were ${JSON.stringify(report.writePath.settled.slice(0, 5))}`);
 });
