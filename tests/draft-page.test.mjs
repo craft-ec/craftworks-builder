@@ -80,7 +80,33 @@ try {
   await until(`document.querySelectorAll(".proj-row").length > 0`, "the list after the reload");
   assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 3, "a reload imported the app again as another project");
 
-  process.stdout.write("ok the page: an open project always, the not-saved line says why, a new project inherits nothing, #app= imports\n");
+  // 5. FREENET'S SANDBOXED FRAME refuses `history.replaceState` with a URL (a SecurityError, origin null): the
+  //    builder still starts and imports, and the recorded `importedFrom` alone keeps a reload from importing twice.
+  await send("Page.enable", {});
+  const added = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `history.replaceState = () => { throw new DOMException("The operation is insecure.", "SecurityError"); };`,
+  });
+  const identifier = added.result?.identifier ?? added.identifier;
+  const sandboxed = { name: "Sandboxed link", components: [{ type: "list", domain: "tasks", mode: "owned" }] };
+  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#app=${encodeURIComponent(JSON.stringify(sandboxed))}` });
+  await send("Page.reload", {});
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK ready although replaceState is refused");
+  await until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === "Sandboxed link"`, "the link imported although its URL could not be rewritten");
+  assert.ok(await evaluate(`return location.hash.includes("app=")`), "THE CONTROL: the refusal was not in force (the URL was rewritten)");
+  const notes = await evaluate(`return document.getElementById("storage-note")?.textContent ?? ""`);
+  assert.ok(!/insecure|SecurityError|project list/i.test(notes), `the refused URL rewrite surfaced as a failure: ${notes}`);
+  const sandboxedId = await openId();
+  await send("Page.reload", {});
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK ready after the reload");
+  await until(`document.getElementById("save-reason")?.textContent.includes("reading it from your node")`, "the reopened project reading its draft");
+  await sleep(1500);
+  assert.strictEqual(await openId(), sandboxedId, "a reload of the same link, its URL not rewritable, opened another project");
+  await evaluate(`document.getElementById("projects-chip").click()`);
+  await until(`document.querySelectorAll(".proj-row").length > 0`, "the list after the reload");
+  assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 4, "the same link imported twice when its URL could not be rewritten");
+  await send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+
+  process.stdout.write("ok the page: an open project always, the not-saved line says why, a new project inherits nothing, #app= imports once (and in a sandboxed frame)\n");
   done(0);
 } catch (e) {
   // `done` EXITS with the code it is given: a failure must hand it 1, or it ends the run green.
