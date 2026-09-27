@@ -4,6 +4,11 @@
 # test:
 #
 #   REALNET_OWNER_OK=1 tools/realnet.sh [--only <step>[,<step>...]]
+#   REALNET_OWNER_OK=1 tools/realnet.sh --publish-builder   (= tools/publish-builder.sh)
+#
+# --publish-builder publishes THIS builder build as a site on B, at the same address every run (the next version),
+# and checks it through A read-only: tools/publish-builder.mjs, under this script's lock, tunnel, build and B check.
+# It starts no private node.
 #
 # --only runs those steps and the setup each needs, nothing else (the owner's rule 0: a real-network run tests ONLY
 # the step that changed): tools/realnet-steps.mjs is the ONE table of steps, their setup and the private nodes they
@@ -31,12 +36,13 @@
 # (17619)  REALNET_B_REMOTE (7509)  CRAFTWORKS_SDK  CRAFTWORKS_CONTRACTS
 # STEP_MS (180000)  BUDGET_MS (1500000).
 set -u
-ONLY=""
+ONLY=""; PROGRAM=tools/realnet-demo.mjs
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) [ $# -ge 2 ] || { echo "REFUSED  --only needs a step name (node tools/realnet-steps.mjs lists them)"; exit 2; }; ONLY="${ONLY:+$ONLY,}$2"; shift 2;;
     --only=*) ONLY="${ONLY:+$ONLY,}${1#--only=}"; shift;;
-    *) echo "REFUSED  unknown argument $1 (the one option: --only <step>)"; exit 2;;
+    --publish-builder) PROGRAM=tools/publish-builder.mjs; shift;;
+    *) echo "REFUSED  unknown argument $1 (the options: --only <step>, --publish-builder)"; exit 2;;
   esac
 done
 HOST=${REALNET_HOST:-root@46.224.172.252}
@@ -61,8 +67,14 @@ LOCK=${REALNET_LOCK:-/tmp/craftworks-realnet.lock}
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here" || exit 2
 # THE PLAN, before anything starts: which steps run and which private nodes they use (V, O = the pair, LOSE).
-if ! planned=$(node tools/realnet-steps.mjs "$ONLY" 2>&1); then echo "REFUSED  $planned; nothing started"; exit 2; fi
-STEPS=$(sed -n 's/^steps //p' <<<"$planned"); NODES=" $(sed -n 's/^nodes //p' <<<"$planned") "
+if [ "$PROGRAM" = tools/publish-builder.mjs ]; then
+  [ -z "$ONLY" ] || { echo "REFUSED  --publish-builder runs no demo step: drop --only $ONLY; nothing started"; exit 2; }
+  # V: the private node the published builder SAVES through (a draft in V's own tree) -- never A, the owner's.
+  STEPS=publish-builder; NODES=" V "
+else
+  if ! planned=$(node tools/realnet-steps.mjs "$ONLY" 2>&1); then echo "REFUSED  $planned; nothing started"; exit 2; fi
+  STEPS=$(sed -n 's/^steps //p' <<<"$planned"); NODES=" $(sed -n 's/^nodes //p' <<<"$planned") "
+fi
 uses() { case "$NODES" in *" $1 "*) return 0;; esac; return 1; }
 echo "STEPS ${ONLY:+only $ONLY, with its setup: }$STEPS"
 # EVERY BROWSER A RUN STARTS names its owner: a TMPDIR of the run's own (the
@@ -257,8 +269,8 @@ if [ "${regs[0]}" != "${regs[1]}" ]; then echo "FAIL  the pair names two Registe
 echo "RAN   O1 :$O1WS and O2 :$O2WS hold ONE throwaway key: Register ${regs[0]:0:16}"
 fi
 
-# ---- the demo ------------------------------------------------------------------
-echo "== demo"
+# ---- the demo (or the builder's publication) ------------------------------------
+echo "== $( [ "$PROGRAM" = tools/realnet-demo.mjs ] && echo demo || echo publish-builder )"
 REALNET_ONLY="$ONLY" RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VWS" RN_V_LABEL="V" \
   RN_O1="$O1WS" RN_O2="$O2WS" RN_PAIR_REGISTER="${regs[0]:-}" \
   RN_CLASSIFY="$probe_bin/classify-frames" RN_FRAME_PUT="$probe_bin/frame-put" \
@@ -268,7 +280,7 @@ REALNET_ONLY="$ONLY" RN_B="$T" RN_B_LABEL="B" RN_A="$A" RN_A_LABEL="A" RN_V="$VW
   RN_V_LOSE_DATA_M="$LDM" RN_V_LOSE_DATA_M_LOG="$run/lose-data-m.jsonl" \
   RN_V_LOSE_DATA_M1="$LDM1" RN_V_LOSE_DATA_M1_LOG="$run/lose-data-m1.jsonl" \
   RN_V_LOSE_ROOT_M="$LRM" RN_V_LOSE_ROOT_M_LOG="$run/lose-root-m.jsonl" \
-  node tools/realnet-demo.mjs
+  node "$PROGRAM"
 fail=$?
 
 # ---- cleanup, proven ----------------------------------------------------------

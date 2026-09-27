@@ -8,7 +8,7 @@
 import assert from "node:assert";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { packageApp, weightCarrying, NAMED, PLATFORM, NOT_YET_NAMED } from "../package-app.js";
+import { packageStarter, weightCarrying, NAMED, PLATFORM, NOT_YET_NAMED } from "../package-app.js";
 import { loadSdk } from "../sdk-loader.js";
 // The REAL SDK's id rules: the manifest's shapes are checked by them.
 const { ids } = await loadSdk(readFileSync(fileURLToPath(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url))));
@@ -41,14 +41,15 @@ if (!existsSync(piecesPath)) { process.stdout.write("  FAIL sdk/pieces.json is n
 const PIECES = JSON.parse(readFileSync(piecesPath, "utf8"));
 
 await t("**a packaged app carries NONE of the four artefacts: it names the pieces they are rebuilt from**", async () => {
-  const { files } = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
+  const { files } = await packageStarter({ carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
   const carried = Object.keys(files).filter(p => /\.wasm$/.test(p));
   assert.deepStrictEqual(carried, [],
     `the bundle carries ${carried.join(", ")} — every app would ship its own copy of bytes ` +
     "every other app already has");
   // And it NAMES all four, with the hashes this build produced.
   const named = JSON.parse(files["artefacts.json"]);
-  assert.deepStrictEqual(named.pieces, { core: PIECES.core, provisioning: PIECES.provisioning }, "the bundle does not name the pieces to rebuild them from");
+  assert.deepStrictEqual(named.pieces, { app: PIECES.app }, "the starter does not name the build's ONE piece set");
+  assert.ok(!("app.json" in files), "the starter carries an app.json: the app is data in its owner's tree (§19)");
   for (const n of NAMED) {
     assert.strictEqual(named[n].sha256, manifest[n].sha256,
       `${n} is named with a hash that is not this build's`);
@@ -63,7 +64,7 @@ await t("**the measurement: naming instead of carrying**", async () => {
   const { starterFiles } = await import("../publish-app.js");
   const real = {};
   for (const [p, from] of Object.entries(starterFiles(manifest, ids))) real[p] = readFileSync(at(`../${from}`));
-  const { bytes } = await packageApp(APP, { carried: real, manifest, pieces: PIECES, subtle, ids });
+  const { bytes } = await packageStarter({ carried: real, manifest, pieces: PIECES, subtle, ids });
   const carrying = weightCarrying(bytes, manifest);
   const saved = carrying - bytes;
   process.stdout.write(
@@ -80,29 +81,17 @@ await t("**the measurement: naming instead of carrying**", async () => {
 await t("**the bundle hash is DETERMINISTIC** — rollback depends on it", async () => {
   // builder#47 is blocked on this: a publication can only be rolled back to
   // if it is a thing that can be named again.
-  const a = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
-  const b = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
+  const a = await packageStarter({ carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
+  const b = await packageStarter({ carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
   assert.strictEqual(a.bundleHash, b.bundleHash, "the same app packaged twice gave two hashes");
   assert.match(a.bundleHash, /^[0-9a-f]{64}$/, "that is not a sha256");
-});
-
-await t("THE CONTROL: a DIFFERENT app hashes differently", async () => {
-  // Without this, a hash that was a constant would satisfy determinism
-  // perfectly and make every publication look like every other.
-  const a = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
-  const b = await packageApp(
-    { ...APP, name: "Notes 2" },
-    { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids },
-  );
-  assert.notStrictEqual(a.bundleHash, b.bundleHash,
-    "two different apps package to the same hash, so a rollback could not tell them apart");
 });
 
 await t("THE CONTROL: a different FILE hashes differently too", async () => {
   // The app definition is not the only thing in a bundle. A hash covering
   // only `app.json` would pass the control above while ignoring the code.
-  const a = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
-  const b = await packageApp(APP, {
+  const a = await packageStarter({ carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
+  const b = await packageStarter({
     carried: { ...SDK_JS, "sdk/index.js": "export const a = 2;\n" },
     manifest, pieces: PIECES, subtle, ids,
   });
@@ -113,29 +102,29 @@ await t("a wasm handed in is REFUSED, not silently dropped", async () => {
   // A caller passing one believes the app will carry it. Dropping it quietly
   // is the difference between a smaller bundle and a broken one.
   await assert.rejects(
-    () => packageApp(APP, {
+    () => packageStarter({
       carried: { ...SDK_JS, "sdk/block.wasm": new Uint8Array([0]) },
       manifest, pieces: PIECES, subtle, ids,
     }),
     /block\.wasm is not a file an app carries/,
   );
   // THE CONTROL: the one wasm a starter does carry.
-  const { files } = await packageApp(APP, { carried: { ...SDK_JS, "decoder.wasm": new Uint8Array([0]) }, manifest, pieces: PIECES, subtle, ids });
+  const { files } = await packageStarter({ carried: { ...SDK_JS, "decoder.wasm": new Uint8Array([0]) }, manifest, pieces: PIECES, subtle, ids });
   assert.ok("decoder.wasm" in files, "the decoder was not carried");
 });
 
 await t("no pieces, or a malformed piece, is a refusal", async () => {
-  const bad = [null, { core: PIECES.core }, { ...PIECES, core: { ...PIECES.core, pieces: PIECES.core.pieces.slice(1) } },
-    { ...PIECES, provisioning: { ...PIECES.provisioning, pieces: PIECES.provisioning.pieces.map((p, i) => (i ? p : { ...p, sha256: "nope" })) } }];
+  const bad = [null, { core: PIECES.app }, { app: { ...PIECES.app, pieces: PIECES.app.pieces.slice(1) } },
+    { app: { ...PIECES.app, pieces: PIECES.app.pieces.map((p, i) => (i ? p : { ...p, sha256: "nope" })) } }];
   for (const pieces of bad) {
-    await assert.rejects(() => packageApp(APP, { carried: SDK_JS, manifest, pieces, subtle, ids }), /no well-formed (core|provisioning) pieces/);
+    await assert.rejects(() => packageStarter({ carried: SDK_JS, manifest, pieces, subtle, ids }), /no well-formed app pieces/);
   }
 });
 
 await t("a manifest missing a hash is a refusal, naming which AND why", async () => {
   const broken = { ...manifest, signer: { file: "signer.wasm" } };
   await assert.rejects(
-    () => packageApp(APP, { carried: SDK_JS, manifest: broken, pieces: PIECES, subtle, ids }),
+    () => packageStarter({ carried: SDK_JS, manifest: broken, pieces: PIECES, subtle, ids }),
     e => {
       assert.match(e.message, /no hash for: signer/, "it does not name the missing entry");
       assert.match(e.message, /too old/,
@@ -152,7 +141,7 @@ await t("**an EXTRA artefact is a mismatch too**", async () => {
   // fetched with nothing anywhere saying so.
   const grown = { ...manifest, keeper: { file: "keeper.wasm", sha256: "a".repeat(64), bytes: 1 } };
   await assert.rejects(
-    () => packageApp(APP, { carried: SDK_JS, manifest: grown, pieces: PIECES, subtle, ids }),
+    () => packageStarter({ carried: SDK_JS, manifest: grown, pieces: PIECES, subtle, ids }),
     /does not name: keeper|not name: keeper|artefacts this build does not name: keeper/,
   );
 });
@@ -167,7 +156,7 @@ const withTools = { ...Object.fromEntries(NAMED.map(n => [n, manifest[n]])), con
 await t("**the publishing tools are NOT app artefacts: the app names exactly the four, never the container or the webapp code**", async () => {
   assert.deepStrictEqual(NAMED, ["sdk", "signer", "block", "register"], "NAMED changed: it is an exact set");
   assert.deepStrictEqual(Object.keys(PLATFORM).sort(), ["container", "decoder", "modules", "site", "starter", "webapp"]);
-  const { files } = await packageApp(APP, { carried: SDK_JS, manifest: withTools, pieces: PIECES, subtle, ids });
+  const { files } = await packageStarter({ carried: SDK_JS, manifest: withTools, pieces: PIECES, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", "starter", ...NAMED].sort(),
     `the app's artefacts.json names ${Object.keys(named).join(", ")}`);
@@ -177,14 +166,14 @@ await t("**a container or webapp entry shaped like an APP artefact is refused, n
   for (const [k, bad] of [["container", { file: "container.wasm", sha256: "c".repeat(64), bytes: 1 }], ["webapp", { file: "other.wasm", sha256: "d".repeat(64), bytes: 1 }], ["decoder", { file: "decoder2.wasm", sha256: "d".repeat(64), bytes: 1 }],
     ["modules", { file: "modules.wasm", sha256: "e".repeat(64), bytes: 1 }], ["modules", ["index.js", "../app.js"]], ["modules", []], ["starter", []], ["starter", ["../loader.js"]]]) {
     await assert.rejects(
-      () => packageApp(APP, { carried: SDK_JS, manifest: { ...withTools, [k]: bad }, pieces: PIECES, subtle, ids }),
+      () => packageStarter({ carried: SDK_JS, manifest: { ...withTools, [k]: bad }, pieces: PIECES, subtle, ids }),
       new RegExp(`${k} entry is not the shape of a publishing tool`),
     );
   }
 });
 
 await t("**THE REAL MANIFEST packages: the app names the four (the signer among them) and the pieces, and never the engine delegate**", async () => {
-  const { files } = await packageApp(APP, { carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
+  const { files } = await packageStarter({ carried: SDK_JS, manifest, pieces: PIECES, subtle, ids });
   const named = JSON.parse(files["artefacts.json"]);
   assert.deepStrictEqual(Object.keys(named).sort(), ["note", "pieces", "starter", ...NAMED].sort());
   assert.ok("signer" in named, "the app does not name the signer: it could not provision");
@@ -220,7 +209,7 @@ await t("**the starter's module list has ONE owner: the SDK's artefacts.json `st
   // The published app's artefacts.json carries the SDK's list verbatim: the loader's `external` reads it.
   const carried = {};
   for (const [p, from] of Object.entries(starterFiles(manifest, ids))) carried[p] = readFileSync(at(`../${from}`));
-  const { files } = await packageApp(APP, { carried, manifest, pieces: PIECES, subtle, ids });
+  const { files } = await packageStarter({ carried, manifest, pieces: PIECES, subtle, ids });
   assert.deepEqual(JSON.parse(files["artefacts.json"]).starter, manifest.starter, "the app's artefacts.json does not carry the SDK's starter");
   // And no source here names a starter module by hand (an import specifier is an ENTRY, not the list).
   for (const f of ["../publish-app.js", "../app-loader/loader.js", "../package-app.js"]) {
@@ -232,7 +221,7 @@ await t("**the starter's module list has ONE owner: the SDK's artefacts.json `st
 await t("**a manifest with no `starter` is refused by name: the loader could not tell its own modules (craftworks-sdk#408)**", async () => {
   const { starter, ...old } = withTools;
   assert.ok(starter, "THE SETUP");
-  await assert.rejects(() => packageApp(APP, { carried: SDK_JS, manifest: old, pieces: PIECES, subtle, ids }), /names no `starter`/);
+  await assert.rejects(() => packageStarter({ carried: SDK_JS, manifest: old, pieces: PIECES, subtle, ids }), /names no `starter`/);
 });
 
 process.stdout.write(failures ? `\n${failures} failing\n` : "\nok package app\n");
