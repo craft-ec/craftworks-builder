@@ -20,6 +20,7 @@ import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { savedRow } from "./row-judge.mjs";
+import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from "./site-served.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -111,6 +112,11 @@ const [ADDED, EDIT_FROM, EDIT_TO, DELETED, GUEST] = [`added ${tag}`, `to-edit ${
 try {
   console.log(`app owner ${B.label} ws ${B.ws}; user ${A.label} ws ${A.ws}; rows tagged ${tag}; each step waits at most ${STEP_MS / 1000} s`);
   // 1. PUBLISH ON B, from the builder.
+  // THE BUILDER'S WIRE, "B" (main, for engineer2's diff of step 9: the builder's page is the one that SIGNS and PUTs
+  // or UPDATEs the site, so its Sign (label, seq/prev), its site op and its ReadHead{Site} are only visible here).
+  // RECORDING ONLY, started before its tab opens, as A's and V's are: the builder's writes go to B through its own
+  // node as today, and no verdict reads this capture (the A-side check reads A and V).
+  wires.push({ label: "B", file: join(WIRE_DIR, "wire-B.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), cap: await captureWire(host.debug, { out: join(WIRE_DIR, "wire-B.jsonl"), received: join(WIRE_DIR, "wire-B.received.jsonl"), requests: join(WIRE_DIR, "requests-B.jsonl"), windowOf, label: "B" }) });
   const builder = await host.tab("builder");
   // The app's notes, and a GUESTBOOK whose data is each USER's own
   // (`source: "mine"`, builder#113/#115): every person writes their own tree.
@@ -199,12 +205,28 @@ try {
   const pressable = await until(builder, `return (document.getElementById("publish")?.textContent === "Publish changes" && 1) || null;`, 30_000);
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
   const re = pressable ? await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3) : null;
+  // WHICH NODE SERVES WHICH VERSION (the architect; batch 7a's step 9): read-only GETs of the site's app.json from
+  // the publisher's node and from A's, right after the republish and again at the step's end. A failure then names
+  // its side: the publisher's register never moved, or A's node serves a stale state.
+  const servedOf = async (address, nodes) => Promise.all(nodes.map(async ([label, ws]) => [label, await siteServed(ws, address)]));
+  const served9 = re?.address ? await servedOf(re.address, [["B (publisher)", B.ws], ["A", A.ws]]) : null;
+  if (served9) console.log(servedLine("right after step 9's republish", served9));
   await loadPage(vis, null, { ms: STEP_MS, what: `${A.label} reloads` });
   const grew = re ? await until(vis, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) > ${Number(beforeTables ?? 0)} && 1) || null;`, STEP_MS, 500, frameOf(A.ws)) : null;
   const rowsKept = grew ? await until(vis, has(["alpha", "beta", ADDED, EDIT_TO], [EDIT_FROM, DELETED]), STEP_MS, 500, frameOf(A.ws)) : null;
+  const served9end = re?.address ? await servedOf(re.address, [["B (publisher)", B.ws], ["A", A.ws]]) : null;
+  if (served9end) console.log(servedLine("at step 9's end, after A's reload and its waits", served9end));
+  // WHAT THE BUILDER'S PAGE SAID (main, for engineer2's lead: a structure change may be a data-tree commit, and a FINAL
+  // signer refusal fails it at once, said in the page's `unusable()`: "the signer refused commit seq N ..."). At the
+  // step's end, pass or fail, RECORDING ONLY: its `unusable()` lines (a newer SDK drains them: read once, here) and
+  // `unsaved()`, the writes not yet saved. The SDK has no per-write fate reader to add.
+  const builderSaid = await builder.evaluate(`const h = window.__craftworks?.session; if (!h) return { session: "none on the builder's page" };
+    const r = {}; try { r.unusable = h.unusable?.() ?? "no unusable() on this SDK"; } catch (e) { r.unusable = { error: e.message }; }
+    try { r.unsaved = h.unsaved?.() ?? "no unsaved() on this SDK"; } catch (e) { r.unsaved = { error: e.message }; } return r;`).catch(e => ({ error: e.message }));
+  console.log(`SAID  the builder's page at step 9's end: ${JSON.stringify(builderSaid)}`);
   step(!!re && re.address === pub.address && re.put === true && !!grew && !!rowsKept,
     `the builder changes the app's STRUCTURE and publishes the changes: the SAME address (version ${re?.version ?? "?"}), and ${A.label} RELOADED shows the new structure with the rows (${Date.now() - t8b} ms)`,
-    { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
+    { pressable: !!pressable, address: re?.address === pub.address ? "same" : re?.address, put: re?.put, version: re?.version, tables: { before: beforeTables, after: await vis.evaluateIn(frameOf(A.ws), TABLES).catch(() => null) }, rows: !!rowsKept, served: served9 && { afterRepublish: Object.fromEntries(served9), atEnd: Object.fromEntries(served9end ?? []) }, builderSaid, note: re ? undefined : await builder.evaluate(`return document.getElementById("publish-note")?.textContent?.slice(0, 300) ?? null;`).catch(() => null) });
 
   // 8c. SAME KEY, SECOND NODE: THE SITE CONVERGES (#117, the architect). Two
   // HARNESS nodes, O1 and O2, hold ONE throwaway key (realnet.sh pre-provisioned
@@ -250,15 +272,26 @@ try {
   const pairUrl = first ? `http://127.0.0.1:${A.ws}/v1/contract/web/${first.address}/` : null;
   const pairFrame = first ? `127.0.0.1:${A.ws}/v1/contract/web/${first.address}/?__sandbox=1` : null;
   let aSees = null;
+  // A SERVES v2 FIRST (read-only GETs through A, bounded by STEP_MS), THEN its page loads: a page holds the ONE app.json
+  // it loaded, so a view opened while A still served v1 could never show v2 (7c: loaded at +1.4 s, v1, and a 180 s wait
+  // on a page that could not change). v2 is WHAT THE PUBLISHER SERVES after its republish: the same app.json, by
+  // sha256 (the architect on #181), never "any app with three components".
+  const o2Served = re2?.address ? await siteServed(O2.ws, first.address) : null;
+  const aServed = !re2?.address ? null
+    : o2Served?.sha256 ? await untilServed(A.ws, first.address, sameVersionAs(o2Served), { ms: STEP_MS })
+    : { served: false, after: 0, reads: 0, last: null, publisher: `O2 (the publisher) serves no app.json to wait for: ${servedWords(o2Served)}` };
+  if (aServed) console.log(`SITE  step 10: the publisher O2 serves ${servedWords(o2Served)}; ${A.label} ${aServed.publisher ? "was not waited on" : aServed.served ? `serves the SAME version after ${aServed.after} ms` : `still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s`} (${aServed.reads} read(s))`);
   // Its OWN tab on A's browser: `vis` keeps showing the main app for the steps after this.
-  const pairView = re2?.address ? await visBrowser.tab("user-a: the pair's app") : null;
+  const pairView = aServed?.served ? await visBrowser.tab("user-a: the pair's app") : null;
   if (pairView) {
     await loadPage(pairView, pairUrl, { ms: STEP_MS, what: "10. the pair's app on A" });
     aSees = await until(pairView, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) >= 2 && [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === ${JSON.stringify(`pair ${tag}`)}) && 1) || null;`, STEP_MS, 500, pairFrame);
   }
+  const served10 = re2?.address ? await servedOf(first.address, [["O2 (publisher)", O2.ws], ["O1", O1.ws], ["A", A.ws]]) : null;
+  if (served10) console.log(servedLine("after step 10's republish", served10));
   step(!!first?.address && sameHead === true && !!re2?.address && re2.address === first.address && re2.put === true && !!aSees,
-    `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms) -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
-    { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, aSees: !!aSees, aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
+    `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms)${aServed && !aServed.served ? ` -- ${aServed.publisher ?? `${A.label} still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s, the publisher ${servedWords(o2Served)}`}` : ""} -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
+    { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, o2Served, aServed, aSees: !!aSees, served: served10 && Object.fromEntries(served10), aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
 
   // 9. A USER WRITES THEIR OWN TREE (Phase 3 item 5): on V — a node that
   // is neither the app owner's nor the machine owner's — the app's rows are a
