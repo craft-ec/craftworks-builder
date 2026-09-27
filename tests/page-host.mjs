@@ -464,6 +464,14 @@ function announced(child, streams, re, what, ms) {
 }
 
 /**
+ * THE RUN'S EXIT STATUS, as `done(code)` exits with it. Anything but a status (0, 1, …) is a FAILURE: `done` EXITS the
+ * process, so a `finally { done() }` would end a failing run with status 0 -- green, with the failure printed above it
+ * and nothing reading it (found in a new page test whose known-red mutant also exited 0). Fail closed: a bare `done()`
+ * is red on EVERY run, so it is found the first time it runs, never only when something else fails.
+ */
+export const statusOf = code => (Number.isInteger(code) && code >= 0 ? code : 1);
+
+/**
  * Start this run's server and Chrome. `label` names the test in every message.
  * Returns the ports, the nonce, `done(code)` (kills both, removes the nonce,
  * exits) and `pageProof`, an expression the test evaluates in the page once it
@@ -487,6 +495,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
   // (the budget expiring while spawnNode waited: the node's death made spawnNode throw, the catch's done(1) returned,
   // and openPageHost resolved to undefined, "READY", while the first done was still stopping the children).
   const done = async code => {
+    code = statusOf(code);
     if (ending) return new Promise(() => {});
     ending = true;
     if (node) {
