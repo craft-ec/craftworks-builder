@@ -44,7 +44,9 @@ export const PROVISIONING_FILES = {
 export const STARTER_LIMIT = 96 * 1024;
 
 /** Bundle bytes per data piece, and parity pieces per bundle (craftworks-sdk#347; sized from F60's measurements). */
-export const PIECE_PAYLOAD = 65536;
+// 96 KiB (was 64 KiB, F60): ONE piece set now carries the SDK, the runtime and the contract code (§19), and at 64 KiB
+// it needed k = 37 pieces, past the SDK load-pieces' maximum of 36. 96 KiB gives k = 25, with room to ~3.4 MB.
+export const PIECE_PAYLOAD = 98304;
 export const PIECE_M = 8;
 
 /**
