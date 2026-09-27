@@ -20,6 +20,7 @@ import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { savedRow } from "./row-judge.mjs";
+import { evidence as loseEvidence, happened, held, voidHeld as voidHeldLine } from "./lose-evidence.mjs";
 import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from "./site-served.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -108,6 +109,10 @@ const addTo = (domain, t) => `const f = ${comp("Form", domain)}; const i = f?.qu
 const savedIn = (domain, t) => savedRow(comp("Table", domain), t);
 const tag = Date.now().toString(36);
 const [ADDED, EDIT_FROM, EDIT_TO, DELETED, GUEST] = [`added ${tag}`, `to-edit ${tag}`, `edited ${tag}`, `to-delete ${tag}`, `guest ${tag}`];
+// THE LOSE-DATA STEP's rows (builder#176): each longer than a leaf keeps inline (freenet-prolly MAX_INLINE, 1 KiB), so
+// its value is a block of its own, and the three form ONE group of k = 3 data members + m parity -- the group ws-lose
+// makes absent at V. Their own domain, so no other step's rows change.
+const BULK = [0, 1, 2].map(i => `bulk ${i} ${tag} ${"x".repeat(1400)}`);
 
 try {
   console.log(`app owner ${B.label} ws ${B.ws}; user ${A.label} ws ${A.ws}; rows tagged ${tag}; each step waits at most ${STEP_MS / 1000} s`);
@@ -121,11 +126,14 @@ try {
   // The app's notes, and a GUESTBOOK whose data is each USER's own
   // (`source: "mine"`, builder#113/#115): every person writes their own tree.
   const APP = { name: `Notes ${tag}`, components: [{ type: "form", domain: "notes", mode: "owned" }, { type: "table", domain: "notes", mode: "owned" },
-    { type: "form", domain: "guests", source: "mine" }, { type: "table", domain: "guests", source: "mine" }],
-    schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] }, guests: { type: "Guest", fields: [{ name: "title", kind: "text", required: true }] } } };
+    { type: "form", domain: "guests", source: "mine" }, { type: "table", domain: "guests", source: "mine" },
+    { type: "form", domain: "bulk", mode: "owned" }, { type: "table", domain: "bulk", mode: "owned" }],
+    schemas: { notes: { type: "Note", fields: [{ name: "title", kind: "text", required: true }] }, guests: { type: "Guest", fields: [{ name: "title", kind: "text", required: true }] },
+      bulk: { type: "Bulk", fields: [{ name: "title", kind: "text", required: true }] } } };
   await loadPage(builder, `http://127.0.0.1:${host.port}/#node=${B.ws}&preview=1&app=` + encodeURIComponent(JSON.stringify(APP)), { ms: STEP_MS, what: "1. the builder" });
   await until(builder, `return (${comp("Form", "notes")}?.querySelector("input[name=title]") && 1) || null;`, 30_000);
   for (const t of ["alpha", "beta"]) { await builder.evaluate(addTo("notes", t)); await sleep(500); }
+  for (const t of BULK) { await builder.evaluate(addTo("bulk", t)); await sleep(500); }
   const t1 = Date.now();
   await builder.evaluate(`document.getElementById("publish").click(); return 1;`);
   const pub = await until(builder, `return window.__craftworksPublished ?? null;`, STEP_MS * 3);
@@ -346,6 +354,7 @@ try {
   step(JSON.stringify([...(pubNotes ?? [])].sort()) === JSON.stringify(want) && JSON.stringify([...(aNotes ?? [])].sort()) === JSON.stringify(want),
     `the app's notes are untouched by the user's write (on ${B.label}'s site and ${A.label}'s view)`, { ownerSite: pubNotes, onA: aNotes });
   wireCheck();
+  await loseSteps(url, frameOf);
 } catch (e) {
   console.log(`FAIL  the run stopped after step ${stepN}: ${e.message}`);
   failed += 1;
@@ -357,6 +366,87 @@ try {
   if (o2Browser) await o2Browser.stop();
   console.log(failed ? `DEMO: breaks — ${failed} step(s) failed` : `DEMO: passes — all ${stepN} steps`);
   await host.done(failed ? 1 : 0);
+}
+
+// THE LOSE-DATA STEP (builder#176; Phase 4's finish line: a record is never a single copy), LAST so a red control
+// cannot disturb an earlier step. Each arm opens the app in a FRESH browser through its own ws-lose proxy in front of
+// V (realnet.sh): V's node answers NotFound for one group's blocks (the SDK's probe), so to this reader they are LOST
+// -- nothing is withheld from the publish and no node's store is touched, and the line says so. The proxy's own log
+// is the evidence the loss happened (the harness's negative control on itself).
+//   * data, m lost: the bulk rows' group (k = 3 data members, all lost, + m parity, 5 lost) -> every row still reads,
+//     DECODED from the 3 parity left (rule 11);
+//   * root, m lost: the root's group of one (the root + 7 of its 8 parity) -> every row still reads;
+//   * data, m + 1 lost (THE CONTROL): 2 of the group's 11 left, below k -> the bulk rows must NOT read. A NotFound is
+//     not final (sdk page/src/lib.rs:1143 re-asks a missed block on a backoff; the engine rebuilds only at k): the read
+//     WAITS (rule 8). PINNED: known defect "the wait is not named", flipped by sdk#524 (the reader then names the
+//     group's j of k).
+async function loseSteps(url, frameOf) {
+  const WATCH_MS = Number(process.env.LOSE_WATCH_MS ?? 60_000);
+  const log = file => {
+    try {
+      return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
+    } catch { return []; }
+  };
+  // What the proxy's own log says, and whether an arm counts: tools/lose-evidence.mjs (tested offline).
+  const evidence = file => loseEvidence(log(file));
+  const voidHeld = (arm, ev) => voidHeldLine(arm.name, ev);
+  // THE GROUP IT MUST BE: a data arm's is THE bulk rows' group (k = BULK.length: engineer1 on #179 -- "the first group
+  // with k >= 2" is the tree's shape, not the bulk rows); the root arm's is the root's group of one.
+  const isBulk = ev => ev.chosen?.group === "data" && ev.chosen.k === BULK.length;
+  const isRoot = ev => ev.chosen?.group === "root" && ev.chosen.k === 1;
+  const summary = ev => ({ group: ev.chosen?.group, k: ev.chosen?.k, lost: ev.chosen?.lost.length, notFound: ev.notFound, distinctNotFound: ev.distinct.length, survivors: ev.chosen?.survivors?.length, answered: ev.answered.length });
+  const arms = [
+    { name: "data, m lost", port: process.env.RN_V_LOSE_DATA_M, file: process.env.RN_V_LOSE_DATA_M_LOG, reads: true, group: isBulk, which: `the bulk rows' group (k = ${BULK.length})` },
+    { name: "root, m lost", port: process.env.RN_V_LOSE_ROOT_M, file: process.env.RN_V_LOSE_ROOT_M_LOG, reads: true, group: isRoot, which: "the root's group of one" },
+    { name: "data, m + 1 lost: THE CONTROL", port: process.env.RN_V_LOSE_DATA_M1, file: process.env.RN_V_LOSE_DATA_M1_LOG, reads: false, group: isBulk, which: `the bulk rows' group (k = ${BULK.length})` },
+  ];
+  const everyRow = `const r = () => [...(${comp("Table", "bulk")}?.querySelectorAll("tbody tr td:first-child") ?? [])].map(td => td.textContent); return (${JSON.stringify(BULK)}.every(b => r().includes(b)) && ${JSON.stringify(["alpha", "beta"])}.every(n => [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].some(td => td.textContent === n)) && 1) || null;`;
+  for (const arm of arms) {
+    const port = Number(arm.port);
+    if (!Number.isInteger(port) || port <= 0 || !arm.file) { step(false, `LOSE ${arm.name}: no ws-lose proxy was started (RN_V_LOSE_*)`); continue; }
+    const b = await openFreshBrowser(`realnet-demo: V's node answers NotFound (ws-lose, ${arm.name})`);
+    try {
+      const tab = await b.tab(`lose-${port}`);
+      const t0 = Date.now();
+      await loadPage(tab, url(port), { ms: STEP_MS, what: `V through ws-lose (${arm.name}) opens the app` });
+      if (arm.reads) {
+        const seen = await until(tab, everyRow, STEP_MS, 500, frameOf(port));
+        const ev = evidence(arm.file);
+        if (!arm.group(ev)) { step(false, `LOSE ${arm.name}: ws-lose chose ${ev.chosen ? `a ${ev.chosen.group} group of k = ${ev.chosen.k}` : "no group"}, not ${arm.which}: a harness failure, not a data result`, summary(ev)); continue; }
+        if (!happened(ev)) { step(false, `LOSE ${arm.name}: VOID -- the NotFound answers were not the lost blocks (${ev.distinct.length} distinct answered, ${ev.chosen.lost.length} lost)`, summary(ev)); continue; }
+        if (seen && !held(ev)) { step(false, voidHeld(arm, ev), summary(ev)); continue; }
+        // Every block of the group lost is gone for this reader, and every data member among them (lost >= k): a row
+        // read is a DECODE from parity, never a surviving copy.
+        step(!!seen && ev.chosen.lost.length >= ev.chosen.k,
+          `V's node answers NotFound for ${ev.chosen.lost.length} block(s) of ${arm.which} (ws-lose, ${arm.name}): every row still reads (${Date.now() - t0} ms)`,
+          seen ? summary(ev) : { ...summary(ev), bulk: await tab.evaluateIn(frameOf(port), titles("bulk")).catch(e => e.message) });
+      } else {
+        // THE CONTROL: sampled twice, so "still asking" is a fact AT THE END, not a total that grew once.
+        await sleep(WATCH_MS / 2);
+        const half = evidence(arm.file);
+        await sleep(WATCH_MS / 2);
+        const shown = await tab.evaluateIn(frameOf(port), titles("bulk")).catch(() => []);
+        // WHAT THE READER NAMES about it: the SDK's damaged() (sdk#524) on the app frame's engine handle -- `null` when
+        // the SDK names nothing (no such surface yet), else its `[{block, j, k, health, why}]`.
+        const named = await tab.evaluateIn(frameOf(port), `const d = globalThis.__craftworks?.db?.damaged; return typeof d === "function" ? d() : null;`).catch(e => ({ error: e.message }));
+        const ev = evidence(arm.file);
+        const read = BULK.filter(r => (shown ?? []).includes(r)).length;
+        if (!arm.group(ev)) { step(false, `LOSE ${arm.name}: ws-lose chose ${ev.chosen ? `a ${ev.chosen.group} group of k = ${ev.chosen.k}` : "no group"}, not ${arm.which}: a harness failure, not a data result`, summary(ev)); continue; }
+        if (!happened(ev)) { step(false, `LOSE ${arm.name}: VOID -- the NotFound answers were not the lost blocks (${ev.distinct.length} distinct answered, ${ev.chosen.lost.length} lost)`, summary(ev)); continue; }
+        if (!held(ev)) { step(false, voidHeld(arm, ev), summary(ev)); continue; }
+        // The rows are not read and the reader is STILL asking at the end of the watch (an OBSERVATION of rule 8's
+        // wait, not an end). PINNED: nothing NAMES the wait -- `named` is empty (known defect, flipped by sdk#524: the
+        // flip inverts only `unnamed` to the bulk group named DAMAGED with j < k).
+        // Exactly "the call ANSWERED nothing" (null: no surface; []: none): an evaluation error is not an answer.
+        const unnamed = named === null || (Array.isArray(named) && named.length === 0);
+        step(read < BULK.length && ev.notFound > half.notFound && unnamed,
+          `THE CONTROL: V's node answers NotFound for ${ev.chosen.lost.length} block(s) of ${arm.which} (ws-lose, m + 1): ${read} of ${BULK.length} bulk rows read in ${WATCH_MS / 1000} s, and the reader is still asking (${half.notFound} -> ${ev.notFound} NotFound answers over the last ${WATCH_MS / 2000} s). PINNED: the wait is not yet named (sdk#524)`,
+          { ...summary(ev), read, notFoundAtHalf: half.notFound, named });
+      }
+    } finally {
+      await b.stop();
+    }
+  }
 }
 
 // THE A-SIDE CHECK's verdicts, from the SDK's one decoder: A's browser only ever READS, so every frame it sent is a
