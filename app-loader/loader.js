@@ -126,14 +126,15 @@ try {
   let records = await tree.definition("app");
   if (!records.some(r => r.key === "meta")) {
     say("Waiting for this app's published definition: the node has an older version of its owner's tree…");
-    const live = tree.bind("craftworks.app", { live: true });
+    let stop = null;
     try {
       records = await new Promise((ok, no) => {
-        const again = () => tree.definition("app").then(r => { if (r.some(x => x.key === "meta")) ok(r); }, no);
-        live.subscribe(again);
-        again();
+        const seen = r => { if (r.some(x => x.key === "meta")) ok(r); };
+        // The SDK's watch of the published definition (sdk#557): told each time the tree's head moves it.
+        stop = tree.watchDefinition("app", seen);
+        tree.definition("app").then(seen, no);
       });
-    } finally { live.stop?.(); }
+    } finally { stop?.(); }
   }
   mark("opened");
   // THE OPENER'S PAGE RECORDINGS (builder#160): `__craftworksOpen.pageTrace()` returns ONE STRING, the dump of each
