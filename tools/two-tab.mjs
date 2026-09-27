@@ -701,6 +701,70 @@ async function parityUnderTwoTabs() {
   return { ...made, reached, held, heldB, modeA: modeA?.mode, modeB: modeB?.mode };
 }
 
+// ---- the DRAFT in two tabs (§19 P3, rule 15) -------------------------------
+/**
+ * TWO TABS OF ONE IDENTITY EDIT ONE PROJECT'S DRAFT. The definition is records in the owner's tree, one per
+ * component, merged per record (rule 15), and each open canvas follows its draft through the SDK's
+ * `watchDefinition` -- with NO reopen:
+ *   1. A changes component 0 (X), B changes component 1 (Y): BOTH tabs come to show BOTH edits, and a reopen of a
+ *      third tab shows both too (both records survived).
+ *   2. A and B change component 0 (Z) at once, to different values: both tabs SETTLE to one value, the same one,
+ *      and the tab whose value lost now shows the winner's -- its canvas reloaded without a reopen.
+ * The edits go through the page's own inspector (select the card, type into its domain field), and what a tab
+ * shows is read from its definition panel (`#def`), which renders the canvas's app.
+ */
+async function draftInTwoTabs() {
+  const a = await openTab("draft A"), b = await openTab("draft B");
+  await freshProfile(a);
+  const domains = tab => tab.evaluate(`return JSON.parse(document.getElementById("def").textContent).components.map(c => c.domain);`);
+  const written = `document.getElementById("save-state").hidden`;
+  // DESIGN mode (the cards and the inspector), not Preview: the same links without `preview=1`.
+  const design = u => u.replace("preview=1&", "").replace("&preview=1", "");
+  const edit = (tab, i, value) => tab.evaluate(`
+    document.querySelectorAll("#canvas .comp")[${i}].click();
+    const input = document.querySelector("#props input:not([type=checkbox])");
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event("input"));
+    return 1;`);
+  // A imports the project; B opens the SAME project (the profile's lastOpened), reading its draft from the tree.
+  await a.navigate(design(url(false)));
+  await a.until(`${written} && JSON.parse(document.getElementById("def").textContent).components.length === 2`, "A's project written to its draft", 90_000);
+  await b.navigate(design(reopenUrl()));
+  await b.until(`${written} && JSON.parse(document.getElementById("def").textContent).components.length === 2`, "B to open the same project from its draft", 90_000);
+
+  // 1. X in A, Y in B: each tab comes to show BOTH, with no reopen.
+  const tag = Date.now().toString(36);
+  const [x, y] = [`x-${tag}`, `y-${tag}`];
+  await edit(a, 0, x);
+  await edit(b, 1, y);
+  const both = `(() => { const d = JSON.parse(document.getElementById("def").textContent).components.map(c => c.domain); return d[0] === ${JSON.stringify(x)} && d[1] === ${JSON.stringify(y)}; })()`;
+  const t1 = now();
+  await a.until(both, "A to show B's Y (no reopen)", 120_000);
+  await b.until(both, "B to show A's X (no reopen)", 120_000);
+  const followMs = now() - t1;
+  // And both records survived: a third tab reopening the project reads both.
+  const c = await openTab("draft C");
+  await c.navigate(design(reopenUrl()));
+  await c.until(both, "a reopen to show X and Y", 90_000);
+  c.close();
+
+  // 2. Z: both tabs change component 0 at once, to different values; they settle to ONE.
+  const [za, zb] = [`za-${tag}`, `zb-${tag}`];
+  await Promise.all([edit(a, 0, za), edit(b, 0, zb)]);
+  const zOf = tab => domains(tab).then(d => d[0]);
+  const t2 = now();
+  let settled = null;
+  while (now() - t2 < 120_000) {
+    const [va, vb] = await Promise.all([zOf(a), zOf(b)]);
+    if (va === vb && (va === za || va === zb)) { settled = va; break; }
+    await sleep(POLL_MS);
+  }
+  if (!settled) throw new Error(`the two tabs never settled on one value for component 0: A shows ${await zOf(a)}, B shows ${await zOf(b)}`);
+  const loser = settled === za ? "B" : "A";
+  a.close(); b.close();
+  return { followMs, settleMs: now() - t2, winner: settled, loser };
+}
+
 // ---- both arms -------------------------------------------------------------
 const report = { failures: [] };
 const step = async (name, fn) => {
@@ -716,6 +780,16 @@ const step = async (name, fn) => {
 };
 
 const results = [];
+// `ONLY=draft`: the draft step alone (a real-network run of the step that changed, rule 0), with its setup.
+const ONLY = process.env.ONLY ?? "";
+report.draft = await step("the draft in two tabs", draftInTwoTabs);
+if (report.draft) console.log(`  [draft done] X and Y both shown in both tabs ${report.draft.followMs} ms after the edits (no reopen); Z settled on ${report.draft.winner} in ${report.draft.settleMs} ms, tab ${report.draft.loser}'s canvas reloaded to it`);
+if (ONLY === "draft") {
+  if (report.failures.length) { console.log(`\n${report.failures.length} FAILING:`); for (const f of report.failures) console.log(`  - ${f}`); await host.done(1); }
+  console.log("\nthe draft step passes.");
+  rmSync(node.dir, { recursive: true, force: true });
+  await host.done(0);
+}
 // The CONTROL is a behaviour, not a latency (see `controlArm`), so it is run
 // on its own and reported on its own.
 const control = await step("control arm (not live = read when needed)", controlArm);
