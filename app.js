@@ -1,5 +1,5 @@
 import { loadSdk } from "./sdk-loader.js";
-import { browserStorage, storageNote } from "./storage.js";
+import { storageNote } from "./storage.js";
 import { publishApp } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
@@ -16,6 +16,7 @@ import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
 import { mountAssets } from "./assets-panel.js";
 import { createProjectRuntime } from "./project-runtime.js";
+import { draftChanged, keyOf, keyed } from "./definition.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
 // phase ahead, so an app can be designed before its substrate lands.
@@ -24,39 +25,27 @@ const BUILT_PHASE = 1;
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity)); return e; };
 
-let app = { name: "Untitled app", tree: { realm: "public", identity: null }, components: [], schemas: {}, seed: {} };
-try { const s = browserStorage.getItem("craftec.builder.app.v2"); if (s) app = JSON.parse(s); } catch (_) {}
-// An app definition can arrive in the URL (`#app=<json>`): shareable, and testable.
-try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) app = { ...app, ...JSON.parse(h) }; } catch (_) {}
-// WHETHER THE LAST EDIT IS ON THIS DEVICE (builder#56).
-//
-// Both writes below used to swallow their failure — `.catch(() => {})` at the
-// one place a refused save could surface — so a full quota or denied storage
-// turned every edit into a silent loss on reload. The edit itself must still
-// not be taken away from the person who made it: the canvas keeps it. What
-// changes is that the page SAYS it is unsaved, why, and offers a retry and an
-// export, until a save succeeds.
-//
-// Only the LATEST save's outcome counts. Each save writes the whole canvas, so
-// a later success covers everything, and an earlier failure that happens to
-// finish after it must not flag a state that is in fact saved.
-let saveGen = 0, unsaved = null;
-const markSaved = gen => { if (gen === saveGen && unsaved) { unsaved = null; renderSaveState(); } };
-// The reason as a person reads it: without LocalDb's own "not saved:" prefix,
-// which the line already says, and without a trailing full stop to double.
-const reasonOf = e => String(e?.message ?? e).replace(/^not saved:\s*/i, "").replace(/[.\s]+$/, "");
-const markUnsaved = (gen, e) => { if (gen === saveGen) { unsaved = { reason: reasonOf(e) }; renderSaveState(); } };
+let app = { name: "", tree: { realm: "public", identity: null }, components: [], schemas: {}, seed: {} };
+// AN APP IN THE URL (`#app=<json>`): shareable, and testable. It is IMPORTED — a new project whose draft starts as
+// it — never laid over whatever project is open.
+let importApp = null;
+try { const h = new URLSearchParams(location.hash.slice(1)).get("app"); if (h) importApp = { name: "", components: [], schemas: {}, seed: {}, ...JSON.parse(h) }; } catch (_) {}
+// WHERE THE LAST EDIT IS. The definition is the project's draft in its owner's tree (ARCHITECTURE §19): every edit
+// goes to the canvas at once and to the runtime's draft writer, which WAITS for the tree (rule 9) and writes the
+// latest of each record. The line below says what is not in the tree yet, and why; nothing else keeps a copy.
+/** Keep the open project's tree binding and version stamp on this device's list (not its definition). */
+const persistMeta = () =>
+  Promise.resolve(projects?.persist?.()).catch(e => showStorageNotice({ kind: "not-saved", message: `this project's list entry: ${e.message}` }));
 const save = () => {
-  const gen = ++saveGen;
-  let refused = null;
-  try { browserStorage.setItem("craftec.builder.app.v2", JSON.stringify(app)); } catch (e) { refused = e; }
-  // And into the open project's RECORDS, if one is open.
-  Promise.resolve(projects?.persist?.()).then(
-    () => (refused ? markUnsaved(gen, refused) : markSaved(gen)),
-    e => markUnsaved(gen, e),
-  );
+  keyed(app.components);
+  try { rt.edit(app); } catch (e) { showStorageNotice({ kind: "not-saved", message: e.message }); }
+  persistMeta();
+  renderSaveState();
 };
 
+// The reason as a person reads it: without a "not saved:" prefix the line already says, and without a trailing full
+// stop to double.
+const reasonOf = e => String(e?.message ?? e).replace(/^not saved:\s*/i, "").replace(/[.\s]+$/, "");
 /** What the store reported about itself, shown until the page is reloaded. */
 const storageNotices = [];
 function showStorageNotice(n) {
@@ -69,13 +58,24 @@ function showStorageNotice(n) {
 // NO BROWSER STORAGE HERE (a sandboxed document, e.g. the builder served from a freenet node): said, never a stop.
 if (storageNote()) showStorageNotice({ kind: "no-storage", message: storageNote() });
 
-/** The unsaved line: shown only while the last edit is not on this device. */
+/**
+ * The unsaved line: shown only while the last edit is not in the owner's tree yet — the tree still opening, the
+ * draft still being read, a write the SDK refused — and why. Derived from the runtime every time; never a flag.
+ */
 function renderSaveState() {
   const host = document.getElementById("save-state");
   if (!host) return;
-  host.hidden = !unsaved;
-  if (!unsaved) { host.replaceChildren(); return; }
-  const retry = el("button", { type: "button", id: "save-retry", textContent: "Retry", onclick: () => save() });
+  const d = rt.draft;
+  const why = rt.connection === "failed" && rt.connectionError ? ` — ${reasonOf(rt.connectionError)}; trying again` : "";
+  const secs = since => (since === null ? "" : ` (${Math.max(0, Math.round((Date.now() - since) / 1000))} s)`);
+  // [what, why]: the bold words, then the rest of the line.
+  const line = !d.loaded ? ["Opening this project:", ` reading it from your node${secs(openedAt)}${why}.`]
+    : d.error ? ["Not saved:", ` ${reasonOf(d.error)}. Your work is still here in this tab — `]
+      : d.pending && !d.attached ? ["Not saved yet:", ` waiting for your node${secs(d.waitingSince)}${why}. Your work is still here in this tab — `]
+        : null;
+  host.hidden = !line;
+  if (!line) { host.replaceChildren(); return; }
+  const retry = el("button", { type: "button", id: "save-retry", textContent: "Retry", onclick: () => { connectTree(); save(); } });
   const exp = el("button", { type: "button", id: "save-export", textContent: "Export", onclick: () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(app, null, 2)], { type: "application/json" }));
     const a = el("a", { href: url, download: `${(app.name || "app").replace(/[^\w.-]+/g, "_")}.json` });
@@ -83,12 +83,14 @@ function renderSaveState() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } });
   host.replaceChildren(
-    el("b", { textContent: "Not saved on this device. " }),
-    el("span", { id: "save-reason", textContent: `${unsaved.reason}. Your work is still here in this tab — ` }),
-    "retry, or export it to a file before closing. ",
-    retry, " ", exp,
+    el("b", { textContent: line[0] }),
+    el("span", { id: "save-reason", textContent: line[1] }),
+    ...(d.loaded ? ["retry, or export it to a file before closing. ", retry, " ", exp] : []),
   );
 }
+// "N s" moves while something waits.
+setInterval(() => { const d = rt?.draft; if (d && (!d.loaded || (d.pending && !d.attached))) renderSaveState(); }, 1000);
+let openedAt = null;
 app.schemas ??= {}; app.seed ??= {};
 let sel = app.components.length ? 0 : -1, hoverPath = null;
 let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("preview") === "1";
@@ -99,7 +101,7 @@ let sdkReady = null, preview = new URLSearchParams(location.hash.slice(1)).get("
 // mount left Preview dead until a reload, and no path ever closed a session
 // (builder#54, #57, #58). One object per project now, disposed on a switch.
 // THE OPEN PROJECT'S id and created time: what the handoff's slots derive
-// from (builder#83). Set when a project is loaded or adopted.
+// from (builder#83). Set when a project is opened (there is always one).
 let openedProject = null;
 const mountCanvas = ({ backend, phase, alive, adopt }) =>
   mountApp($("canvas"), sdkReady, app, db => {
@@ -115,8 +117,60 @@ const mountCanvas = ({ backend, phase, alive, adopt }) =>
     if (h && globalThis.__craftworks) globalThis.__craftworks.session = rt?.session ?? null;
     return h;
   });
-const newRuntime = () => createProjectRuntime({ mount: mountCanvas, publish, onChange: () => render() });
+/**
+ * A project's runtime: its mount, its publish, and — from creation — its owner's tree and draft writer. `fresh`: the
+ * project was made in this tab, so the canvas is its definition. Otherwise the tree's draft is, and it is handed to
+ * the canvas when read (`onDraft`).
+ */
+const newRuntime = ({ fresh = false } = {}) => {
+  const r = createProjectRuntime({
+    mount: mountCanvas, publish, fresh,
+    onChange: () => { renderSaveState(); renderPublish(); renderAddr(); refreshChanged(); },
+    onDraft: held => {
+      if (r !== rt) return;
+      app.name = held.name; app.components = held.components; app.schemas = held.schemas; app.seed = held.seed;
+      sel = app.components.length ? 0 : -1;
+      rt.invalidate();
+      render();
+      projects?.refresh?.();
+    },
+  });
+  return r;
+};
 let rt = newRuntime();
+
+/** Open the open project's owner's tree (the runtime shares one open with a Publish). Needs the SDK and the project. */
+function connectTree() {
+  if (!sdkReady || !openedProject) return;
+  rt.connect(treeDeps).catch(() => { /* said on the unsaved line; the runtime retries */ });
+}
+/** What opening the owner's tree needs: this project's app id, the SDK's opener and artefacts, the named node. */
+const treeDeps = () => ({
+  // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's tree this project's data lives in.
+  appId: appIdOf(openedProject?.id, sdkReady?.ids), ids: sdkReady?.ids,
+  open: sdkReady.open,
+  artefacts: sdkReady.SHIPPED_ARTEFACTS,
+  // NAMED, never defaulted. The node is a decision: it gets a delegate installed and a signing key handed to it.
+  port: nodePort(),
+});
+
+/**
+ * CHANGED SINCE PUBLISH is derived: the draft against the published definition (`draftChanged`), asked whenever the
+ * runtime moves. `publishedApp` (the app's JSON kept in memory at publish) is gone: it was a second copy.
+ */
+let changedSincePublish = false, askingChanged = null;
+function refreshChanged() {
+  const db = rt.treeDb;
+  if (!db || rt.phase !== "published" || askingChanged) return;
+  const mine = rt;
+  askingChanged = rt.draft.pending ? Promise.resolve(true) : draftChanged(db).catch(() => changedSincePublish);
+  askingChanged.then(v => {
+    askingChanged = null;
+    if (mine !== rt || v === changedSincePublish) return;
+    changedSincePublish = v;
+    renderPublish();
+  });
+}
 /**
  * Record counts per domain, resolved asynchronously and READ synchronously.
  *
@@ -140,52 +194,65 @@ let versionsPanel = null, sdkSelfReport = null, bakedInfo = null;
 // that survives a reload. Which db is a backend decision, not a shape
 // decision: the same records go to the engine-backed one when there is a node.
 let projects = null;
+/**
+ * OPEN A PROJECT in this page: the old runtime is disposed before anything of the new one exists (its listeners stop,
+ * its session closes, a mount or publish of it still in flight disowns itself); the new one opens the owner's tree at
+ * once. A FRESH project's canvas is what it starts as and is written to its draft; any other is read from its draft.
+ */
+function openInPage(project, { fresh = false, from = null } = {}) {
+  rt.dispose();
+  openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project), publication: project.publication ?? null };
+  rt = newRuntime({ fresh });
+  openedAt = Date.now();
+  changedSincePublish = false;
+  appAddress = null;
+  // THE PROJECT'S OWN DEFINITION, never the one that was open before (builder#53).
+  const start = fresh ? structuredClone(from ?? {}) : {};
+  app = {
+    name: start.name ?? "",
+    components: keyed(start.components ?? []),
+    schemas: start.schemas ?? {},
+    seed: start.seed ?? {},
+    tree: project.tree ?? { realm: "public", identity: null },
+    ...(project.versions ? { versions: project.versions } : {}),
+  };
+  sel = app.components.length ? 0 : -1;
+  // A project with no stamp yet is stamped with what it is being made with NOW.
+  stampIfNew();
+  versionsPanel?.refresh();
+  offerUpgrade();
+  if (fresh) save(); else renderSaveState();
+  render();
+  connectTree();
+  reconnect();
+}
+
 mountProjects($("projects"), {
-  // Notices are what the store knows that is not the fault of any one save —
-  // another tab running an older builder, a legacy store it cannot read —
-  // and a person can act on each, so each is shown.
+  // THIS DEVICE's list: what identifies each project, and its publications. Notices are what the store knows that
+  // is not the fault of any one write, and a person can act on each.
   db: new LocalDb(undefined, undefined, { onNotice: n => showStorageNotice(n) }),
-  getCanvas: () => app.components,
-  getDefinition: () => ({ schemas: app.schemas, seed: app.seed, tree: app.tree, versions: app.versions ?? null }),
-  setCanvas: (components, project) => {
-    // A DIFFERENT PROJECT, so a different runtime. The old one is disposed
-    // before anything of the new one exists: its listeners stop, its session
-    // closes, and a mount or publish of it still in flight disowns itself.
-    rt.dispose();
-    // Its newest publication too: a reconnect whose app is unchanged sends
-    // nothing (publishApp's `last`).
-    openedProject = { id: project.id, created: project.created, published: reconnectsOnOpen(project), publication: project.publication ?? null };
-    rt = newRuntime();
-    // The address belonged to the project being left.
-    appAddress = null;
-    app.components = components;
-    app.name = project.title;
-    // THE PROJECT'S OWN DEFINITION, not the shared one's leftovers (builder#53).
-    // Every one of these used to survive a switch: open Project 1 and you read
-    // the schemas Project 2 last set, and a new project took the previous
-    // one's version stamp as its own.
-    app.schemas = project.schemas ?? {};
-    app.seed = project.seed ?? {};
-    app.tree = project.tree ?? { realm: "public", identity: null };
-    if (project.versions) app.versions = project.versions; else delete app.versions;
-    sel = app.components.length ? 0 : -1;
-    // A project with no stamp yet is stamped with what it is being made with
-    // NOW — the same rule as a new app, and never another project's stamp.
-    stampIfNew();
-    versionsPanel?.refresh();
-    offerUpgrade();
-    save();
-    render();
-    reconnect();
+  open: openInPage,
+  // Each row's name and count: its `meta`, read from its draft in the owner's tree (the open project's from the
+  // canvas). "…" until the tree is open.
+  metaOf: async pid => {
+    if (pid === openedProject?.id && rt.draft.loaded) return { name: app.name, order: app.components.map(keyOf) };
+    const db = rt.treeDb;
+    if (!db || !sdkReady) return undefined;
+    const rows = await db.definition("draft", appIdOf(pid, sdkReady.ids));
+    return rows.find(r => r.key === "meta")?.body ?? null;
   },
+  getProjectMeta: () => ({ tree: app.tree, versions: app.versions ?? null }),
+  getApp: () => ({ name: app.name, components: app.components, schemas: app.schemas, seed: app.seed }),
   onChange: () => render(),
-  // Two tabs changed one component; this tab's version was kept. Said once
-  // per conflict, in the same line storage notices use.
-  onConflict: message => showStorageNotice({ kind: "conflict", message }),
-}).then(p => { projects = p; }).catch(e => {
-  // Storage refused at load. The builder still works — but nothing is being
-  // kept, and that is exactly what the person needs to know before editing.
-  markUnsaved(saveGen, e);
+}).then(async p => {
+  projects = p;
+  // THERE IS ALWAYS AN OPEN PROJECT: an app in the URL is imported as a new one; otherwise what this device had open
+  // reopens; otherwise a new, empty one.
+  if (importApp) await p.create({ from: importApp });
+  else if (!(await p.reopen())) await p.create();
+}).catch(e => {
+  // Storage refused at load: the list cannot be kept on this device, and the person needs to know before editing.
+  showStorageNotice({ kind: "not-saved", message: `this device's project list: ${reasonOf(e)}` });
 });
 
 readBuildInfo().then(baked => {
@@ -212,7 +279,7 @@ function stampIfNew() {
   // unstamped one says so.
   if (app.versions || !bakedInfo || !sdkSelfReport) return;
   app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
-  save();
+  persistMeta();
   versionsPanel?.refresh();
 }
 
@@ -237,7 +304,7 @@ function offerUpgrade() {
   const btn = el("button", { id: "upgrade-accept", textContent: "Update this project" });
   btn.onclick = () => {
     app.versions = stamp({ baked: bakedInfo, sdk: sdkSelfReport });
-    save();
+    persistMeta();
     offerUpgrade();
     versionsPanel?.refresh();
   };
@@ -264,6 +331,7 @@ loadSdk().then(
     offerUpgrade();
     versionsPanel?.refresh();
     render();
+    connectTree();
     reconnect();
   },
   err => { $("sdk").textContent = "SDK failed to load — run ./build.sh and ./serve.sh"; $("sdk").title = String(err); },
@@ -324,7 +392,7 @@ function nodePort() {
 let handoffProgress = null;
 
 function renderPublish() {
-  const b = buttonFor(rt.phase, { error: rt.error, progress: handoffProgress, changed: appChanged(), republishing });
+  const b = buttonFor(rt.phase, { error: rt.error, progress: handoffProgress, changed: changedSincePublish, republishing });
   const btn = $("publish");
   btn.textContent = b.label;
   btn.disabled = !b.enabled;
@@ -338,8 +406,6 @@ function renderPublish() {
   if (note) note.textContent = rt.phase === "failed" ? rt.error : republishError;
 }
 
-/** The app as it was last put on the network (its JSON): what "Publish changes" compares against. */
-let publishedApp = null;
 /** A "Publish changes" in flight, and what the last one said went wrong ("" when nothing). */
 let republishing = false, republishError = "";
 
@@ -362,7 +428,13 @@ async function putOnNetwork(handle, db) {
       sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
     });
     appAddress = put.address;
-    publishedApp = JSON.stringify(app);
+    // THE PUBLISHED DEFINITION follows what was put: the draft, in ONE write, made after the handoff's rows are
+    // saved (this runs in `after`). "Changed since publish" is the draft against it (§19 P3; P5 makes this write
+    // the whole of Publish).
+    // REQUIRED, never a silent no-op: without the door the published definition would stay behind the site.
+    if (typeof rt.treeDb?.publishDefinition !== "function") throw new Error("publish: the owner's tree has no `publishDefinition` door, so the published definition cannot follow the app");
+    await rt.treeDb.publishDefinition();
+    changedSincePublish = false;
     // The acceptance seam: what was published, for the tools that open it
     // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT, and the
     // remount right after a publish replaces it (builder#104's
@@ -380,8 +452,6 @@ async function putOnNetwork(handle, db) {
   return warn;
 }
 
-/** The app's STRUCTURE changed since it was last put on the network. */
-const appChanged = () => rt.phase === "published" && publishedApp !== null && JSON.stringify(app) !== publishedApp;
 
 /**
  * PUBLISH CHANGES (builder#117): a published project whose structure changed
@@ -390,7 +460,7 @@ const appChanged = () => rt.phase === "published" && publishedApp !== null && JS
  */
 async function publishChanges() {
   const handle = rt.session;
-  if (!handle || !appChanged()) return;
+  if (!handle || !changedSincePublish) return;
   republishing = true;
   renderPublish();
   const warn = await putOnNetwork(handle, rt.db);
@@ -409,36 +479,11 @@ async function publishChanges() {
 async function doPublish() {
   if (!sdkReady) return;
   if (rt.phase === "published") return publishChanges();
-  // NO PROJECT OPEN — an app opened from a link, say. A publish is keyed by
-  // its project (builder#83), so the app on screen is kept as one first, and
-  // published under its id. Pressing Publish on an app you can see should not
-  // send you off to do a step the builder can do.
-  let adopted = null;
-  if (!openedProject && projects?.adopt) {
-    try {
-      adopted = await projects.adopt({ title: app.name });
-      if (adopted) openedProject = { id: adopted.id, created: adopted.created };
-    } catch (e) {
-      showStorageNotice({ kind: "not-saved", message: `Could not keep this app as a project, so it was not published: ${e.message}` });
-      return;
-    }
-  }
   // Published by THIS project's runtime. If the project is switched while the
   // publish is in flight, the runtime closes the session it produced and runs
   // none of `after` — so a late publish of A cannot record its history into B.
   try {
-    await rt.publish(app, {
-      // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's
-      // tree this project's data lives in.
-      appId: appIdOf(openedProject?.id, sdkReady?.ids), ids: sdkReady?.ids,
-      open: sdkReady.open,
-      artefacts: sdkReady.SHIPPED_ARTEFACTS,
-      // NAMED, never defaulted. The node to publish to is a decision: it
-      // gets a delegate installed and a signing key handed to it. A default
-      // points at whatever is listening, and what was listening here was the
-      // owner's own node.
-      port: nodePort(),
-    }, {
+    await rt.publish(app, treeDeps, {
       onPhase: () => { renderPublish(); renderAddr(); },
       // What Publish owes the records made in Preview: copied, and confirmed
       // by the node, before anything says Published (builder#52).
@@ -479,9 +524,6 @@ async function doPublish() {
         if (warn) throw new Error(warn);
       },
     });
-    if (adopted && rt.phase === "published") {
-      showStorageNotice({ kind: "saved-as", message: `Saved as project “${adopted.title}” and published.` });
-    }
     // The runtime has switched its backend and invalidated its mount, so this
     // render REMOUNTS on the new database: definition, components and
     // bindings rebuilt against it.
@@ -730,6 +772,9 @@ function renderTracePanel() {
   renderTrace(box, t, el);
 }
 function render() {
+  // WHILE A PROJECT'S DRAFT IS BEING READ from its node, nothing can be edited: an edit then would be replaced by the
+  // draft when it arrives (and written, it would overwrite it). A fresh project's canvas is its definition at once.
+  for (const id of ["palette", "canvas", "props", "clear"]) { const e = $(id); if (e) e.inert = !rt.draft.loaded; }
   $("preview").textContent = preview ? "Back to design" : "Preview";
   document.body.classList.toggle("previewing", preview);
   renderAddr(); renderPublish(); renderPalette(); renderCanvas(); renderTree(); renderProps(); renderDef(); renderTracePanel();

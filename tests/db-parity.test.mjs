@@ -133,6 +133,8 @@ const ARGS = {
   delete: ["d", "0".repeat(32)], scan: ["d"], count: ["d"], children: ["d", "0".repeat(32)],
   createAt: ["d", "0".repeat(32), { t: "x" }], bind: ["d"], deleted: ["d"], seedOf: ["d", "x"],
   markSeed: ["d", "x", 0], preload: [[]], stats: [], isPublished: ["d"], markPublished: ["d"], publishedState: ["d"],
+  // The owner's tree's definition (§19 P3): the draft, read back when a project opens and for "changed since publish".
+  definition: ["draft"],
 };
 const kindOf = (obj, name) => {
   try {

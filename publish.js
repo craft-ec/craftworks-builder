@@ -128,7 +128,7 @@ export const appIdOf = (projectId, ids) => {
 };
 
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 0, onSaving, appId, ids } = deps;
+  const { open, artefacts, port = 0, onSaving, appId, ids, onEvent: onSessionEvent = () => {} } = deps;
   const phase = p => { onPhase(p); return p; };
 
   // NO DEFAULT (builder#73). Without a listener the session's "saving N"
@@ -208,6 +208,9 @@ export async function publish(app, deps, onPhase = () => {}) {
         if (e.kind === "open" && !opened) { opened = true; phase("provisioning"); }
         // Every write not yet PUBLISHED, held ones included (sdk#188).
         if (e.kind === "saving") onSaving(e.count);
+        // Every event, to whoever owns the session (§19 P3: the project runtime re-reads its draft when the tree
+        // moved under this tab -- a superseded or conflicted write).
+        onSessionEvent(e);
       },
     });
     phase("opening");

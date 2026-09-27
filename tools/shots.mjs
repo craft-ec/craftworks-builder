@@ -90,6 +90,17 @@ const SHOTS = [
     wait: `/again|running/i.test(document.getElementById("publish").textContent + document.getElementById("publish").title)`,
   },
   {
+    name: "draft-waiting-for-node",
+    what: "§19 P3: the project's definition is its draft in the owner's tree, which opens with the project. With no node running, every edit stays in the tab and the line under the bar says so — waiting, for how long, and why — and it clears when the draft is written. The list names each project by its draft's meta.",
+    // A REAL failure, as above: nothing listens on NODE_PORT.
+    hash: () => `#node=${NODE_PORT}&app=${encodeURIComponent(JSON.stringify(APP))}`,
+    setup: `
+      await new Promise(r => setTimeout(r, 2500));
+      document.getElementById("projects-chip").click();
+      await new Promise(r => setTimeout(r, 300));`,
+    wait: `document.getElementById("save-state")?.textContent.includes("waiting for your node") && document.querySelectorAll(".proj-row").length > 0`,
+  },
+  {
     name: "live-binding-marked",
     what: "A component whose binding is LIVE says so on its heading, so nobody has to open the properties panel to find out which parts of a screen refresh themselves.",
     // Starts in DESIGN mode and selects the live component before previewing,

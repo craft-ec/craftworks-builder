@@ -132,7 +132,9 @@ try {
   if (!only || only === "54") {
   // Design mode, with a node port that is not reserved, and the SDK's `open`
   // replaced by a provisioned fake over a SECOND real Db — the auditor's
-  // setup. No node is involved.
+  // setup. No node is involved. The project's tree opens with the project
+  // (§19 P3) and retries until it does, so it opens on the fake before
+  // Publish is pressed: the unsaved line clears when the draft is written.
   await fresh("node=18080&");
   await until(`!!document.getElementById("projects-chip")`, "the projects chip");
   await evaluate(`
@@ -144,35 +146,36 @@ try {
       return { db, provisioned: () => true, refused: () => null, exhausted: () => false,
                close: () => { window.__closed += 1; } };
     };`);
+  await until(`document.getElementById("save-state").hidden`, "the project's tree to open on the fake (the draft written)");
   await evaluate(`document.getElementById("publish").click();`);
-  await until(`document.getElementById("publish").textContent === "Published"`, "A to publish",
+  // PUBLISHED — or "Publish changes": the fake has no head to put the app's
+  // site at, so that put fails (said in the history) and the draft is not the
+  // published definition yet (§19 P3: derived, draft vs app). Either label is
+  // the publish having happened; B below must read neither.
+  const PUBLISHED = `["Published", "Publish changes"].includes(document.getElementById("publish").textContent)`;
+  await until(PUBLISHED, "A to publish",
     { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   await shot("54-1-A-published");
 
-  // NO PROJECT WAS OPEN — the app came from a link — so Publish kept it as one
-  // first and published under its id (builder#83). What the person did is
-  // unchanged; what is now TRUE of the store is asserted, not assumed.
+  // THERE IS ALWAYS AN OPEN PROJECT (§19 P3): the page made one, and Publish
+  // published IT, under its id — no adopting of an app that belonged to none.
   const store = `(() => {
     const ns = "craftec.builder.db.v1/r/";
     const rows = p => Object.keys(localStorage).filter(k => k.startsWith(ns + p + "/")).map(k => JSON.parse(localStorage.getItem(k)));
     const device = JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}");
-    return { projects: rows("project").map(r => ({ id: r.id, title: r.fields.title })),
+    return { projects: rows("project").map(r => r.id),
              publications: rows("project.publication").map(r => r.fields.pid),
-             open: device.lastOpened ?? null,
-             note: document.getElementById("storage-note")?.textContent ?? "" };
+             open: device.lastOpened ?? null };
   })()`;
   const a = await evaluate(`return ${store}`);
-  assert.strictEqual(a.projects.length, 1, `Publish kept the app as ONE project: ${JSON.stringify(a)}`);
-  assert.strictEqual(a.open, a.projects[0].id, "and it is the open one");
-  assert.deepStrictEqual(a.publications, [a.projects[0].id], "with one publication record, under its id");
-  assert.match(a.note, /Saved as project “Untitled app” and published\./, "and the person is told");
+  assert.strictEqual(a.projects.length, 1, `one project: ${JSON.stringify(a)}`);
+  assert.strictEqual(a.open, a.projects[0], "and it is the open one");
+  assert.deepStrictEqual(a.publications, [a.projects[0]], "with one publication record, under its id");
   await evaluate(`document.getElementById("projects-chip").click();`);
-  await until(`document.getElementById("projects-pop")?.textContent.includes("Untitled app")`, "the kept project to be listed",
+  await until(`document.getElementById("projects-pop")?.textContent.includes("Project 1")`, "the project listed by its draft's name",
     { show: `document.getElementById("projects-pop")?.textContent` });
-  await evaluate(`document.getElementById("projects-chip").click();`);
-  console.log("ok page: Publish with no project open keeps the app as a project, opens it, and records its publication (builder#83)", JSON.stringify(a));
+  console.log("ok page: the open project publishes under its own id, and its publication is recorded", JSON.stringify(a));
 
-  await evaluate(`document.getElementById("projects-chip").click();`);
   await until(`!!document.getElementById("projects-new")`, "the New project button");
   await evaluate(`document.getElementById("projects-new").click();`);
   // WAIT ON THE SWITCH ITSELF — B open and A's session closed — not on "the
@@ -188,16 +191,16 @@ try {
     const btn = document.getElementById("publish");
     return { label: btn.textContent, disabled: btn.disabled, closed: window.__closed,
              addr: document.getElementById("tree-addr").textContent };`);
-  assert.notStrictEqual(b.label, "Published",
+  assert.ok(!["Published", "Publish changes"].includes(b.label),
     `B was never published and must not say so (builder#54): ${JSON.stringify(b)}`);
   assert.strictEqual(b.disabled, false, "B's Publish must be pressable");
   assert.ok(b.addr.includes("not published"), `B's address line must say it is not published: ${b.addr}`);
   assert.strictEqual(b.closed, 1, "A's session is closed by the switch, not left running beside B");
   console.log("ok page: after A publishes, New project B is not Published and A's session is closed (builder#54)", JSON.stringify(b));
 
-  // THE CONTROL: Publish with a project OPEN makes no second project of it.
+  // B, opened as a NEW project, publishes too, and makes no project beyond A and B.
   await evaluate(`document.getElementById("publish").click();`);
-  await until(`document.getElementById("publish").textContent === "Published"`, "B to publish",
+  await until(PUBLISHED, "B to publish",
     { show: `({ button: document.getElementById("publish").textContent, reason: document.getElementById("publish-note")?.textContent })` });
   const after = await evaluate(`return ${store}`);
   assert.strictEqual(after.projects.length, 2, `A and B, and no third: ${JSON.stringify(after)}`);
@@ -263,8 +266,9 @@ try {
       window.__target = db;
       return { db, provisioned: () => true, refused: () => null, exhausted: () => false, close() {} };
     };`);
+  await until(`document.getElementById("save-state").hidden`, "the project's tree to open on the fake (the draft written)");
   await evaluate(`document.getElementById("publish").click();`);
-  await until(`["Published", "Try publishing again"].includes(document.getElementById("publish").textContent)`, "publish to settle");
+  await until(`["Published", "Publish changes", "Try publishing again"].includes(document.getElementById("publish").textContent)`, "publish to settle");
   // Given time to show the row, but NOT fatal: when the row was dropped the
   // table never shows it, and the assertion below is what should report that,
   // with the numbers — not a timeout that says only "it did not happen".
@@ -276,7 +280,7 @@ try {
              shown: [...document.querySelectorAll(".rt-comp tbody tr")].map(tr => tr.cells[0].textContent) };`);
   assert.deepStrictEqual(p.target, ["entered in preview"],
     `the row entered in Preview must be on the published backend (builder#52): ${JSON.stringify(p)}`);
-  assert.strictEqual(p.label, "Published");
+  assert.ok(["Published", "Publish changes"].includes(p.label), `not published: ${p.label}`);
   assert.deepStrictEqual(p.shown, ["entered in preview"], "and the remounted app shows it");
   console.log("ok page: a row entered in Preview is on the published backend and on screen (builder#52)", JSON.stringify(p));
   }

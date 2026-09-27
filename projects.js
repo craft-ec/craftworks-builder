@@ -1,108 +1,22 @@
-// Projects, as records — one per COMPONENT, not one per project.
+// THIS DEVICE'S LIST OF PROJECTS, and each project's publication history.
 //
-// # Why the granularity is the decision
+// A project's DEFINITION is not here: it is records of the app's draft in its owner's tree (`definition.js`,
+// ARCHITECTURE §19), written through the SDK's doors, one record per component. The one-record-per-component shape
+// was measured here first (whole-canvas records cost up to 20x at 600 components and hit the 256 KiB record wall at
+// ~1,200; builder `projects.js` before §19 P3); it is now the SDK's by type (`DefKey`: `meta`, `c/<id>`, `d/<domain>`).
 //
-// A record is the unit of four different things at once, and they are the same
-// unit whether anyone intended it or not:
-//
-//   - CONFLICT granularity — two devices editing one project collide per
-//     record, so a whole-canvas record makes every concurrent edit a conflict.
-//   - UNDO granularity — what can be put back without disturbing its
-//     neighbours.
-//   - READ granularity — what a reader must fetch to show one component.
-//
-// Changing it later means migrating every project that exists, which is why it
-// is settled here rather than discovered.
-//
-// # WRITE COST IS NOT AN ARGUMENT EITHER WAY — measured twice, corrected once
-//
-// The issue argued that "a whole-canvas record makes every property tweak a
-// full-canvas rewrite". My first comparison said the opposite and was WRONG: it
-// built the whole-canvas record in ONE put while building the per-component
-// store incrementally. A person adds components one at a time. Measured that
-// way, with both sides incremental:
-//
-//     components   per-component   whole-canvas   winner
-//              5        17,431 B        5,845 B    whole-canvas, 3x
-//             20        62,814 B       61,695 B    a tie
-//             60       171,402 B      494,375 B    per-component, 2.9x
-//            200       676,536 B    5,269,655 B    per-component, 7.8x
-//            600     2,636,352 B   54,110,709 B    per-component, 20x
-//
-//   - TWEAK COST IS A WASH: neither shape wins by more than a block. The
-//     issue's original rationale is dead and does not come back in reverse.
-//   - BUILDING HAS A CROSSOVER at about 25 components. Below it, whole-canvas
-//     is up to 3x cheaper; above it, per-component wins and the gap grows
-//     QUADRATICALLY, reaching 20x at 600.
-//
-// The shape is per-component (core dev, 2026-09-21) because the risk is
-// asymmetric: whole-canvas saves at most a few tens of KB on a small canvas and
-// costs 50 MB on a large one. A canvas only grows.
-//
-// # AND THE SLOPE ENDS IN A WALL — measured
-//
-// A record is capped at 262,144 bytes and there is no blob path behind it. A
-// whole-canvas project does not merely get expensive, it becomes a REFUSED
-// WRITE:
-//
-//     1,000 components   value 259,781 B   accepted
-//     1,200 components   value 312,181 B   REFUSED
-//
-//     "record is 312248 bytes and the limit is 262144; store content this
-//      large as a file or a blob and keep a reference to it"
-//
-// The advice in that message is not available: `freenet-prolly` has no blob
-// machinery, and the doc comment promising one ("anything larger is a blob —
-// manifest + chunks") describes something unbuilt (freenet-prolly#50). So the
-// shape rejected here had a ceiling in it, not just a slope, and a project that
-// reached it would be unable to save at all.
-//
-// # WHY whole-canvas goes quadratic — measured, not inferred
-//
-// The proposed explanation was that a map serialisation shifts bytes when one
-// entry changes size, breaking content-defined chunk boundaries downstream so
-// unchanged components stop deduping. That is REFUTED. At 600 components:
-//
-//     one version of the canvas          2 blocks
-//     one add (600 -> 601)               2 NEW blocks, 156,428 bytes
-//     blocks shared with the previous    0 of 2
-//
-// There are no chunk boundaries to break, because the canvas is never chunked.
-// A record value over MAX_INLINE (1 KiB) is stored as ONE content-addressed
-// block, so a 156 KB canvas is a single value block — and changing any byte of
-// it produces an entirely new one. Dedup works at BLOCK granularity, and the
-// value IS the block.
-//
-// That makes the cost inherent rather than an artefact: N adds each rewrite the
-// whole value, so building is O(N^2) bytes, and it generalises to any growing
-// collection stored as one value. The block COUNT stays flat at 2 while the
-// bytes explode, which is why a blocks-only measurement misses it entirely.
-//
-// Conflict granularity is now a free bonus rather than the thing being paid
-// for: two devices editing different components write different keys. It is
-// still unrealisable until phase 6 — an engine does not adopt a head it did not
-// write (craftworks-sdk#78).
-//
-// UNDO works from `changes_since` over the project's range either way. What a
-// whole-canvas record would have cost is SELECTIVE undo, which is not phase 3.
-//
-// The assertions in `tests/projects.test.mjs` fail loudly if either result
-// moves, so a change of substrate re-opens this deliberately rather than being
-// rediscovered a third time.
-//
+// What stays on the device is what IDENTIFIES a project — its id (its app's id derives from it), when it was made,
+// what it was forked from, its tree binding and version stamp — and what it has published. Not its NAME: that is the
+// draft's `meta.name` (rule 3), read for the list through the normal read.
 export const PROJECT = "project";
-export const COMPONENT = "project.component";
 export const PUBLICATION = "project.publication";
-export const DOMAIN = "project.domain";
 
 /** Every domain a project lives in, with its schema. */
 export const SCHEMAS = {
   [PROJECT]: {
     type: "Project",
     fields: [
-      { name: "title", kind: "text", required: true },
       { name: "created", kind: "time" },
-      { name: "updated", kind: "time" },
       { name: "builder_rev", kind: "text" },
       { name: "sdk_version", kind: "text" },
       // Stored from day one and shown READ-ONLY: the selector is phase 12, and
@@ -118,21 +32,6 @@ export const SCHEMAS = {
       // before them opens as it did.
       { name: "tree", kind: "text" },       // the tree binding (realm, identity)
       { name: "versions", kind: "text" },   // the version stamp it was made with
-    ],
-  },
-  [COMPONENT]: {
-    type: "ProjectComponent",
-    // KEYED UNDER THE PROJECT. A component's key is `<pid>‖<rkey>`, so one
-    // project's components are a contiguous band and reading them is a bounded
-    // prefix scan rather than a scan of every component of every project
-    // (craftworks-sdk#122).
-    parent: "pid",
-    fields: [
-      { name: "pid", kind: "text", required: true },
-      { name: "kind", kind: "text", required: true },
-      { name: "layout", kind: "text" },
-      { name: "binding", kind: "text" },
-      { name: "props", kind: "text" },
     ],
   },
   [PUBLICATION]: {
@@ -158,22 +57,6 @@ export const SCHEMAS = {
       { name: "head_seq", kind: "int" },
     ],
   },
-  // ONE RECORD PER (PROJECT, DOMAIN): that domain's schema and seed rows, for
-  // this project. Two projects may use the same domain name with different
-  // schemas — each has its own record, keyed under its own project, so neither
-  // can read the other's (builder#53). A record per domain rather than one
-  // field on the project, because a project's domains grow and a value that
-  // grows is many records (ARCHITECTURE §5).
-  [DOMAIN]: {
-    type: "ProjectDomain",
-    parent: "pid",
-    fields: [
-      { name: "pid", kind: "text", required: true },
-      { name: "domain", kind: "text", required: true },
-      { name: "schema", kind: "text" },
-      { name: "seed", kind: "text" },
-    ],
-  },
 };
 
 /**
@@ -197,12 +80,10 @@ const dec = v => {
   try { return JSON.parse(v); } catch { return null; }
 };
 
-/** A new project. Returns the stored record. */
-export async function createProject(db, { title, builder_rev = null, sdk_version = null, forked_from = null, now = Date.now() } = {}) {
+/** A new project. Returns the stored record. Its name is its draft's (`meta.name`), not this record's. */
+export async function createProject(db, { builder_rev = null, sdk_version = null, forked_from = null, now = Date.now() } = {}) {
   return db.put(PROJECT, {
-    title,
     created: now,
-    updated: now,
     builder_rev,
     sdk_version,
     root_binding: "craftec://public/<you>/",
@@ -216,221 +97,31 @@ export async function listProjects(db) {
   return db.scan(PROJECT, { reverse: true });
 }
 
-/**
- * The slot a stored id is re-created at.
- *
- * An id is self-describing by length: 32 hex is a bare record's own key, 64
- * is `parent ‖ key` in a domain keyed under a parent, and the parent is
- * re-derived from the fields — so the slot is the last half. A LocalDb id is
- * its own slot.
- */
-// THE PROJECTS' STORE IS LocalDb (app.js mounts the panel on it, and only on
-// it), so a record's id IS its slot, by LocalDb's one rule: `createAt`
-// refuses by name any id outside it. No second id kind reaches here; moving
-// projects onto the SDK's Db is a design change that carries the kind
-// explicitly (the architect on builder#131), not a fallback.
-
-/** Put a project record back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreProject(db, pid, fields) {
-  return db.createAt(PROJECT, pid, fields);
-}
-
-/** Put one component back under ITS OWN id (builder#82). Never overwrites. */
-export async function restoreComponent(db, pid, rid, { kind, layout = null, binding = null, props = null }) {
-  return db.createAt(COMPONENT, rid, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
-}
-
-/** Add one component to a project. ONE record. */
-export async function addComponent(db, pid, { kind, layout = null, binding = null, props = null }) {
-  return db.put(COMPONENT, { pid, kind, layout: enc(layout), binding: enc(binding), props: enc(props) });
-}
-
-/**
- * A project's components, in stored order.
- *
- * A BOUNDED read of this project's band. It used to scan every component of
- * every project and filter by `pid`, which made `paint()` — which calls this
- * once per project row just to show a count — quadratic in the library.
- */
-export async function componentsOf(db, pid) {
-  return db.children(COMPONENT, pid);
-}
-
-/**
- * Change ONE property of ONE component.
- *
- * The whole point of the record shape: this writes one small record, not the
- * canvas. `tests/projects.test.mjs` measures it.
- */
-export async function setComponentProps(db, componentId, props) {
-  return db.update(COMPONENT, componentId, { props: enc(props) });
-}
-
-/** Remove one component. ONE record, and its neighbours are untouched. */
-export async function removeComponent(db, componentId) {
-  return db.delete(COMPONENT, componentId);
-}
-
-/**
- * What the builder keeps on a component, under ONE reserved name in its props:
- * `{ key, gen, by }`. `key` says which canvas component a record is; `gen`
- * counts that component's writes; `by` names the tab that made the write, so a
- * write's token `{ gen, by }` is unique to it (builder#74). Reserved, so a
- * component type with a `key` field of its own is never mistaken for it
- * (builder#49).
- */
-export const BUILDER = "_builder";
-const builderOf = r => dec(r.fields.props)?.[BUILDER] ?? {};
-
-/**
- * For each component key, the record that IS that component (builder#49).
- *
- * Two records carry one key when an add landed but its answer was lost and a
- * later save's removal of it was refused, or when saves overlapped. The winner
- * has the highest generation, which every write of the component bumps.
- *
- * `gen` IS A PER-KEY WRITE COUNTER, NOT FRESHNESS. It chooses one record
- * deterministically, and it is a holder's base version. It does not say which
- * content is newest: with two tabs holding one project, the write with the
- * highest count was, before builder#74, a stale copy written back over the
- * other tab's edit. Newer is decided per holder, against its base. Not the larger id (that only ever meant "added later":
- * an update keeps the id) and not `updated` (a clock: on `LocalDb` both ids and
- * times are `Date.now()`, and a clock stepping back made the FRESH record lose
- * and the next save delete the edit — measured in review).
- *
- * Ties — equal generations, which only a genuine race produces — fall to
- * `updated`, then to the id. Those are not claims of freshness; they make the
- * choice DETERMINISTIC, so the same stored state resolves the same way on
- * every open and every device.
- */
-export function recordPerComponentKey(records) {
-  const winner = new Map();
-  const rank = r => [builderOf(r).gen ?? 0, r.updated ?? 0, r.id];
-  const beats = (a, b) => {
-    const [x, y] = [rank(a), rank(b)];
-    for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i];
-    return false;
-  };
-  for (const r of records) {
-    const key = componentKey(r);
-    if (!key) continue;
-    const had = winner.get(key);
-    if (!had || beats(r, had)) winner.set(key, r);
-  }
-  return winner;
-}
-
-/**
- * One record per canvas component, as the load path shows them. Records with
- * no key (saved before keys existed) are each their own component and are
- * never collapsed.
- */
-export function oneRecordPerComponent(records) {
-  const winner = recordPerComponentKey(records);
-  return records.filter(r => {
-    const key = componentKey(r);
-    return !key || winner.get(key) === r;
-  });
-}
-
-/** Which canvas component a record is: the key `saveCanvas` stored, if any. */
-export const componentKey = r => builderOf(r).key;
-
-/** Open a project: its record and its components, decoded. */
+/** Open a project: what this device holds of it. Its definition is its draft (`definition.js`). */
 export async function openProject(db, pid) {
-  // The ids reaching here come from outside this module: a stale
-  // `lastOpened` in device storage, a link, a project someone deleted on
-  // another device. `db.get` answers null for an id it cannot address
-  // (craftworks-sdk#118), so no catch: the catch that used to stand here also
-  // turned a read that FAILED — a node out of reach — into "no such project",
-  // and the builder opened an empty canvas as if the project were gone.
+  // The ids reaching here come from outside this module: a stale `lastOpened` in device storage, a link. `db.get`
+  // answers null for an id it cannot address (craftworks-sdk#118), so no catch: a read that FAILED is not "no such
+  // project".
   const project = await db.get(PROJECT, pid);
   if (!project) return null;
-  const components = oneRecordPerComponent(await componentsOf(db, pid)).map(r => ({
-    id: r.id,
-    kind: r.fields.kind,
-    layout: dec(r.fields.layout),
-    binding: dec(r.fields.binding),
-    props: dec(r.fields.props),
-  }));
-  const schemas = {}, seed = {};
-  const defs = await domainRecordsOf(db, pid);
-  for (const r of defs) {
-    const d = r.fields.domain;
-    const sc = dec(r.fields.schema), sd = dec(r.fields.seed);
-    if (sc) schemas[d] = sc;
-    if (sd) seed[d] = sd;
-  }
   return {
     id: project.id,
-    // The stored record's fields, as they are: what a tab puts back if the
-    // store is lost under it (builder#82). Never re-derived from the decoded
-    // fields below, so a restore writes exactly what was there.
-    record: { ...project.fields },
-    title: project.fields.title,
     created: project.fields.created,
-    updated: project.fields.updated,
     root_binding: project.fields.root_binding,
     visibility: project.fields.visibility,
     forked_from: dec(project.fields.forked_from),
-    components,
-    // The definition, as THIS project stored it. `null`/`{}` where it stored
-    // nothing — never another project's.
-    schemas,
-    seed,
     tree: dec(project.fields.tree),
     versions: dec(project.fields.versions),
-    // STORED BEFORE builder#53: nothing of its definition is with it. Its
-    // schemas lived only in the builder's shared working copy, so opening it
-    // with an empty definition and saving that back would DELETE them. The
-    // caller decides what to adopt; see the panel's startup reopen.
-    legacy: defs.length === 0 && project.fields.tree == null && project.fields.versions == null,
   };
 }
 
-/** A project's per-domain definition records (schema and seed per domain). */
-export async function domainRecordsOf(db, pid) {
-  return db.children(DOMAIN, pid);
-}
-
-/**
- * Save what a project is made of beyond its components: each domain's schema
- * and seed as its own record, the tree binding and version stamp on the project.
- *
- * A DIFF, like `saveCanvas`: a domain whose schema and seed are unchanged is
- * not written, a domain no longer defined loses its record, and the project
- * record is updated only if its binding or stamp moved. Returns what it did.
- */
-export async function saveDefinition(db, pid, { schemas = {}, seed = {}, tree = null, versions = null } = {}) {
-  const did = { added: 0, updated: 0, removed: 0, untouched: 0, project: false };
-  const existing = new Map((await domainRecordsOf(db, pid)).map(r => [r.fields.domain, r]));
-  const domains = new Set([...Object.keys(schemas), ...Object.keys(seed)]);
-  for (const d of domains) {
-    const want = { schema: enc(schemas[d] ?? null), seed: enc(seed[d] ?? null) };
-    const rec = existing.get(d);
-    if (!rec) {
-      await db.put(DOMAIN, { pid, domain: d, ...want });
-      did.added += 1;
-    // `?? null` on the stored side: a field saved as null reads back ABSENT on
-    // the SDK's Db (null removes it), and undefined !== null would rewrite an
-    // unchanged record on every save.
-    } else if ((rec.fields.schema ?? null) !== want.schema || (rec.fields.seed ?? null) !== want.seed) {
-      await db.update(DOMAIN, rec.id, want);
-      did.updated += 1;
-    } else {
-      did.untouched += 1;
-    }
-  }
-  for (const [d, rec] of existing) {
-    if (!domains.has(d)) { await db.delete(DOMAIN, rec.id); did.removed += 1; }
-  }
+/** Keep a project's tree binding and version stamp, if either moved. Returns whether it wrote. */
+export async function saveProjectMeta(db, pid, { tree = null, versions = null } = {}) {
   const p = await db.get(PROJECT, pid);
   const wantTree = enc(tree), wantVersions = enc(versions);
-  if (p && ((p.fields.tree ?? null) !== wantTree || (p.fields.versions ?? null) !== wantVersions)) {
-    await db.update(PROJECT, pid, { tree: wantTree, versions: wantVersions });
-    did.project = true;
-  }
-  return did;
+  if (!p || ((p.fields.tree ?? null) === wantTree && (p.fields.versions ?? null) === wantVersions)) return false;
+  await db.update(PROJECT, pid, { tree: wantTree, versions: wantVersions });
+  return true;
 }
 
 /** Record a publication of a project. History is these records (builder#26). */
