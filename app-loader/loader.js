@@ -107,13 +107,15 @@ try {
     return bytes;
   };
   const { app: appId, registerId: head } = sdk.openPointer(pointer, location.pathname, code("site.wasm"), code("register.wasm"));
+  // The contract code, from the bundle, hashed: what a session provisions and opens trees with.
+  const artefacts = { signer: artefact(bundle, "signer"), block: artefact(bundle, "block"), register: artefact(bundle, "register") };
   const opened = await openPublished(sdk, {
     head,
     // THE FLOOR: the site exists, so the app was published at least once (§19: floored from the site's existence).
     seq: 1,
     app: appId,
     port: Number(location.port),
-    artefacts: { signer: artefact(bundle, "signer"), block: artefact(bundle, "block"), register: artefact(bundle, "register") },
+    artefacts,
     ownData: false,
   });
   // THE APP: its published definition, read from its owner's tree by the one head walk. The node may answer an OLDER
@@ -177,7 +179,7 @@ try {
         const m = await import(codeUrls.get(own.entry));
         if (typeof m.start !== "function") throw new Error(`the app's entry ${own.entry} exports no start()`);
         // `port`: the node that SERVED this page -- the reader's own node, which an app writes through.
-        await m.start({ sdk, opened, root: document.getElementById("app"), files: own.files, urls: codeUrls, port: Number(location.port) });
+        await m.start({ sdk, opened, root: document.getElementById("app"), files: own.files, urls: codeUrls, port: Number(location.port), artefacts });
       })()
     : mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }

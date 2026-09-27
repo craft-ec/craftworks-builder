@@ -175,7 +175,8 @@ export async function publish(app, deps, onPhase = () => {}) {
   // write: the builder#73 shape. NO DEFAULT: refused by name, before
   // anything opens. `sdk.SHIPPED_ARTEFACTS` is null when nothing is beside
   // the SDK (a module linked from load pieces).
-  const missing = ["signer", "block", "register"].filter(n => typeof artefacts?.[n] !== "string" || !artefacts[n]);
+  // A URL (shipped beside the SDK) or `{ urls, sha256 }` (rebuilt from the load pieces): the SDK takes both.
+  const missing = ["signer", "block", "register"].filter(n => !(typeof artefacts?.[n] === "string" ? artefacts[n] : artefacts?.[n]?.sha256));
   if (missing.length) {
     const why = `publish: no ${missing.join(", ")} artefact${missing.length > 1 ? "s" : ""} -- without them the node is never set up, and the page would say published over a node that cannot write`;
     onPhase("failed", why);

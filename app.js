@@ -1,4 +1,4 @@
-import { loadSdk, servedPort } from "./sdk-loader.js";
+import { artefactsOf, loadSdk, servedPort } from "./sdk-loader.js";
 import { browserStorage, storageNote } from "./storage.js";
 import { publishSite } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
@@ -152,7 +152,7 @@ const treeDeps = () => ({
   // ONE PROJECT, ONE APP (craftworks-sdk#267): the space in the person's tree this project's data lives in.
   appId: appIdOf(openedProject?.id, sdkReady?.ids), ids: sdkReady?.ids,
   open: sdkReady.open,
-  artefacts: sdkReady.SHIPPED_ARTEFACTS,
+  artefacts: artefactsOf(sdkReady),
   // NAMED, never defaulted. The node is a decision: it gets a delegate installed and a signing key handed to it.
   port: nodePort(),
   // THE NODE THAT SERVED THIS PAGE (the builder published as an app): the person opened it on their own node.

@@ -5,8 +5,16 @@ import { load } from "./sdk/index.js";
 // builder's modules run, so the page uses the loader's one instance instead of loading a second from ./sdk/.
 // With it, the node that SERVED the builder's page (`port`): the person's own node, the one the builder writes through
 // when no `#node=` names another.
-let loaded = null, served = 0;
-export const useLoaded = (sdk, { port = 0 } = {}) => { loaded = sdk; served = Number.isInteger(port) && port > 0 ? port : 0; };
+// And the contract code the loader rebuilt from its pieces (`{ urls, sha256 }` each): an SDK linked from pieces has
+// no `SHIPPED_ARTEFACTS` (nothing is beside it), so these are what the builder opens and provisions with.
+let loaded = null, served = 0, pieceArtefacts = null;
+export const useLoaded = (sdk, { port = 0, artefacts = null } = {}) => {
+  loaded = sdk;
+  served = Number.isInteger(port) && port > 0 ? port : 0;
+  pieceArtefacts = artefacts;
+};
+/** The SDK's contract code: shipped beside it, or -- loaded from pieces -- the loader's. */
+export const artefactsOf = sdk => sdk?.SHIPPED_ARTEFACTS ?? pieceArtefacts;
 /** The node that served this page, when a loader started the builder; 0 otherwise. */
 export const servedPort = () => served;
 

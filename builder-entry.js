@@ -2,7 +2,7 @@
 // `f/` records of its definition and this module is its `meta.entry`. The loader hands it the SDK it loaded and the
 // builder's linked modules; this puts the builder's own page (its `index.html` record: styles and body) in place of
 // the loader's, gives the SDK to the builder's one SDK door (sdk-loader.js), and runs the builder (app.js).
-export async function start({ sdk, files, urls, port }) {
+export async function start({ sdk, files, urls, port, artefacts }) {
   const html = files.get("index.html");
   if (!html) throw new Error("the builder's index.html is not among its files");
   const page = new DOMParser().parseFromString(new TextDecoder().decode(html), "text/html");
@@ -12,6 +12,6 @@ export async function start({ sdk, files, urls, port }) {
   const { useOwnFiles } = await import(urls.get("builder-files.js"));
   useOwnFiles(files);
   const { useLoaded } = await import(urls.get("sdk-loader.js"));
-  useLoaded(sdk, { port });
+  useLoaded(sdk, { port, artefacts });
   await import(urls.get("app.js"));
 }
