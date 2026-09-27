@@ -40,3 +40,28 @@ export function servedLine(when, served) {
   const verdict = shas.length === served.length ? (new Set(shas).size === 1 ? "SAME version" : "DIFFERENT versions") : "not all read";
   return `SITE  ${when}: ${served.map(one).join("; ")} -- ${verdict}`;
 }
+
+/**
+ * UNTIL `port`'s node SERVES the version `wanted` accepts (a `siteServed` answer -> boolean), read-only: one GET every
+ * `everyMs`, bounded by `ms` (realnet's step budget; a DEADLINE on a wait for the network's propagation, never on a
+ * write). A page loads ONE app.json, so a view opened before its node serves the new version can never show it: step
+ * 10 waits HERE, then loads (7c's run loaded v1 at +1.4 s and waited 180 s on a page that could not change).
+ * Returns `{ served: true, after, reads, last }`, or `{ served: false, after, reads, last }` -- `last` is what the node
+ * served at the end (a version, a status, an error), so a real propagation failure reads as one.
+ */
+export async function untilServed(port, address, wanted, { ms, everyMs = 2_000, fetchImpl = globalThis.fetch, now = Date.now, sleep = t => new Promise(r => setTimeout(r, t)) } = {}) {
+  if (!Number.isFinite(ms) || ms <= 0) throw new Error("untilServed needs a bound `ms`");
+  const t0 = now();
+  let reads = 0, last = null;
+  for (;;) {
+    // Each read has its own bound (a GET, at most 30 s); the step's bound `ms` is checked between reads.
+    last = await siteServed(port, address, { fetchImpl, ms: Math.min(30_000, ms) });
+    reads += 1;
+    if (wanted(last)) return { served: true, after: now() - t0, reads, last };
+    if (now() - t0 + everyMs > ms) return { served: false, after: now() - t0, reads, last };
+    await sleep(everyMs);
+  }
+}
+
+/** What a node served, in words: its version, or why there is none. */
+export const servedWords = s => (s?.sha256 ? `app.json ${s.sha256} (${s.components ?? "?"} components)` : s?.status ? `HTTP ${s.status}` : s?.error ?? "nothing");

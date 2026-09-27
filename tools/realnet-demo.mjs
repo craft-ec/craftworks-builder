@@ -20,7 +20,7 @@ import { captureWire } from "./wire-capture.mjs";
 import { piecesOf, readRequests, summary, table } from "./piece-table.mjs";
 import { loadPage as load } from "./realnet-load.mjs";
 import { savedRow } from "./row-judge.mjs";
-import { siteServed, servedLine } from "./site-served.mjs";
+import { siteServed, servedLine, servedWords, untilServed } from "./site-served.mjs";
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -272,8 +272,13 @@ try {
   const pairUrl = first ? `http://127.0.0.1:${A.ws}/v1/contract/web/${first.address}/` : null;
   const pairFrame = first ? `127.0.0.1:${A.ws}/v1/contract/web/${first.address}/?__sandbox=1` : null;
   let aSees = null;
+  // A SERVES v2 FIRST (read-only GETs through A, bounded by STEP_MS), THEN its page loads: a page holds the ONE app.json
+  // it loaded, so a view opened while A still served v1 could never show v2 (7c: loaded at +1.4 s, v1, and a 180 s wait
+  // on a page that could not change). v2 is the pair's CHANGED structure: its component count.
+  const aServed = re2?.address ? await untilServed(A.ws, first.address, s => s.components === PAIR_CHANGED.components.length, { ms: STEP_MS }) : null;
+  if (aServed) console.log(`SITE  step 10: ${A.label} ${aServed.served ? `serves v2 after ${aServed.after} ms` : `still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s`} (${aServed.reads} read(s))`);
   // Its OWN tab on A's browser: `vis` keeps showing the main app for the steps after this.
-  const pairView = re2?.address ? await visBrowser.tab("user-a: the pair's app") : null;
+  const pairView = aServed?.served ? await visBrowser.tab("user-a: the pair's app") : null;
   if (pairView) {
     await loadPage(pairView, pairUrl, { ms: STEP_MS, what: "10. the pair's app on A" });
     aSees = await until(pairView, `return ((${TABLES.replace(/^return /, "").replace(/;$/, "")}) >= 2 && [...document.querySelectorAll("tbody tr td:first-child")].some(td => td.textContent === ${JSON.stringify(`pair ${tag}`)}) && 1) || null;`, STEP_MS, 500, pairFrame);
@@ -281,8 +286,8 @@ try {
   const served10 = re2?.address ? await servedOf(first.address, [["O2 (publisher)", O2.ws], ["O1", O1.ws], ["A", A.ws]]) : null;
   if (served10) console.log(servedLine("after step 10's republish", served10));
   step(!!first?.address && sameHead === true && !!re2?.address && re2.address === first.address && re2.put === true && !!aSees,
-    `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms) -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
-    { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, aSees: !!aSees, served: served10 && Object.fromEntries(served10), aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
+    `SAME KEY on a second harness node: O2 republishes O1's app CHANGED at the SAME address (version ${re2?.version ?? "?"}), the publish completes, and ${A.label} shows the new structure (${Date.now() - t8c} ms)${aServed && !aServed.served ? ` -- ${A.label} still serves ${servedWords(aServed.last)} after ${Math.round(aServed.after / 1000)} s` : ""} -- two nodes, one throwaway key; not how a person adds a device (Phase 6)`,
+    { first: first?.address, sameHead, register: process.env.RN_PAIR_REGISTER?.slice(0, 16), republished: re2, aServed, aSees: !!aSees, served: served10 && Object.fromEntries(served10), aTables: pairView ? await pairView.evaluateIn(pairFrame, TABLES).catch(() => null) : null });
 
   // 9. A USER WRITES THEIR OWN TREE (Phase 3 item 5): on V — a node that
   // is neither the app owner's nor the machine owner's — the app's rows are a
