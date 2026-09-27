@@ -3,7 +3,7 @@
 // its control.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { siteServed, servedLine, servedWords, untilServed } from "../tools/site-served.mjs";
+import { sameVersionAs, siteServed, servedLine, servedWords, untilServed } from "../tools/site-served.mjs";
 
 let failures = 0;
 const t = async (name, f) => {
@@ -106,6 +106,21 @@ await t("**untilServed has no default bound, and a refused read is a status, nev
     assert.deepEqual([r.served, servedWords(r.last)], [false, "HTTP 503"]);
   } finally { n.close(); }
 });
+await t("**the wait is for the PUBLISHER's version, by sha** (the architect on #181): another app with the same shape does NOT pass; control: the publisher's exact app.json does", async () => {
+  const other = { ...V2, name: "Another app, three components too" };
+  const [pub, a, same] = await Promise.all([node(V2), node(other), node(V2)]);
+  try {
+    const want = await siteServed(pub.port, "Site1");
+    assert.equal(want.components, 3, "THE SETUP: the publisher does not serve the changed app");
+    const r = await untilServed(a.port, "Site1", sameVersionAs(want), { ms: 6_000, ...clock() });
+    assert.equal(r.served, false, "a different app with three components passed as the publisher's version");
+    assert.equal(r.last.components, 3, "THE SETUP: the other node does not serve a three-component app");
+    const ok = await untilServed(same.port, "Site1", sameVersionAs(want), { ms: 6_000, ...clock() });
+    assert.equal(ok.served, true, "THE CONTROL: the publisher's own app.json did not pass");
+    assert.equal(sameVersionAs({ status: 404 })(want), false, "a publisher that served no app.json accepted something");
+  } finally { pub.close(); a.close(); same.close(); }
+});
+
 process.stdout.write(failures ? `site-served: ${failures} FAILED\n` : "site-served: all ok\n");
 
 process.exit(failures ? 1 : 0);

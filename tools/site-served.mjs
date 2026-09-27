@@ -110,5 +110,12 @@ export async function untilServed(port, address, wanted, { ms, fetchImpl, now = 
   }
 }
 
+/**
+ * The PUBLISHER's version as the one to wait for (the architect on #181): a node serves the SAME version when its
+ * app.json has the same sha256 -- never "any app with the right shape". `ref` without a sha (a status, an error)
+ * accepts nothing.
+ */
+export const sameVersionAs = ref => s => !!ref?.sha256 && s?.sha256 === ref.sha256;
+
 /** What a node served, in words: its version, or why there is none. */
 export const servedWords = s => (s?.sha256 ? `app.json ${s.sha256} (${s.components ?? "?"} components)` : s?.status ? `HTTP ${s.status}` : s?.error ?? "nothing");
