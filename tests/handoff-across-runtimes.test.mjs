@@ -13,7 +13,9 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { loadSdk } from "../sdk-loader.js";
-import { handoff, previewDb, SlotCollision, PUBLISHED_DOMAIN, sameFields } from "../handoff.js";
+import { handoff, previewDb, SlotCollision, sameFields } from "../handoff.js";
+// The SDK's reserved marker domain, named HERE only to look inside the tree (the builder's source never names it).
+const PUBLISHED_DOMAIN = "craftworks.published";
 import { openApp, schemasOf, preloadManifest } from "../runtime-logic.js";
 
 const sdk = await loadSdk(readFileSync(new URL("../sdk/craftworks_sdk_bg.wasm", import.meta.url)));
@@ -269,7 +271,7 @@ function losesTheMarker() {
       return r;
     };
     if (k === "createAt") return async (...a) => { writes.rows += 1; return v.apply(o, a); };
-    if (k === "get") return async (d, id) => (d === PUBLISHED_DOMAIN && lost.has(id) ? null : v.call(o, d, id));
+    if (k === "publishedState") return async d => ([...lost.values()].includes(d) ? null : v.call(o, d));
     if (k === "isPublished") return async d => ([...lost.values()].includes(d) ? false : v.call(o, d));
     return typeof v === "function" ? v.bind(o) : v;
   } });

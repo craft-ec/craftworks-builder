@@ -80,14 +80,10 @@ function patchFor(from, to) {
  */
 export const sameFields = (a, b) => sameRows([a ?? {}], [b ?? {}]);
 
-/**
- * The reserved domain the "is this domain live?" markers live in, in the
- * target. Never a domain an app may have: an app that names it is refused.
- * The SDK owns it (craftworks-sdk P2, ARCHITECTURE §19): an ordinary write of
- * `craftworks.*` is refused by type, and the markers are written and read only
- * through its doors, `markPublished(d)` and `isPublished(d)`.
- */
-export const PUBLISHED_DOMAIN = "craftworks.published";
+// THE "IS THIS DOMAIN LIVE?" MARKERS are the SDK's (sdk#547, ARCHITECTURE §19): its reserved domain, which the builder
+// never names, written and read only through its doors -- `markPublished(d)`, `isPublished(d)`, and
+// `publishedState(d)` (the marker's record WITH its write state: a marker is confirmed SAVED, builder#88, never
+// merely present).
 
 /** Is domain `d` live in `target`: has a publish into it completed? Reads only (the SDK's door). */
 const isLive = (target, d) => target.isPublished(d);
@@ -264,7 +260,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   const markerRoom = fn => roomFor(fn, marking, markers);
   for (const { d } of plan) {
     const m = await markerRoom(() => target.markPublished(d));
-    markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
+    markers.push({ marker: d });
   }
   await settled(marking);
   return did;
@@ -307,7 +303,9 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
   // here is added only after the handoff's own write of it (`createAt` /
   // `update`), so the saved state read is of THAT write.
   const saved = new Set();
-  const key = row => `${row.domain}\u0000${row.id}`;
+  // A MARKER row is `{ marker: d }`, read through the SDK's door (its record with its state), never by a domain name.
+  const key = row => ("marker" in row ? `marker\u0000${row.marker}` : `${row.domain}\u0000${row.id}`);
+  const read = row => ("marker" in row ? target.publishedState(row.marker) : target.get(row.domain, row.id));
   const t = {
     everyMs, now, sleep, rows,
     get best() { return best; },
@@ -332,7 +330,7 @@ function tracker(target, rows, { everyMs = 250, now = () => Date.now(), sleep = 
       let lost = 0;
       for (const row of rows) {
         if (saved.has(key(row))) continue;
-        const r = await target.get(row.domain, row.id);
+        const r = await read(row);
         // NO STATE IS UNKNOWN, NOT CONFIRMED. It used to default to CLEAN,
         // which let the handoff say Published on the strength of a field that
         // was not there — the opposite of the builder's own rule that a

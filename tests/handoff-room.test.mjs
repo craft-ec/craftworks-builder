@@ -89,6 +89,7 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
       return session.create_at("craftworks.published", `marker/${d}`, "{}");
     },
     is_published: d => rows.has(`craftworks.published/marker/${d}`),
+    published_state: d => (rows.has(`craftworks.published/marker/${d}`) ? JSON.stringify(record("craftworks.published", `marker/${d}`)) : "null"),
   };
   return {
     session,
@@ -212,4 +213,26 @@ await t("**the domain is marked published LAST (§19's E2): only once every row 
   assert.ok(node.marks().length > 0, "THE SETUP: no marker was written, so the order was not seen");
   assert.ok(node.refusals() > 0, "THE SETUP: every row was confirmed at once, so 'saved before the marker' could not have failed");
   assert.deepStrictEqual(node.marks(), node.marks().map(() => true), "a domain was marked published while a row it holds was not yet saved");
+});
+
+await t("**a marker still in flight does NOT confirm the publish (builder#88)**: every row saved, the marker written but never acknowledged -> the publish is still waiting", async () => {
+  // The node confirms exactly the domain's schema and its 20 rows, then nothing: the marker (the 22nd write) stays
+  // PENDING though it EXISTS.
+  // The FAKE clock ends the wait: a minute past the last row's confirmation the person cancels -- so a publish that
+  // ended before that ended over a marker in flight.
+  const node = roomySession({ stopAt: 21 });
+  const stop = new AbortController();
+  let seen = null;
+  const sleep = async ms => {
+    await node.sleep(ms);
+    if (!stop.signal.aborted && node.clock() > 20 * 300 + 60_000) {
+      seen = { exists: node.session.is_published("notes"), state: JSON.parse(node.session.published_state("notes"))?.state ?? null };
+      stop.abort();
+    }
+  };
+  const { go } = run(node, 20, { confirm: { now: node.now, sleep, signal: stop.signal } });
+  const ended = await go.then(() => "done", e => e.message);
+  assert.ok(seen, `the publish ended before the minute was up, over a marker in flight: ${ended}`);
+  assert.deepEqual(seen, { exists: true, state: "PENDING" }, "THE SETUP: the marker was not written and in flight");
+  assert.match(ended, /cancelled/, "it waited on the marker until the person stopped it");
 });
