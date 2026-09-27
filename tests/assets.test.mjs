@@ -1,54 +1,59 @@
-// THE ASSETS TAB'S WORD, from the SDK's repairAll() report (the owner's first repair goal): DAMAGED when a group could
-// not be rebuilt, REPAIRED when every missing block was put back, HEALTHY when nothing was missing, PARTIAL otherwise.
+// THE ASSETS TAB'S ROW, from the SDK's repairAll() report: the word is the report's `outcome` (the SDK's
+// status.repairOutcome), each damaged group's word its `health` (status.groupHealth). The tab derives no health.
 import assert from "node:assert/strict";
-import { health, treeRow } from "../assets.js";
+import { treeRow } from "../assets.js";
 
 let failures = 0;
 const t = (name, fn) => {
   try { fn(); process.stdout.write(`  ok  ${name}\n`); }
   catch (e) { failures += 1; process.stdout.write(`  FAIL ${name}\n    ${e.stack}\n`); }
 };
-const report = over => ({ rows: 100, missing: 0, putBack: 0, rejected: 0, givenUp: 0, why: null, ...over });
+// The SDK's lists as the pinned SDK exports them (a test of the pinned build checks these against sdk.status).
+const words = { repairOutcome: ["healthy", "repaired", "partial", "damaged", "cancelled"], groupHealth: ["whole", "degraded", "damaged"] };
+const report = over => ({ rows: 100, outcome: "healthy", missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null, ...over });
+const done = r => treeRow({ name: "t", address: "a", state: { phase: "done", report: r, at: 1 }, words, nowMs: 2 });
 
-t("**the word: damaged / repaired / healthy / partial, from the report alone**", () => {
-  assert.equal(health(report({})), "healthy");
-  assert.equal(health(report({ missing: 3, putBack: 3 })), "repaired");
-  assert.equal(health(report({ missing: 3, putBack: 2 })), "partial");
-  assert.equal(health(report({ missing: 3, putBack: 3, givenUp: 1 })), "damaged", "a group given up is DAMAGED whatever else was put back");
-  assert.equal(health(report({ missing: 0, givenUp: 1 })), "damaged");
+t("**the word IS the report's outcome, whatever the counts say: the tab derives nothing**", () => {
+  for (const outcome of words.repairOutcome) assert.equal(done(report({ outcome })).word, outcome);
+  // THE CONTROL: counts that would read "repaired" do not overrule the SDK's word.
+  assert.equal(done(report({ outcome: "damaged", missing: 3, putBack: 3 })).word, "damaged");
 });
 
-t("**a DAMAGED row names the group count and why; a REPAIRED row says what was put back**", () => {
-  const dmg = treeRow({ name: "t", address: "a", state: { phase: "done", report: report({ missing: 5, putBack: 2, givenUp: 1, why: "3 of 4 needed" }), at: 1 }, nowMs: 2 });
-  assert.equal(dmg.word, "damaged");
-  assert.ok(dmg.notes.some(n => n.kind === "damaged" && /1 group could not be rebuilt.*3 of 4 needed/.test(n.text)), JSON.stringify(dmg.notes));
-  assert.equal(dmg.counts, "100 rows · 5 missing · 2 put back");
-  const rep = treeRow({ name: "t", address: "a", state: { phase: "done", report: report({ missing: 2, putBack: 2 }), at: 1 }, nowMs: 2 });
-  assert.equal(rep.word, "repaired");
-  assert.ok(rep.notes.some(n => /2 missing blocks rebuilt from parity and put back/.test(n.text)));
+t("**a word the SDK does not define is refused, never painted (outcome and a group's health)**", () => {
+  assert.throws(() => done(report({ outcome: "fine" })), /not a word of status.repairOutcome/);
+  assert.throws(() => done(report({ outcome: "damaged", damaged: [{ block: "b".repeat(64), present: 2, k: 4, health: "broken" }] })), /not a word of status.groupHealth/);
 });
 
-t("**a REFUSED put-back is said, never hidden inside 'partial'**", () => {
-  const r = treeRow({ name: "t", address: "a", state: { phase: "done", report: report({ missing: 2, putBack: 1, rejected: 1 }), at: 1 }, nowMs: 2 });
-  assert.equal(r.word, "partial");
-  assert.ok(r.notes.some(n => n.kind === "damaged" && /1 rebuilt block refused by the node/.test(n.text)));
+t("**a DAMAGED report lists each group with its SDK health word and what was found; given-up and refused are said**", () => {
+  const r = done(report({ outcome: "damaged", missing: 5, putBack: 2, rejected: 1, givenUp: 1, why: "2 of 4 blocks left", damaged: [{ block: "ab".repeat(32), present: 2, k: 4, health: "damaged" }] }));
+  assert.deepEqual(r.damaged, [{ block: "abababababab…", health: "damaged", text: "2 of 4 blocks found" }]);
+  assert.ok(r.notes.some(n => /1 group could not be rebuilt: 2 of 4 blocks left/.test(n.text)));
+  assert.ok(r.notes.some(n => /1 rebuilt block refused by the node/.test(n.text)));
+  assert.equal(r.counts, "100 rows · 5 missing · 2 put back");
 });
 
-t("**nothing is claimed before a pass: never checked says so; running disables the button; a failed pass is not a health word**", () => {
-  const never = treeRow({ name: "t", address: "a", state: { phase: "never" }, nowMs: 0 });
+t("**pending put-backs and parity that re-encodes to another id are said, never hidden**", () => {
+  const r = done(report({ outcome: "partial", missing: 3, putBack: 1, pending: 1, parityMismatched: 1 }));
+  assert.ok(r.notes.some(n => /1 put-back not answered yet/.test(n.text)));
+  assert.ok(r.notes.some(n => /1 parity block re-encoded to a different id/.test(n.text)));
+});
+
+t("**before a report: not checked; running: Repair off and Cancel on, until a cancel is asked; a failed pass is no health word**", () => {
+  const never = treeRow({ name: "t", address: "a", state: { phase: "never" }, words, nowMs: 0 });
   assert.equal(never.word, "not checked");
   assert.equal(never.counts, null);
-  const run = treeRow({ name: "t", address: "a", state: { phase: "running", since: 1_000 }, nowMs: 6_000 });
-  assert.equal(run.word, "repairing");
-  assert.equal(run.canRepair, false);
+  const run = treeRow({ name: "t", address: "a", state: { phase: "running", since: 1_000 }, words, nowMs: 6_000 });
+  assert.deepEqual([run.word, run.canRepair, run.canCancel], ["repairing", false, true]);
   assert.match(run.notes[0].text, /for 5 s/);
-  const failed = treeRow({ name: "t", address: "a", state: { phase: "failed", error: "no session", at: 1 }, nowMs: 2 });
+  const stopping = treeRow({ name: "t", address: "a", state: { phase: "running", since: 1_000, cancelling: true }, words, nowMs: 6_000 });
+  assert.equal(stopping.canCancel, false, "Cancel asked twice");
+  const failed = treeRow({ name: "t", address: "a", state: { phase: "failed", error: "no session", at: 1 }, words, nowMs: 2 });
   assert.equal(failed.word, "not checked");
   assert.ok(failed.notes.some(n => /could not run: no session/.test(n.text)));
 });
 
 t("THE CONTROL: an unknown state is refused, not painted as something", () => {
-  assert.throws(() => treeRow({ name: "t", address: "a", state: { phase: "later" }, nowMs: 0 }), /unknown repair state/);
+  assert.throws(() => treeRow({ name: "t", address: "a", state: { phase: "later" }, words, nowMs: 0 }), /unknown repair state/);
 });
 
 if (failures) { process.stdout.write(`${failures} failed\n`); process.exit(1); }

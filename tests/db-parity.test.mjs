@@ -57,6 +57,8 @@ const HANDED = {
  * `method: { backends it may be missing from: reason }`.
  */
 const DECLARED = {
+  repairAll: { "Preview Db": "the Assets tab calls it only on `handle.tree(headId)`'s db -- a reader of the PUBLISHED tree on the node; a Preview has no node, so no tree to read and nothing to put back" },
+  repairAllCancel: { "Preview Db": "as repairAll: only on a published tree's reader db, never a Preview" },
   markSeed: { "engine Db": "optional: runtime-logic.js calls it only after `typeof db.markSeed === \"function\"`, and only a Preview seeds" },
   preload: { "Preview Db": "app.js preloads only the PUBLISHED backend; an in-memory Preview has nothing to preload" },
 };
@@ -132,7 +134,7 @@ const ARGS = {
   schema: ["d"], put: ["d", { t: "x" }], get: ["d", "0".repeat(32)], update: ["d", "0".repeat(32), { t: "y" }],
   delete: ["d", "0".repeat(32)], scan: ["d"], count: ["d"], children: ["d", "0".repeat(32)],
   createAt: ["d", "0".repeat(32), { t: "x" }], bind: ["d"], deleted: ["d"], seedOf: ["d", "x"],
-  markSeed: ["d", "x", 0], preload: [[]], stats: [], isPublished: ["d"], markPublished: ["d"], publishedState: ["d"],
+  markSeed: ["d", "x", 0], preload: [[]], stats: [], isPublished: ["d"], markPublished: ["d"], publishedState: ["d"], repairAll: [{ limit: 1 }], repairAllCancel: [],
   // The owner's tree's definition (§19 P3): the draft, read back when a project opens and for "changed since publish".
   definition: ["draft"],
 };

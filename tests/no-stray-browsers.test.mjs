@@ -133,7 +133,11 @@ await t("**the sweep kills what a run recorded, verified gone; leaves a reused P
     assert.ok(alive(turncoat), "the KILL went to a PID that stopped carrying its mark after the TERM");
     assert.ok(!existsSync(pids), "the swept file was left behind");
   } finally {
-    for (const p of [chrome, other, legacy, turncoat]) { try { process.kill(p, "SIGKILL"); } catch {} }
+    // This file's own cleanup follows its rule: each by its MARK (killmarked), never a bare PID. The turncoat is asked
+    // under both marks, as it may have exec'd into `sleep 60` by now.
+    for (const [p, mark] of [[chrome, `--user-data-dir=${profile}`], [other, "60"], [legacy, "tailing"], [turncoat, `--user-data-dir=${profile}-turncoat`], [turncoat, "60"]]) {
+      sh('killmarked "$1" "$2" KILL', p, mark);
+    }
   }
 });
 
