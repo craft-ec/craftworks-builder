@@ -20,7 +20,7 @@ globalThis.document = { createElement: () => node(), addEventListener() {} };
 const { mountApp } = await import("../runtime.js");
 
 const t = async (name, fn) => { await fn(); process.stdout.write(`ok ${name}\n`); };
-const session = { close() {}, db: { root: () => "r", preload: async () => {}, definition: async () => [], draftPut: async () => {}, draftDelete: async () => true } };
+const session = { close() {}, db: { root: () => "r", preload: async () => {}, definition: async () => [], draftPut: async () => {}, draftDelete: async () => true, watchDefinition: () => () => {} } };
 const runtime = () => createProjectRuntime({ mount: async () => ({ db: {}, stop() {} }), publish: async () => ({ session, db: session.db }) });
 
 await t("**publish without a handoff throws, naming it — it never adopts a backend with nothing copied**", async () => {

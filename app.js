@@ -73,7 +73,9 @@ function renderSaveState() {
   const line = !d.loaded ? ["Opening this project:", ` reading it from your node${secs(openedAt)}${why}.`]
     : d.error ? ["Not saved:", ` ${reasonOf(d.error)}. Your work is still here in this tab — `]
       : d.pending && !d.attached ? ["Not saved yet:", ` waiting for your node${secs(d.waitingSince)}${why}. Your work is still here in this tab — `]
-        : null;
+        // The draft's watch could not re-read it after a change (another tab or device): what is shown may be behind.
+        : d.watchError ? ["Not current:", ` the draft could not be re-read from your node (${reasonOf(d.watchError)}); it is read again at its next change.`]
+          : null;
   host.hidden = !line;
   if (!line) { host.replaceChildren(); return; }
   const retry = el("button", { type: "button", id: "save-retry", textContent: "Retry", onclick: () => { connectTree(); save(); } });
@@ -86,7 +88,7 @@ function renderSaveState() {
   host.replaceChildren(
     el("b", { textContent: line[0] }),
     el("span", { id: "save-reason", textContent: line[1] }),
-    ...(d.loaded ? ["retry, or export it to a file before closing. ", retry, " ", exp] : []),
+    ...(d.loaded && line[0] !== "Not current:" ? ["retry, or export it to a file before closing. ", retry, " ", exp] : []),
   );
 }
 // "N s" moves while something waits.

@@ -146,6 +146,7 @@ try {
       const db = new window.craftec.Db();
       db.preload = async () => {};
       db.trace = () => null;
+      db.watchDefinition = () => () => {};   // a session's; an in-tab db has no head to be told of
       return { db, provisioned: () => true, refused: () => null, exhausted: () => false,
                close: () => { window.__closed += 1; } };
     };`);
@@ -266,6 +267,7 @@ try {
       const db = new window.craftec.Db();
       db.preload = async () => {};
       db.trace = () => null;
+      db.watchDefinition = () => () => {};   // a session's; an in-tab db has no head to be told of
       window.__target = db;
       return { db, provisioned: () => true, refused: () => null, exhausted: () => false, close() {} };
     };`);
