@@ -13,6 +13,7 @@ import { render as renderTrace } from "./trace-view.js";
 import { treeStats, NO_ROOT } from "./tree-stats.js";
 import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
+import { mountAssets } from "./assets-panel.js";
 import { createProjectRuntime } from "./project-runtime.js";
 
 // Capabilities built so far (ARCHITECTURE.md §21). A component is placeable one
@@ -738,3 +739,25 @@ $("publish").onclick = doPublish;
 $("clear").onclick = () => { app.components.length = 0; app.seed = {}; sel = -1; rt.invalidate(); save(); render(); };
 $("preview").onclick = () => { preview = !preview; rt.invalidate(); render(); };
 render();
+
+// ---- THE ASSETS TAB (the owner's first repair goal) -----------------------------------------------------------------
+// A header button that swaps the main area for the tab: this app's tree and Repair now, which runs the SDK's
+// `repairAll()` on the project's session. An SDK without it says THAT, and nothing else: nothing presented as measured.
+{
+  const button = $("assets"), view = $("assets-view"), mainEl = document.querySelector("main");
+  button.onclick = () => {
+    const on = view.hidden;
+    view.hidden = !on;
+    mainEl.hidden = on;
+    button.classList.toggle("on", on);
+    if (!on) return;
+    const session = rt?.session?.session ?? null;
+    if (typeof session?.repairAll !== "function") {
+      view.replaceChildren(Object.assign(document.createElement("div"), { className: "stubbed", textContent: session ? "This SDK build has no repairAll(): nothing to show." : "Publish this project first: repair reads its tree from your node." }));
+      return;
+    }
+    const host = document.createElement("div");
+    view.replaceChildren(host);
+    mountAssets(host, { session, tree: () => ({ name: app.name || "This app's data", address: `craftec://${app.tree.realm}/${app.tree.identity ?? "‹you›"}/` }) });
+  };
+}
