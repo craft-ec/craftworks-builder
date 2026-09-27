@@ -248,7 +248,16 @@ mountProjects($("projects"), {
   projects = p;
   // THERE IS ALWAYS AN OPEN PROJECT: an app in the URL is imported as a new one; otherwise what this device had open
   // reopens; otherwise a new, empty one.
-  if (importApp) await p.create({ from: importApp });
+  if (importApp) {
+    await p.create({ from: importApp });
+    // IMPORTED ONCE. The app is a project now, so the link's `app=` is done: removed from this page's own URL (the
+    // rest of the hash kept), a reload REOPENS the imported project like any reopen, rather than importing it
+    // again as another project (and a second tab on the same link is a second import, by the person's own act).
+    const h = new URLSearchParams(location.hash.slice(1));
+    h.delete("app");
+    const rest = h.toString();
+    history.replaceState(history.state, "", `${location.pathname}${location.search}${rest ? `#${rest}` : ""}`);
+  }
   else if (!(await p.reopen())) await p.create();
 }).catch(e => {
   // Storage refused at load: the list cannot be kept on this device, and the person needs to know before editing.

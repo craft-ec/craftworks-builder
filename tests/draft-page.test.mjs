@@ -56,14 +56,29 @@ try {
   const second = await def();
   assert.deepStrictEqual([second.components, second.schemas, second.seed], [[], {}, {}], "a new project inherited the open one's definition");
 
-  // 4. An app in the URL is a NEW project, starting as it.
+  // 4. An app in the URL is a NEW project, starting as it -- imported ONCE: the page's URL loses `app=` (the rest of
+  //    the hash kept), and a RELOAD reopens that project rather than importing it again.
   const imported = { name: "From a link", components: [{ type: "table", domain: "tasks", mode: "owned" }] };
-  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#app=${encodeURIComponent(JSON.stringify(imported))}` });
+  await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#preview=0&app=${encodeURIComponent(JSON.stringify(imported))}` });
   await send("Page.reload", {});
   await until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === "From a link"`, "the imported app");
   assert.deepStrictEqual((await def()).components.map(c => c.type), ["table"]);
+  const openId = () => evaluate(`return JSON.parse(localStorage.getItem("craftec.builder.device.v1") ?? "{}").lastOpened ?? null`);
+  const importedId = await openId();
+  await until(`!location.hash.includes("app=")`, "the link's app= removed from the page's URL once imported");
+  assert.strictEqual(await evaluate(`return location.hash`), "#preview=0", "the rest of the hash was not kept");
   await evaluate(`document.getElementById("projects-chip").click()`);
   await until(`document.querySelectorAll(".proj-row").length === 3`, "three projects: the import did not replace one");
+  // A RELOAD reopens the imported project (with no node its draft is not read yet: it is the project that is
+  // compared, and how many there are), and imports nothing.
+  await send("Page.reload", {});
+  await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK badge after the reload");
+  await until(`document.getElementById("save-reason")?.textContent.includes("reading it from your node")`, "the reopened project reading its draft");
+  await sleep(1500);   // time for a second import to happen, if one were going to
+  assert.strictEqual(await openId(), importedId, "a reload opened another project than the one imported");
+  await evaluate(`document.getElementById("projects-chip").click()`);
+  await until(`document.querySelectorAll(".proj-row").length > 0`, "the list after the reload");
+  assert.strictEqual(await evaluate(`return document.querySelectorAll(".proj-row").length`), 3, "a reload imported the app again as another project");
 
   process.stdout.write("ok the page: an open project always, the not-saved line says why, a new project inherits nothing, #app= imports\n");
   done(0);
