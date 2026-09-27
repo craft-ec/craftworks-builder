@@ -1,4 +1,5 @@
 import { servedText } from "./sdk/served.js";
+import { ownText } from "./builder-files.js";
 // The versions panel: a footer chip that opens what this builder is running.
 //
 // All of the judgement lives in versions.js, which has no DOM and is tested on
@@ -17,7 +18,8 @@ const el = (tag, props = {}, ...kids) => {
 export async function readBuildInfo(fetchFn) {
   // Through the SDK's one fetch, read FRESH (no-store): waited on until the
   // builder's server answers. Bytes that are not JSON are reported as null.
-  const text = await servedText({ url: "./build-info.json" }, { init: { cache: "no-store" }, ...(fetchFn ? { fetch: fetchFn } : {}) });
+  // Published as an app, the stamp is one of the builder's own files (its `f/` record).
+  const text = ownText("build-info.json") ?? await servedText({ url: "./build-info.json" }, { init: { cache: "no-store" }, ...(fetchFn ? { fetch: fetchFn } : {}) });
   try {
     return JSON.parse(text);
   } catch (_) {

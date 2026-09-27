@@ -176,7 +176,8 @@ try {
         if (!codeUrls.has(own.entry)) throw new Error(`the app's entry ${own.entry} is not one of its code files`);
         const m = await import(codeUrls.get(own.entry));
         if (typeof m.start !== "function") throw new Error(`the app's entry ${own.entry} exports no start()`);
-        await m.start({ sdk, opened, root: document.getElementById("app"), files: own.files, urls: codeUrls });
+        // `port`: the node that SERVED this page -- the reader's own node, which an app writes through.
+        await m.start({ sdk, opened, root: document.getElementById("app"), files: own.files, urls: codeUrls, port: Number(location.port) });
       })()
     : mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }

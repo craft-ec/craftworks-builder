@@ -69,7 +69,8 @@ cd "$here" || exit 2
 # THE PLAN, before anything starts: which steps run and which private nodes they use (V, O = the pair, LOSE).
 if [ "$PROGRAM" = tools/publish-builder.mjs ]; then
   [ -z "$ONLY" ] || { echo "REFUSED  --publish-builder runs no demo step: drop --only $ONLY; nothing started"; exit 2; }
-  STEPS=publish-builder; NODES=" "
+  # V: the private node the published builder SAVES through (a draft in V's own tree) -- never A, the owner's.
+  STEPS=publish-builder; NODES=" V "
 else
   if ! planned=$(node tools/realnet-steps.mjs "$ONLY" 2>&1); then echo "REFUSED  $planned; nothing started"; exit 2; fi
   STEPS=$(sed -n 's/^steps //p' <<<"$planned"); NODES=" $(sed -n 's/^nodes //p' <<<"$planned") "

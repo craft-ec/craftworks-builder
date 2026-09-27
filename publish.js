@@ -128,7 +128,7 @@ export const appIdOf = (projectId, ids) => {
 };
 
 export async function publish(app, deps, onPhase = () => {}) {
-  const { open, artefacts, port = 0, onSaving, appId, ids } = deps;
+  const { open, artefacts, port = 0, served = false, onSaving, appId, ids } = deps;
   const phase = p => { onPhase(p); return p; };
 
   // NO DEFAULT (builder#73). Without a listener the session's "saving N"
@@ -156,7 +156,8 @@ export async function publish(app, deps, onPhase = () => {}) {
     throw new Error(why);
   }
 
-  if (!port || RESERVED_PORTS.includes(port)) {
+  // A reserved port is refused unless it SERVED this page: then it is the node the person opened the builder on.
+  if (!port || (RESERVED_PORTS.includes(port) && !served)) {
     const why = port
       ? `port ${port} is a node this machine already runs for somebody else. ` +
         "Publishing installs code and hands over a signing key, so it needs a node of this project's own."

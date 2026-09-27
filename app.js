@@ -1,4 +1,4 @@
-import { loadSdk } from "./sdk-loader.js";
+import { loadSdk, servedPort } from "./sdk-loader.js";
 import { browserStorage, storageNote } from "./storage.js";
 import { publishSite } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
@@ -155,6 +155,8 @@ const treeDeps = () => ({
   artefacts: sdkReady.SHIPPED_ARTEFACTS,
   // NAMED, never defaulted. The node is a decision: it gets a delegate installed and a signing key handed to it.
   port: nodePort(),
+  // THE NODE THAT SERVED THIS PAGE (the builder published as an app): the person opened it on their own node.
+  served: nodePort() === servedPort() && servedPort() > 0,
 });
 
 /**
@@ -407,7 +409,8 @@ function renderAddr() {
  */
 function nodePort() {
   const p = Number(new URLSearchParams(location.hash.slice(1)).get("node"));
-  return Number.isInteger(p) && p > 0 && p < 65536 ? p : 0;
+  // Or, published and loaded by a node, THAT node (`servedPort`): not a default -- the node the person opened it on.
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : servedPort();
 }
 
 /** The handoff's "confirmed k of n", for the button while records move. */

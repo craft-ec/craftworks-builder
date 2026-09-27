@@ -18,9 +18,9 @@ export const BUILDER_ENTRY = "builder-entry.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-/** The builder's code: every top-level module and its page. The SDK is the loader's (its piece set), never a file here. */
+/** The builder's code: every top-level module, its page and its build stamp. The SDK is the loader's (its piece set). */
 export function builderCodeFiles(dir = root) {
-  const files = readdirSync(dir).filter(n => statSync(join(dir, n)).isFile() && (/\.js$/.test(n) || n === "index.html")).sort();
+  const files = readdirSync(dir).filter(n => statSync(join(dir, n)).isFile() && (/\.js$/.test(n) || n === "index.html" || n === "build-info.json")).sort();
   for (const need of ["index.html", "app.js", BUILDER_ENTRY, "sdk-loader.js"]) {
     if (!files.includes(need)) throw new Error(`the builder's ${need} is not there`);
   }
@@ -84,6 +84,34 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log(`PASS  the builder LOADS through A: "${seen.sdk}" in ${Date.now() - tL} ms`);
     } finally {
       await b.stop();
+    }
+    // IT SAVES (main): on V -- this run's private node, its own key; never A, whose tree is the owner's -- the builder
+    // opened from V (which serves it from the network) makes an edit, and the unsaved line must go: the draft is in
+    // V's tree, through the node that served the page (no #node=, no port asked).
+    const V = Number(process.env.RN_V);
+    if (!Number.isInteger(V) || V <= 0 || [7509, 7609].includes(V)) throw new Error("RN_V must name this run's private node V: the builder's save is checked there, never on the owner's node");
+    const v = await openFreshBrowser("publish-builder: the builder saving on V");
+    try {
+      const view = await v.tab("builder-on-v");
+      const tS = Date.now();
+      await view.navigate(`http://127.0.0.1:${V}/v1/contract/web/${r.address}/`, { ms: STEP_MS });
+      const frame = `127.0.0.1:${V}/v1/contract/web/${r.address}/?__sandbox=1`;
+      const state = () => view.evaluateIn(frame, `const s = document.getElementById("save-state"); return { sdk: document.getElementById("sdk")?.textContent ?? null, unsaved: s && !s.hidden ? s.innerText : "", chips: document.querySelectorAll("#palette .chip").length, comps: document.querySelectorAll("#canvas .comp, .rt-comp").length };`).catch(e => ({ error: e.message }));
+      let s = null;
+      while (Date.now() - tS < STEP_MS) { s = await state(); if (/^SDK /.test(s?.sdk ?? "") && s.chips > 0) break; await new Promise(ok => setTimeout(ok, 1000)); }
+      if (!/^SDK /.test(s?.sdk ?? "")) throw new Error(`the builder did not reach SDK ready on V: ${JSON.stringify(s)}`);
+      await view.evaluateIn(frame, `[...document.querySelectorAll("#palette .chip")][0].click(); return 1;`);
+      const tE = Date.now();
+      let saved = false;
+      while (Date.now() - tE < STEP_MS) {
+        s = await state();
+        if (s && !s.error && s.unsaved === "") { saved = true; break; }
+        await new Promise(ok => setTimeout(ok, 1000));
+      }
+      if (!saved) throw new Error(`the builder's edit was not saved on V in ${STEP_MS / 1000} s: ${JSON.stringify(s)}`);
+      console.log(`PASS  the builder SAVES on V: an edit made, the unsaved line gone in ${Date.now() - tE} ms (no port asked: the serving node)`);
+    } finally {
+      await v.stop();
     }
     failed = 0;
   } catch (e) {
