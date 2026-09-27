@@ -387,13 +387,14 @@ async function loseSteps(url, frameOf) {
     } catch { return []; }
   };
   // What the proxy's own log says happened: the group it chose (and every block of it made lost), the NotFound total,
-  // and the DISTINCT ids answered NotFound.
+  // the DISTINCT ids answered NotFound, and the DISTINCT slots of the group the reader asked for (bytes or NotFound).
   const evidence = file => {
     const l = log(file);
     const c = l.find(x => x.chosen) ?? null;
     const distinct = new Set(l.filter(x => x.not_found).map(x => x.not_found));
     const notFound = l.reduce((n, x) => Math.max(n, x.not_found_total ?? 0), 0);
-    return { chosen: c && { group: c.chosen, k: c.k, lost: c.lost, lostData: c.lost_data ?? [] }, notFound, distinct: [...distinct] };
+    const asked = new Set(l.filter(x => x.asked).map(x => x.asked));
+    return { chosen: c && { group: c.chosen, k: c.k, lost: c.lost, lostData: c.lost_data ?? [] }, notFound, distinct: [...distinct], asked: asked.size };
   };
   // NON-VACUITY (the architect on #179): the loss HAPPENED -- every lost DATA member was asked and answered NotFound
   // (so a row read is a decode), and nothing outside the lost set was. Not every lost PARITY block need be asked: a
@@ -404,7 +405,7 @@ async function loseSteps(url, frameOf) {
   // with k >= 2" is the tree's shape, not the bulk rows); the root arm's is the root's group of one.
   const isBulk = ev => ev.chosen?.group === "data" && ev.chosen.k === BULK.length;
   const isRoot = ev => ev.chosen?.group === "root" && ev.chosen.k === 1;
-  const summary = ev => ({ group: ev.chosen?.group, k: ev.chosen?.k, lost: ev.chosen?.lost.length, notFound: ev.notFound, distinctNotFound: ev.distinct.length });
+  const summary = ev => ({ group: ev.chosen?.group, k: ev.chosen?.k, lost: ev.chosen?.lost.length, notFound: ev.notFound, distinctNotFound: ev.distinct.length, asked: ev.asked });
   const arms = [
     { name: "data, m lost", port: process.env.RN_V_LOSE_DATA_M, file: process.env.RN_V_LOSE_DATA_M_LOG, reads: true, group: isBulk, which: `the bulk rows' group (k = ${BULK.length})` },
     { name: "root, m lost", port: process.env.RN_V_LOSE_ROOT_M, file: process.env.RN_V_LOSE_ROOT_M_LOG, reads: true, group: isRoot, which: "the root's group of one" },
@@ -442,6 +443,9 @@ async function loseSteps(url, frameOf) {
         const read = BULK.filter(r => (shown ?? []).includes(r)).length;
         if (!arm.group(ev)) { step(false, `LOSE ${arm.name}: ws-lose chose ${ev.chosen ? `a ${ev.chosen.group} group of k = ${ev.chosen.k}` : "no group"}, not ${arm.which}: a harness failure, not a data result`, summary(ev)); continue; }
         if (!happened(ev)) { step(false, `LOSE ${arm.name}: VOID -- the NotFound answers were not the lost blocks (${ev.distinct.length} distinct answered, ${ev.chosen.lost.length} lost)`, summary(ev)); continue; }
+        // THE READER REACHED FOR A DECODE (the architect on #179): it asked >= k of the group's slots, so "not read" is
+        // fewer than k answered, not a reader that never went past the data members. Otherwise VOID.
+        if (ev.asked < ev.chosen.k) { step(false, `LOSE ${arm.name}: VOID -- the reader asked ${ev.asked} of the group's slots, fewer than k = ${ev.chosen.k}: no decode was attempted`, summary(ev)); continue; }
         // The rows are not read and the reader is STILL asking at the end of the watch (an OBSERVATION of rule 8's
         // wait, not an end). PINNED: nothing NAMES the wait -- `named` is empty (known defect, flipped by sdk#524: the
         // flip inverts only `unnamed` to the bulk group named DAMAGED with j < k).
