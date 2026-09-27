@@ -124,25 +124,29 @@ export function nodeEnv(dir, env = process.env) {
   return { ...env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") };
 }
 
-// EVERY BROWSER THIS PROCESS STARTS, so that no exit leaves one behind (the
-// realnet orphans, 2026-09-24: a killed or crashed run's headless Chrome
-// stayed connected to the owner's node for 13 h, and one reconnected to V
-// and provisioned its signer). Each is killed by `openPageHost`'s `done` on ANY
-// exit it sees (normal, a signal, the budget); and each is written to
-// PAGE_HOST_PIDFILE (`pid <TAB> profile`), which the next realnet run sweeps
-// for an exit nothing here could see (a SIGKILL).
-const browsers = new Set();
-function recordBrowser(child, profile) {
-  browsers.add(child);
-  if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${child.pid}\t${profile}\n`);
+// EVERY CHILD THIS PROCESS STARTS -- its page server and every browser --
+// so that no exit leaves one behind (the realnet orphans, 2026-09-24: a killed
+// or crashed run's headless Chrome stayed connected to the owner's node for
+// 13 h, and one reconnected to V and provisioned its signer; builder#180: ~80
+// page servers were left, one per SIGKILLed page-host, because only browsers
+// were watched). Each is killed by `openPageHost`'s `done` on ANY exit it sees
+// (normal, a signal, the budget); and each is written to PAGE_HOST_PIDFILE
+// (`pid <TAB> mark`), which the next realnet run sweeps for an exit nothing
+// here could see (a SIGKILL). `mark` is a literal its command line carries and
+// no other process's does (a browser's `--user-data-dir=<profile>`, the
+// server's `-X page_host=<nonce>`): a reused PID is never touched.
+const watched = new Set();
+function watch(child, mark) {
+  watched.add(child);
+  if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${child.pid}\t${mark}\n`);
   // A WATCHDOG for the exit nothing in this process can see (SIGKILL; macOS
-  // has no PDEATHSIG): a detached shell that ends the browser the moment THIS
-  // process is gone — only while the PID still names its profile, so a
-  // reused PID is never touched — and is itself ended when the browser exits.
-  const dog = spawn("/bin/sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "--user-data-dir=$3" || exit 0; kill "$2"; sleep 5; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "--user-data-dir=$3" && kill -9 "$2"', "watchdog", String(process.pid), String(child.pid), profile], { detached: true, stdio: "ignore" });
+  // has no PDEATHSIG): a detached shell that ends the child the moment THIS
+  // process is gone -- only while the PID still carries its mark -- and is
+  // itself ended when the child exits.
+  const dog = spawn("/bin/sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "$3" || exit 0; kill "$2"; sleep 5; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "$3" && kill -9 "$2"', "watchdog", String(process.pid), String(child.pid), mark], { detached: true, stdio: "ignore" });
   dog.unref();
   child.once("exit", () => {
-    browsers.delete(child);
+    watched.delete(child);
     try { process.kill(dog.pid); } catch (_) {}
   });
 }
@@ -470,7 +474,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
       const { gone, held } = await node.stop();
       if (!gone || held.length) code = code || 1;
     }
-    for (const k of [...kids, ...browsers]) {
+    for (const k of new Set([...kids, ...watched])) {
       if (!(await killVerified(k))) { console.error(`${label}: pid ${k.pid} did not exit`); code = code || 1; }
     }
     rmSync(join(nonceDir, nonce), { force: true });
@@ -483,8 +487,11 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
   }, budgetMs).unref();
 
   try {
-    const server = spawn("python3", ["-u", "-m", "http.server", "0", "--bind", "127.0.0.1"], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    // `-X page_host=<nonce>`: an option python keeps and ignores, so the server's command line names THIS run (its
+    // watchdog and the sweep match on it, never on a pattern another run's server shares).
+    const server = spawn("python3", ["-X", `page_host=${nonce}`, "-u", "-m", "http.server", "0", "--bind", "127.0.0.1"], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
     kids.push(server);
+    watch(server, `page_host=${nonce}`);
     const port = await announced(server, [server.stdout, server.stderr], /port (\d+)/, `${label}: page server`, 10_000);
 
     mkdirSync(nonceDir, { recursive: true });
@@ -496,7 +503,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0", ...chromeArgs,
       `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
     kids.push(chrome);
-    recordBrowser(chrome, profile);
+    watch(chrome, `--user-data-dir=${profile}`);
     const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
 
     const pageProof = `return await (await fetch("/.page-nonce/${nonce}")).text();`;
@@ -535,7 +542,7 @@ export async function openFreshBrowser(label, { windowSize = "1280,800" } = {}) 
   const profile = mkdtempSync(join(tmpdir(), "cw-fresh-"));
   const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0",
     `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
-  recordBrowser(chrome, profile);
+  watch(chrome, `--user-data-dir=${profile}`);
   const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
   return { debug, pid: chrome.pid, tab: (tabLabel, opts) => openTab(debug, tabLabel, opts), stop: () => killVerified(chrome) };
 }
