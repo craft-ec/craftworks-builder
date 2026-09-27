@@ -72,7 +72,7 @@ await t("project-runtime carries the count into the mount — one reported BEFOR
   let report;
   const rt = createProjectRuntime({
     mount,
-    publish: async (app, deps) => { report = deps.onSaving; deps.onSaving(5); return { session: { close() {} }, db: {} }; },
+    publish: async (app, deps) => { report = deps.onSaving; deps.onSaving(5); return { session: { close() {} }, db: { definition: async () => [], draftPut: async () => {}, draftDelete: async () => true } }; },
   });
   await rt.publish({}, {}, { handoff: async () => {}, after: async () => {} });
   assert.strictEqual(rt.saving, 5, "the count reported during publish was dropped");

@@ -116,7 +116,8 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
     /**
      * Open the owner's tree, once. Resolves to `{ session, db }`; a second call while one is in flight joins it,
      * and a call after it opened returns it. A failed open is retried on its own, doubling the wait (never given
-     * up: rule 8); `deps` are the opener's (app id, port, artefacts).
+     * up: rule 8); `deps` are the opener's (app id, port, artefacts), or a function giving them, asked afresh on
+     * every attempt: a retry then reaches a node started after this tab, or one the person named since.
      */
     connect(deps) {
       if (disposed) return Promise.reject(new Error("this project is no longer open"));
@@ -141,7 +142,7 @@ export function createProjectRuntime({ mount, publish, onChange = () => {}, onDr
       connecting = (async () => {
         let res;
         try {
-          res = await publish(null, { ...deps, onSaving }, report);
+          res = await publish(null, { ...(typeof deps === "function" ? deps() : deps), onSaving }, report);
         } catch (e) {
           connecting = null;
           if (disposed) throw e;
