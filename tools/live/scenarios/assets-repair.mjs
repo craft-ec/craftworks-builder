@@ -98,17 +98,27 @@ export async function run(ctx) {
     say(`FAIL  published ${pub.address}, but the rows never all read "saved + backed up": ${seen.length} of ${rows.length} rows visible in the table, ${seen.filter(r => r.backedUp).length} backed up, ${seen.filter(r => r.saved).length} saved; first not backed up ${JSON.stringify(seen.find(r => !r.backedUp) ?? null)}`);
     return { failed: true };
   }
-  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws}, backed up in ${Date.now() - t0} ms`);
+  // The head's CURRENT tree: node-forget chooses groups only under it (the store also keeps older versions' nodes).
+  // The mount's db (runtime.js's seam): "" until the store can state its root, so waited for.
+  const root = await until(tab, `return globalThis.__craftworks?.db?.root?.() || null;`, 60_000, null, 500);
+  if (!root) { say("FAIL  the page states no tree root: node-forget cannot tell the head's tree from older versions"); return { failed: true }; }
+  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws}, backed up in ${Date.now() - t0} ms; root ${root}`);
 
   // 2. P loses m blocks of GROUPS groups, from its own store, while it is stopped.
   let forgot = [];
   P = await ctx.nodes.restart(P, async () => {
-    forgot = forgetTool(["forget", join(P.dir, "data"), BLOCK_WASM, "--lose", "m", "--groups", String(GROUPS)]);
+    forgot = forgetTool(["forget", join(P.dir, "data"), BLOCK_WASM, "--root", root, "--lose", "m", "--groups", String(GROUPS)]);
   });
   for (const l of forgot) say(`FORGET ${JSON.stringify(l)}`);
   const lost = forgot.filter(l => l.forgot).map(l => l.forgot);
   if (!lost.length) { say("FAIL  node-forget forgot nothing: nothing below is measured"); return { failed: true }; }
-  const checked = forgetTool(["check", `ws://127.0.0.1:${P.ws}/v1/contract/command?encodingProtocol=native`, BLOCK_WASM, ...lost]);
+  // Until the restarted node ANSWERS (found / not_found), 60 s at most: an early GET is refused ("not joined yet").
+  let checked = [];
+  for (const until_ = Date.now() + 60_000; ;) {
+    checked = forgetTool(["check", `ws://127.0.0.1:${P.ws}/v1/contract/command?encodingProtocol=native`, BLOCK_WASM, ...lost]);
+    if (checked.every(l => l.answer === "found" || l.answer === "not_found") || Date.now() > until_) break;
+    await sleep(2_000);
+  }
   for (const l of checked) say(`CHECK  ${JSON.stringify(l)}`);
   const notFound = checked.filter(l => l.answer === "not_found").length;
   say(`P restarted :${P.ws}; ${lost.length} block(s) forgotten, ${notFound} answer NotFound on P`);
@@ -143,7 +153,7 @@ export async function run(ctx) {
   // 5. THE CONTROL: m + 1 of one group.
   let forgot2 = [];
   P = await ctx.nodes.restart(P, async () => {
-    forgot2 = forgetTool(["forget", join(P.dir, "data"), BLOCK_WASM, "--lose", "m+1", "--groups", "1"]);
+    forgot2 = forgetTool(["forget", join(P.dir, "data"), BLOCK_WASM, "--root", root, "--lose", "m+1", "--groups", "1"]);
   });
   for (const l of forgot2) say(`FORGET (control) ${JSON.stringify(l)}`);
   await reopen(tab, P.ws, "the control");
