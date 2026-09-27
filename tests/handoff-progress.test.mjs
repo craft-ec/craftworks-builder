@@ -25,7 +25,8 @@ const POLL_MS = 250;
 /**
  * `n` rows, and a target that has confirmed `confirmedBy(ms)` of them at
  * clock `ms` — and, past `lostAfter`, answers the rest ROLLED_BACK. The clock
- * moves one poll each time row 0 is read — once per pass over the rows.
+ * moves one poll each time the tracker sleeps between passes (not on a row's
+ * read: a row confirmed is never read again, builder#100).
  */
 function node(n, confirmedBy, lostAfter = Infinity) {
   let clock = 0;
@@ -33,17 +34,16 @@ function node(n, confirmedBy, lostAfter = Infinity) {
   const target = {
     async get(_d, id) {
       const i = Number(id.slice(1));
-      if (i === 0) clock += POLL_MS;
       return { id, state: i < confirmedBy(clock) ? "CLEAN" : clock > lostAfter ? "ROLLED_BACK" : "PENDING" };
     },
   };
-  return { rows, target, now: () => clock };
+  return { rows, target, now: () => clock, sleep: async () => { clock += POLL_MS; } };
 }
 
 await t("**a target confirming one record every 2 s for 200 s: the handoff completes, reports progress, never fails**", async () => {
-  const { rows, target, now } = node(100, ms => Math.floor(ms / 2000));
+  const { rows, target, now, sleep } = node(100, ms => Math.floor(ms / 2000));
   const heard = [];
-  await acknowledged(target, rows, { everyMs: 0, now, onProgress: p => heard.push(p) });
+  await acknowledged(target, rows, { everyMs: 0, now, sleep, onProgress: p => heard.push(p) });
   assert.ok(now() >= 200_000, `finished at ${now()} ms: the run did not outlast the old 30 s total, so it tested nothing`);
   assert.deepStrictEqual(heard.at(-1), { confirmed: 100, total: 100 });
   const counts = heard.map(p => p.confirmed);
@@ -53,33 +53,77 @@ await t("**a target confirming one record every 2 s for 200 s: the handoff compl
 });
 
 await t("**a target that confirms 10 and then ANSWERS the rest lost: fails, naming it — whenever that answer comes**", async () => {
-  const { rows, target, now } = node(50, ms => Math.min(10, Math.floor(ms / 2000)), 90_000);
-  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now }), /40 of 50 records did not reach the node; your data is still here/);
+  const { rows, target, now, sleep } = node(50, ms => Math.min(10, Math.floor(ms / 2000)), 90_000);
+  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now, sleep }), /40 of 50 records did not reach the node; your data is still here/);
   assert.ok(now() > 90_000, `failed at ${now()} ms, before the node answered them lost (90 s)`);
 });
 
 await t("**no timer: a target that stays PENDING for ten minutes is waited on, and completes when it confirms**", async () => {
-  const { rows, target, now } = node(5, ms => (ms < 600_000 ? 0 : 5));
+  const { rows, target, now, sleep } = node(5, ms => (ms < 600_000 ? 0 : 5));
   const heard = [];
-  await acknowledged(target, rows, { everyMs: 0, now, onProgress: p => heard.push(p) });
+  await acknowledged(target, rows, { everyMs: 0, now, sleep, onProgress: p => heard.push(p) });
   assert.ok(now() >= 600_000, `it finished at ${now()} ms, before the target confirmed`);
   assert.deepStrictEqual(heard, [{ confirmed: 0, total: 5 }, { confirmed: 5, total: 5 }], "progress reported what was not confirmed");
 });
 
 await t("**a count that dips and recovers is not progress: only the HIGHEST count is reported**", async () => {
-  const { rows, target, now } = node(10, ms => (ms < 1000 ? 0 : ms < 2000 ? 5 : ms < 20_000 ? 3 : ms < 40_000 ? 5 : 10));
+  const { rows, target, now, sleep } = node(10, ms => (ms < 1000 ? 0 : ms < 2000 ? 5 : ms < 20_000 ? 3 : ms < 40_000 ? 5 : 10));
   const heard = [];
-  await acknowledged(target, rows, { everyMs: 0, now, onProgress: p => heard.push(p.confirmed) });
+  await acknowledged(target, rows, { everyMs: 0, now, sleep, onProgress: p => heard.push(p.confirmed) });
   assert.deepStrictEqual(heard, [0, 5, 10], `reported ${JSON.stringify(heard)}`);
 });
 
 await t("**the old total budget, passed by name, is refused rather than silently ignored**", async () => {
-  const { rows, target, now } = node(1, () => 1);
-  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now, budgetMs: 30_000 }), /`budgetMs` and `stallMs` are gone/);
-  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now, stallMs: 30_000 }), /`budgetMs` and `stallMs` are gone/);
+  const { rows, target, now, sleep } = node(1, () => 1);
+  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now, sleep, budgetMs: 30_000 }), /`budgetMs` and `stallMs` are gone/);
+  await assert.rejects(acknowledged(target, rows, { everyMs: 0, now, sleep, stallMs: 30_000 }), /`budgetMs` and `stallMs` are gone/);
 });
 
 await t("**the publish button says how far the records have got**", async () => {
   assert.strictEqual(buttonFor("migrating", { progress: { confirmed: 120, total: 302 } }).label, "Moving your records… 120 of 302 confirmed");
   assert.strictEqual(buttonFor("migrating").label, "Moving your records…", "before the first count, no number is invented");
+});
+
+// builder#100: a row read CLEAN after the handoff's own write of it STAYS
+// published — a published write does not un-publish. What `get` answers later
+// can change: a foreign delta DELETES it (Ok(None)), or its range is forgotten.
+// Re-reading it counted the missing row as LOST and failed a publish that had
+// succeeded. So a confirmed row is remembered and never read again. The clock
+// here moves on the tracker's own `sleep`, not on a row's read — a remembered
+// row is not read, so it cannot drive a clock.
+await t("**a row confirmed, then deleted by another tab mid-publish: the handoff completes**", async () => {
+  let clock = 0;
+  const rows = [{ domain: "notes", id: "r0" }, { domain: "notes", id: "r1" }];
+  const target = {
+    async get(_d, id) {
+      // r0 confirmed at once; a foreign delete removes it from the next poll on.
+      if (id === "r0") return clock === 0 ? { id, state: "CLEAN" } : null;
+      return { id, state: clock >= 5 * POLL_MS ? "CLEAN" : "PENDING" };
+    },
+  };
+  const heard = [];
+  await acknowledged(target, rows, { everyMs: POLL_MS, now: () => clock, sleep: async ms => { clock += ms; }, onProgress: p => heard.push(p.confirmed) });
+  assert.ok(clock >= 5 * POLL_MS, `finished at ${clock} ms, before r1 confirmed`);
+  assert.deepStrictEqual(heard, [1, 2], `reported ${JSON.stringify(heard)}`);
+});
+
+await t("**a row that answered saved is never read again**", async () => {
+  const n = 300;
+  let clock = 0;
+  let after = 0;
+  const answeredSaved = new Set();
+  const rows = Array.from({ length: n }, (_, i) => ({ domain: "notes", id: `r${i}` }));
+  // One more row confirms each poll. Rows still waiting are read each poll
+  // (that is the wait); a row read after it answered saved is the defect.
+  const target = {
+    async get(_d, id) {
+      if (answeredSaved.has(id)) after += 1;
+      const state = Number(id.slice(1)) < clock / POLL_MS ? "CLEAN" : "PENDING";
+      if (state === "CLEAN") answeredSaved.add(id);
+      return { id, state };
+    },
+  };
+  await acknowledged(target, rows, { everyMs: POLL_MS, now: () => clock, sleep: async ms => { clock += ms; } });
+  assert.strictEqual(answeredSaved.size, n);
+  assert.strictEqual(after, 0, `${after} reads of rows that had already answered saved`);
 });
