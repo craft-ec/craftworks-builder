@@ -96,6 +96,9 @@ try {
     // its own origin. A foreign server on a stale port cannot answer it.
     assert.strictEqual(await evaluate(pageProof), nonce, "owner page: the page is not served from this tree");
     await evaluate(`localStorage.clear(); sessionStorage.clear();`);
+    // THE LINK AGAIN, then the reload: the page dropped `app=` from its URL once it imported the app, so a bare
+    // reload would reopen (here: find no project, and make an empty one) rather than import it into the cleared profile.
+    await send("Page.navigate", { url: url(extra) });
     await send("Page.reload", { ignoreCache: true });
     await toBadge("SDK badge after reset");
   };
