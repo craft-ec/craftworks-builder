@@ -60,6 +60,9 @@ try {
   //    the hash kept), and a RELOAD reopens that project rather than importing it again.
   const imported = { name: "From a link", components: [{ type: "table", domain: "tasks", mode: "owned" }] };
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#preview=0&app=${encodeURIComponent(JSON.stringify(imported))}` });
+  // A hash-only navigation is SAME-DOCUMENT: wait for it to land before reloading, or the reload can race it and
+  // reload the old URL (seen: one run in two timed out at "the imported app").
+  await until(`location.hash.includes("app=")`, "the link in the page's URL before the reload");
   await send("Page.reload", {});
   await until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === "From a link"`, "the imported app");
   assert.deepStrictEqual((await def()).components.map(c => c.type), ["table"]);
@@ -89,6 +92,7 @@ try {
   const identifier = added.result?.identifier ?? added.identifier;
   const sandboxed = { name: "Sandboxed link", components: [{ type: "list", domain: "tasks", mode: "owned" }] };
   await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#app=${encodeURIComponent(JSON.stringify(sandboxed))}` });
+  await until(`location.hash.includes("app=")`, "the sandboxed link in the page's URL before the reload");
   await send("Page.reload", {});
   await until(`document.getElementById("sdk")?.textContent.startsWith("SDK ")`, "SDK ready although replaceState is refused");
   await until(`JSON.parse(document.getElementById("def")?.textContent || "{}").name === "Sandboxed link"`, "the link imported although its URL could not be rewritten");
