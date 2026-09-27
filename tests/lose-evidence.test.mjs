@@ -3,7 +3,7 @@
 // found: a reader that asks all 21 data members and NO parity reached the old "asked >= k" with every loss observed,
 // so a repair path that never starts passed the m + 1 control. It must be VOID.
 import assert from "node:assert/strict";
-import { evidence, happened, held, voidHeld } from "../tools/lose-evidence.mjs";
+import { evidence, happened, held, namedDamaged, voidHeld } from "../tools/lose-evidence.mjs";
 
 let failures = 0;
 const t = (name, f) => {
@@ -58,6 +58,20 @@ t("a proxy that names no survivors (an older ws-lose) is VOID, never a pass", ()
 
 t("NON-VACUITY stays: a lost data member never answered NotFound is not a loss that happened", () => {
   assert.equal(happened(run(M + 1, { notFound: data.slice(1, M + 1), bytes: slots.slice(M + 1) })), false);
+});
+
+t("**THE WAIT IS NAMED (sdk#524): m + 1 lost, the bulk group's lost data members named DAMAGED at j < k**", () => {
+  const ev = run(M + 1, { notFound: data.slice(0, M + 1), bytes: slots.slice(M + 1) });
+  const full = id => `${id}${"0".repeat(48)}`;
+  const named = data.slice(0, 2).map(id => ({ block: full(id), j: K - 1, k: K, health: "DAMAGED", why: "…" }));
+  assert.ok(namedDamaged(named, ev), "the bulk group named DAMAGED did not count");
+  // What is NOT the wait named: nothing (the pin's old state), no surface, a name at j >= k, of another k, another block.
+  assert.equal(namedDamaged([], ev), false, "an empty list counted as named");
+  assert.equal(namedDamaged(null, ev), false, "no surface counted as named");
+  assert.equal(namedDamaged([{ ...named[0], j: K }], ev), false, "j = k counted as damaged");
+  assert.equal(namedDamaged([{ ...named[0], k: K + 1 }], ev), false, "another group's k counted");
+  assert.equal(namedDamaged([{ ...named[0], block: full(parity[0]) }], ev), false, "a block not a lost data member counted");
+  assert.equal(namedDamaged([{ ...named[0], health: "DEGRADED" }], ev), false, "DEGRADED counted as DAMAGED");
 });
 
 if (failures) { process.stdout.write(`\n${failures} FAILED\n`); process.exit(1); }

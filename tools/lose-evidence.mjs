@@ -33,3 +33,11 @@ export const held = ev =>
 /** The VOID line for an arm that did not hold every survivor. */
 export const voidHeld = (name, ev) =>
   `LOSE ${name}: VOID -- the reader was answered with bytes for ${ev.chosen?.survivors?.filter(id => ev.answered.includes(id)).length ?? 0} of the group's ${ev.chosen?.survivors?.length ?? "(unnamed)"} surviving slots: it did not hold everything the network has`;
+
+// THE WAIT IS NAMED (sdk#524, flipping builder#179's pin): with m + 1 of the bulk group lost the reader still waits
+// (rule 8), and now SAYS why -- `db.damaged()` names each lost block its reads wait on as DAMAGED, j < k, of THIS group
+// (k = the chosen k; the block one of the chosen lost data members, by the proxy's short id: its first 16 hex). Nothing
+// named (null: no such surface; []: none), or a name for anything else, is not.
+export const namedDamaged = (named, ev) =>
+  Array.isArray(named) && named.length > 0 && !!ev.chosen &&
+  named.every(d => d?.health === "DAMAGED" && d.j < d.k && d.k === ev.chosen.k && ev.chosen.lostData.includes(String(d.block).slice(0, 16)));
