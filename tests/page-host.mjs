@@ -40,7 +40,7 @@
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,31 +124,44 @@ export function nodeEnv(dir, env = process.env) {
   return { ...env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") };
 }
 
-// EVERY CHILD THIS PROCESS STARTS -- its page server and every browser --
-// so that no exit leaves one behind (the realnet orphans, 2026-09-24: a killed
-// or crashed run's headless Chrome stayed connected to the owner's node for
-// 13 h, and one reconnected to V and provisioned its signer; builder#180: ~80
-// page servers were left, one per SIGKILLed page-host, because only browsers
-// were watched). Each is killed by `openPageHost`'s `done` on ANY exit it sees
-// (normal, a signal, the budget); and each is written to PAGE_HOST_PIDFILE
-// (`pid <TAB> mark`), which the next realnet run sweeps for an exit nothing
-// here could see (a SIGKILL). `mark` is a literal its command line carries and
-// no other process's does (a browser's `--user-data-dir=<profile>`, the
-// server's `-X page_host=<nonce>`): a reused PID is never touched.
+// EVERY CHILD THIS PROCESS STARTS -- its page server, every browser and its
+// private node -- so that no exit leaves one behind (the realnet orphans,
+// 2026-09-24: a killed or crashed run's headless Chrome stayed connected to the
+// owner's node for 13 h, and one reconnected to V and provisioned its signer;
+// builder#180: ~80 page servers were left, one per SIGKILLed page-host, because
+// only browsers were watched). TWO defenders, each tested on its own:
+//   * `done` (openPageHost) kills every watched child on every exit it SEES
+//     (normal, a signal, the budget) before this process exits;
+//   * a WATCHDOG per child ends it when this process is gone without `done`
+//     (a SIGKILL; macOS has no PDEATHSIG).
+// ONE way in: `spawnWatched`. The child is started THROUGH a shell that first
+// appends its PAGE_HOST_PIDFILE line (`pid <TAB> kind <TAB> mark`, which the
+// next realnet run sweeps; if it cannot be written the child never starts),
+// then starts its watchdog, then execs the child in place (same PID). So the
+// record and the watchdog exist before the child can outlive this process.
+// `mark` is an argument the child's command line carries and no other
+// process's does (a browser's `--user-data-dir=<profile>`, the server's
+// `page_host=<nonce>`, the node's data dir): nothing is signalled unless its
+// PID still carries its mark, re-checked before EVERY signal (`killmarked`).
 const watched = new Set();
-function watch(child, mark) {
+/** The ONE check before any signal to a recorded PID (sh): `marked PID MARK` -- the PID's command line carries MARK as
+ * a WHOLE argument (`cw-fresh-ab` never matches `cw-fresh-abc`); `killmarked PID MARK SIG` -- signal it only if so,
+ * checked again immediately before that signal. The watchdog, tools/browser-sweep.sh and the no-stray test's cleanup
+ * all use this text (the test pins the sweep's copy equal). */
+export const MARKED = `marked() { c=$(ps -o command= -p "$1" 2>/dev/null) || return 1; case " $c " in *" $2 "*) return 0;; esac; return 1; }; killmarked() { marked "$1" "$2" && kill -"$3" "$1" 2>/dev/null; };`;
+// The launcher: record, then watchdog, then exec. `$$` is the child's PID once it has exec'd.
+const LAUNCH = `${MARKED} h=$1 k=$2 m=$3 f=$4; shift 4
+if [ -n "$f" ]; then printf '%s\t%s\t%s\n' $$ "$k" "$m" >> "$f" || { echo "page-host: could not record $k in $f: not starting it" >&2; exit 97; }; fi
+( trap '' HUP; while kill -0 "$h" 2>/dev/null && kill -0 $$ 2>/dev/null; do sleep 1; done
+  kill -0 "$h" 2>/dev/null && exit 0
+  killmarked $$ "$m" TERM || exit 0; sleep 5; killmarked $$ "$m" KILL ) </dev/null >/dev/null 2>&1 &
+exec "$@"`;
+/** Start `cmd args` WATCHED: recorded and guarded before it runs, killed by `done` (see above). */
+function spawnWatched(kind, mark, cmd, args, opts) {
+  const child = spawn("/bin/sh", ["-c", LAUNCH, "spawn-watched", String(process.pid), kind, mark, process.env.PAGE_HOST_PIDFILE ?? "", cmd, ...args], opts);
   watched.add(child);
-  if (process.env.PAGE_HOST_PIDFILE) appendFileSync(process.env.PAGE_HOST_PIDFILE, `${child.pid}\t${mark}\n`);
-  // A WATCHDOG for the exit nothing in this process can see (SIGKILL; macOS
-  // has no PDEATHSIG): a detached shell that ends the child the moment THIS
-  // process is gone -- only while the PID still carries its mark -- and is
-  // itself ended when the child exits.
-  const dog = spawn("/bin/sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "$3" || exit 0; kill "$2"; sleep 5; ps -o command= -p "$2" 2>/dev/null | grep -qF -- "$3" && kill -9 "$2"', "watchdog", String(process.pid), String(child.pid), mark], { detached: true, stdio: "ignore" });
-  dog.unref();
-  child.once("exit", () => {
-    watched.delete(child);
-    try { process.kill(dog.pid); } catch (_) {}
-  });
+  child.once("exit", () => watched.delete(child));
+  return child;
 }
 
 /** Kill `child` by its recorded PID and wait until it is GONE; SIGKILL after `graceMs`. */
@@ -193,7 +206,7 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
   }
   const gateway = joins ? `127.0.0.1:${joins.net},${joins.publicKey}` : null;
   if (joins && !joins.publicKey) throw new Error(`${label}: the node to join was not started with gatewayKey`);
-  const child = spawn("freenet", nodeArgs({ ws, net, transportKey, gateway }, dir), { stdio: ["ignore", "pipe", "pipe"], env: nodeEnv(dir) });
+  const child = spawnWatched("node", join(dir, "data"), "freenet", nodeArgs({ ws, net, transportKey, gateway }, dir), { stdio: ["ignore", "pipe", "pipe"], env: nodeEnv(dir) });
   writeFileSync(join(dir, "node.pid"), String(child.pid ?? ""));
   // The node's own account is on its CONSOLE, not in its file log.
   const out = [];
@@ -218,6 +231,8 @@ export async function spawnNode(label, { ws, net, readyMs = 45_000, gatewayKey =
   while (Date.now() < deadline) {
     const e = await Promise.race([spawnError, sleep(250).then(() => null)]);
     if (e) { await node.stop(); throw new Error(`${label}: \`freenet\` could not start (${e.message}) — is it on PATH?`); }
+    // Started through the launcher (spawnWatched), a missing binary is the shell's exec failing: exit 127.
+    if (child.exitCode === 127) throw new Error(`${label}: \`freenet\` could not start (exit 127: ${node.console().trim().slice(-300)}) — is it on PATH?`);
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(`${label}: the node exited before it was ready (${child.exitCode ?? child.signalCode}); it said: ${node.console().slice(-1500)}`);
     }
@@ -467,8 +482,12 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
   const nonce = randomUUID();
   let ending = false;
   // Everything this run started, stopped BY PID and verified gone, then exit.
+  // `done` NEVER RETURNS to its caller: it exits the process. A second call while the first is still stopping the
+  // children waits for that exit -- it must not return either, or its caller carries on as if the run were up
+  // (the budget expiring while spawnNode waited: the node's death made spawnNode throw, the catch's done(1) returned,
+  // and openPageHost resolved to undefined, "READY", while the first done was still stopping the children).
   const done = async code => {
-    if (ending) return;
+    if (ending) return new Promise(() => {});
     ending = true;
     if (node) {
       const { gone, held } = await node.stop();
@@ -489,9 +508,8 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
   try {
     // `-X page_host=<nonce>`: an option python keeps and ignores, so the server's command line names THIS run (its
     // watchdog and the sweep match on it, never on a pattern another run's server shares).
-    const server = spawn("python3", ["-X", `page_host=${nonce}`, "-u", "-m", "http.server", "0", "--bind", "127.0.0.1"], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    const server = spawnWatched("server", `page_host=${nonce}`, "python3", ["-X", `page_host=${nonce}`, "-u", "-m", "http.server", "0", "--bind", "127.0.0.1"], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
     kids.push(server);
-    watch(server, `page_host=${nonce}`);
     const port = await announced(server, [server.stdout, server.stderr], /port (\d+)/, `${label}: page server`, 10_000);
 
     mkdirSync(nonceDir, { recursive: true });
@@ -500,10 +518,9 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     if (back !== nonce) throw new Error(`the server on ${port} is not serving THIS tree (${ROOT}): the nonce came back as ${JSON.stringify(back)}`);
 
     const profile = mkdtempSync(join(tmpdir(), "cw-page-"));
-    const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0", ...chromeArgs,
+    const chrome = spawnWatched("browser", `--user-data-dir=${profile}`, CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0", ...chromeArgs,
       `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
     kids.push(chrome);
-    watch(chrome, `--user-data-dir=${profile}`);
     const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
 
     const pageProof = `return await (await fetch("/.page-nonce/${nonce}")).text();`;
@@ -511,7 +528,7 @@ export async function openPageHost(label, { windowSize = "1280,800", budgetMs, n
     return { port, debug, nonce, pageProof, done, node, tab: (tabLabel, opts) => openTab(debug, tabLabel, opts) };
   } catch (e) {
     console.error(`${label} FAILED: ${e.message}`);
-    done(1);
+    return done(1);
   }
 }
 
@@ -531,7 +548,7 @@ export function ownTmp(prefix) {
  * A SECOND browser with its own FRESH profile (empty cache, no storage): what
  * a stranger opening an app by address has. Returns `{ tab(label), stop() }`.
  */
-export async function openFreshBrowser(label, { windowSize = "1280,800" } = {}) {
+export async function openFreshBrowser(label, { windowSize = "1280,800", readyMs = 30_000 } = {}) {
   // A browser that opens apps on REAL nodes (only the live tools start one) is
   // made where its owner can be told: never in the system's default temp dir,
   // where the 06:30 orphan's profile could not be tied to anyone.
@@ -540,9 +557,15 @@ export async function openFreshBrowser(label, { windowSize = "1280,800" } = {}) 
     throw new Error(`${label}: TMPDIR is ${t ? `the system default (${t})` : "unset"}; set it to your run's own directory, so every browser profile names its owner`);
   }
   const profile = mkdtempSync(join(tmpdir(), "cw-fresh-"));
-  const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0",
+  const chrome = spawnWatched("browser", `--user-data-dir=${profile}`, CHROME, ["--headless=new", "--disable-gpu", `--window-size=${windowSize}`, "--remote-debugging-port=0",
     `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "pipe", "pipe"] });
-  watch(chrome, `--user-data-dir=${profile}`);
-  const debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, 30_000);
+  let debug;
+  try {
+    debug = await announced(chrome, [chrome.stdout, chrome.stderr], /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//, `${label}: chrome`, readyMs);
+  } catch (e) {
+    // A browser that never announced is not the caller's to stop (it gets no handle): stop it here, verified gone.
+    await killVerified(chrome);
+    throw e;
+  }
   return { debug, pid: chrome.pid, tab: (tabLabel, opts) => openTab(debug, tabLabel, opts), stop: () => killVerified(chrome) };
 }

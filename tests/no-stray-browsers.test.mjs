@@ -1,31 +1,40 @@
-// NO STRAY BROWSERS OR SERVERS (the realnet orphans, 2026-09-24: a killed or
-// crashed run's headless Chrome stayed connected to the owner's node for 13 h,
-// and one reconnected to V and provisioned its signer before step 9;
-// builder#180: ~80 page servers left, one per SIGKILLed page-host, and a
-// 10-hour Chrome from this very file). Each guard driven with a REAL Chrome:
-//   1. the sweep (tools/browser-sweep.sh) kills a child a run recorded, and
-//      NOT a PID the recording no longer names (a reused PID);
-//   2. page-host REFUSES a live browser under the system's default TMPDIR;
-//   3. a signal to a page-host process kills every child it started: its
-//      server, its browser and `openFreshBrowser`'s;
-//   4. a page-host process SIGKILLed (nothing of it can run) leaves no child
-//      either -- its SERVER too: each child's watchdog ends it;
-//   5. a page-host whose run never finishes ends by its own budget, children
-//      and all;
-//   6. this file stops every page-host it starts, in a `finally`, even when
-//      that run never came up (the 10-hour Chrome: a failed setup was left).
+// NO STRAY CHILDREN (the realnet orphans, 2026-09-24: a killed or crashed run's
+// headless Chrome stayed connected to the owner's node for 13 h, and one
+// reconnected to V and provisioned its signer before step 9; builder#180: ~80
+// page servers left, one per SIGKILLed page-host, and a 10-hour Chrome from
+// this very file). Driven with REAL Chromes and servers, and a stub node:
+//
+//   THE ONE CHECK. A recorded PID is signalled only while its command line
+//   carries its mark as a whole argument, re-checked before EACH signal
+//   (page-host MARKED; the sweep carries the same text, pinned here).
+//   THE SWEEP. It kills what a run recorded, leaves a reused PID alone (before
+//   the TERM and again before the KILL), and never signals an old-format line.
+//   TWO DEFENDERS of "no child outlives its page-host", each shown on its own:
+//     * `done` alone: at the instant a page-host EXITS (a signal it sees, its
+//       budget, a budget that expires while it waits for its node), its
+//       children are ALREADY gone -- before a watchdog could have acted (a
+//       watchdog only starts once the host is gone, and polls each second);
+//     * the watchdog alone: a page-host SIGKILLed (so `done` never runs)
+//       leaves no child either -- its server, its browsers, its node.
+//   THE LAUNCHER. A child whose record cannot be written never starts; a
+//   browser that never announces is stopped by openFreshBrowser itself.
+//   THIS FILE. Every page-host run it starts goes through `withHost`, which
+//   stops it in its own `finally` -- a test cannot leave one, even one that
+//   never came up.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, chmodSync } from "node:fs";
+import { createServer } from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ownTmp } from "./page-host.mjs";
+import { ownTmp, MARKED } from "./page-host.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (f, ms = 10_000) => { const end = Date.now() + ms; while (Date.now() < end) { if (f()) return true; await sleep(100); } return f(); };
+const freePort = () => new Promise(ok => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => ok(p)); }); });
 let failures = 0;
 const t = async (name, fn) => {
   try { await fn(); process.stdout.write(`  ok  ${name}\n`); }
@@ -34,46 +43,93 @@ const t = async (name, fn) => {
 // ITS OWN directory, the TMPDIR its page-host runs are given: the system
 // default is refused, and this test must pass from any shell.
 const dir = ownTmp("no-stray-");
+// A STUB `freenet` first on PATH for the page-host runs: it never opens its ws port (never "ready") and keeps its
+// arguments on its command line, so its mark (its data dir) is there to match.
+const bin = join(dir, "bin");
+mkdirSync(bin, { recursive: true });
+writeFileSync(join(bin, "freenet"), "#!/bin/sh\nwhile :; do sleep 1; done\n");
+chmodSync(join(bin, "freenet"), 0o755);
 
-// ONE page-host run of this file: a child process running `body` (after `m` = page-host is imported), with its own
-// pidfile. Every test that starts one STOPS it in a `finally` (`stop`): the child and every child it recorded, by PID,
-// verified gone -- so a test that fails half-way leaves nothing (builder#180).
-const recordedIn = pids => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").filter(Boolean).map(l => Number(l.split("\t")[0])) : []);
-function hostRun(name, body) {
+const sh = (script, ...args) => spawnSync("/bin/sh", ["-c", `${MARKED} ${script}`, "check", ...args.map(String)]).status === 0;
+const marked = (pid, mark) => sh('marked "$1" "$2"', pid, mark);
+const linesIn = pids => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").filter(Boolean).map(l => l.split("\t")) : []);
+
+// ONE page-host run: a child process running `body` (page-host imported as `m`), with its own pidfile. `fn(run)` drives
+// it; whatever `fn` does or throws, the run is STOPPED here in a `finally` (the child, then every child it recorded,
+// each signalled only while it carries its mark) and verified gone. Resolves to what `fn` returned; rejects with its
+// error AFTER the stop.
+async function withHost(name, body, fn, env = {}) {
   const pids = join(dir, `${name}.pids`);
   writeFileSync(pids, "");
   const script = `const m = await import("${join(ROOT, "tests/page-host.mjs")}");\n${body}`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TMPDIR: dir, PAGE_HOST_PIDFILE: pids }, stdio: ["ignore", "pipe", "pipe"] });
-  const run = { child, pids, out: "", recorded: () => recordedIn(pids) };
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir, PAGE_HOST_PIDFILE: pids, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const run = { child, pids, out: "", lines: () => linesIn(pids), recorded: kind => linesIn(pids).filter(([, k]) => !kind || k === kind).map(([p]) => Number(p)) };
+  run.exited = new Promise(ok => child.once("exit", () => ok(Date.now())));
   child.stdout.on("data", d => { run.out += d; });
-  run.stop = async () => {
-    const all = [child.pid, ...run.recorded()];
-    for (const p of all) { try { process.kill(p, "SIGKILL"); } catch {} }
-    return until(() => all.every(p => !alive(p)), 10_000);
-  };
-  return run;
-}
-
-await t("**the sweep kills a browser a run recorded, verified gone — and leaves a PID the record no longer names**", async () => {
-  const profile = mkdtempSync(join(dir, "cw-fresh-"));
-  // ORPHANED, as a killed run's browser is: started through a shell that exits, so launchd adopts it (and reaps it).
-  const orphan = cmd => Number(spawnSync("bash", ["-c", `${cmd} >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }).stdout.trim());
-  const chrome = { pid: orphan(`"${CHROME}" --headless=new --disable-gpu --remote-debugging-port=0 --user-data-dir="${profile}" about:blank`) };
-  // THE CONTROL: a live process recorded under a profile it does not have (a reused PID).
-  const other = { pid: orphan("sleep 30") };
-  const pids = join(dir, "browsers.pids");
-  writeFileSync(pids, `${chrome.pid}\t--user-data-dir=${profile}\n${other.pid}\t--user-data-dir=${join(dir, "cw-fresh-gone")}\n`);
-  assert.ok(await until(() => alive(chrome.pid)), "THE SETUP: chrome did not start");
-  const r = spawnSync("bash", ["-c", `. "${ROOT}/tools/browser-sweep.sh"; sweep "${pids}"`], { encoding: "utf8" });
+  child.stderr.on("data", d => { run.out += d; });
   try {
+    return await fn(run);
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    const mine = linesIn(pids).filter(([p, , mark]) => mark && marked(p, mark));
+    for (const [p, , mark] of mine) sh('killmarked "$1" "$2" KILL', p, mark);
+    const gone = await until(() => (child.exitCode !== null || child.signalCode !== null) && mine.every(([p]) => !alive(Number(p))), 10_000);
+    if (!gone) throw new Error(`${name}: withHost could not stop its run: ${[child.pid, ...mine.map(([p]) => p)].join(" ")}`);
+  }
+}
+const ready = (run, ms = 60_000) => until(() => run.out.includes("READY"), ms);
+
+await t("**one check: a mark matches a WHOLE argument only; killmarked signals only then; the sweep carries the same text**", async () => {
+  const sleeper = spawn("/bin/sleep", ["37"], { stdio: "ignore" });
+  try {
+    assert.ok(await until(() => marked(sleeper.pid, "37")), "the whole argument did not match");
+    assert.ok(!marked(sleeper.pid, "3"), "a PREFIX of an argument matched: a shorter mark would reach another run's child");
+    assert.ok(!marked(sleeper.pid, "7"), "a SUFFIX of an argument matched");
+    sh('killmarked "$1" "$2" KILL', sleeper.pid, "3");
+    await sleep(300);
+    assert.ok(alive(sleeper.pid), "killmarked signalled a PID that does not carry the mark");
+    sh('killmarked "$1" "$2" KILL', sleeper.pid, "37");
+    assert.ok(await until(() => sleeper.exitCode !== null || sleeper.signalCode !== null), "killmarked did not signal a PID that carries the mark");
+    const sweep = readFileSync(join(ROOT, "tools/browser-sweep.sh"), "utf8").split("\n").find(l => l.startsWith("marked() {"));
+    assert.equal(sweep, MARKED, "the sweep's check is not page-host's: two copies drift");
+  } finally {
+    sleeper.kill("SIGKILL");
+  }
+});
+
+await t("**the sweep kills what a run recorded, verified gone; leaves a reused PID (before the TERM and again before the KILL); never signals an old-format line**", async () => {
+  const profile = mkdtempSync(join(dir, "cw-fresh-"));
+  // ORPHANED, as a killed run's children are: started through a shell that exits, so launchd adopts them.
+  const orphan = cmd => Number(spawnSync("bash", ["-c", `${cmd} >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }).stdout.trim());
+  const chrome = orphan(`"${CHROME}" --headless=new --disable-gpu --remote-debugging-port=0 --user-data-dir="${profile}" about:blank`);
+  // A reused PID: recorded under a mark its command line does not carry.
+  const other = orphan("sleep 60");
+  // An OLD two-field line naming a live process whose command line carries the profile path -- but not as its
+  // --user-data-dir (a `tail -f <profile>/...` on a reused PID): it must not be signalled.
+  const legacy = orphan(`sh -c 'sleep 60' tailing "${profile}"`);
+  // Reused MID-SWEEP: carries its mark at the TERM, then (TERM trapped) becomes something else: the KILL is not sent.
+  const turncoat = orphan(`sh -c 'trap "exec sleep 60" TERM; while :; do sleep 0.2; done' turncoat --user-data-dir=${profile}-turncoat`);
+  const pids = join(dir, "browsers.pids");
+  writeFileSync(pids, [
+    `${chrome}\tbrowser\t--user-data-dir=${profile}`,
+    `${other}\tbrowser\t--user-data-dir=${join(dir, "cw-fresh-gone")}`,
+    `${legacy}\t${profile}`,
+    `${turncoat}\tbrowser\t--user-data-dir=${profile}-turncoat`,
+  ].join("\n") + "\n");
+  try {
+    assert.ok(await until(() => [chrome, other, legacy, turncoat].every(alive)), "THE SETUP: not all started");
+    const r = spawnSync("bash", ["-c", `. "${ROOT}/tools/browser-sweep.sh"; sweep "${pids}"`], { encoding: "utf8" });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, new RegExp(`SWEPT pid ${chrome.pid}`));
-    assert.ok(!alive(chrome.pid), "the recorded browser is still running");
-    assert.ok(alive(other.pid), "a PID the record no longer names was killed");
+    assert.match(r.stdout, new RegExp(`SWEPT browser pid ${chrome} `));
+    assert.ok(!alive(chrome), "the recorded browser is still running");
+    assert.ok(alive(other), "a PID the record no longer names was killed");
+    assert.match(r.stdout, new RegExp(`LEFT  old-format line \\(pid ${legacy},`));
+    assert.ok(alive(legacy), "an old-format line was signalled: its bare path matched another process's argument");
+    assert.match(r.stdout, new RegExp(`LEFT  pid ${turncoat} no longer carries its mark`));
+    assert.ok(alive(turncoat), "the KILL went to a PID that stopped carrying its mark after the TERM");
     assert.ok(!existsSync(pids), "the swept file was left behind");
   } finally {
-    try { process.kill(chrome.pid, "SIGKILL"); } catch {}
-    try { process.kill(other.pid, "SIGKILL"); } catch {}
+    for (const p of [chrome, other, legacy, turncoat]) { try { process.kill(p, "SIGKILL"); } catch {} }
   }
 });
 
@@ -85,74 +141,112 @@ await t("**page-host refuses a live browser under the system's default TMPDIR, n
   }
 });
 
-await t("**a signal to a page-host run kills every child it started -- its server, its browser and openFreshBrowser's**", async () => {
-  const run = hostRun("signal", `
+await t("**`done` ALONE: a signal to a page-host -- its children (server, browser, openFreshBrowser's) are gone the instant it exits, before any watchdog could act**", async () => {
+  await withHost("signal", `
     await m.openPageHost("stray-test");
-    const b = await m.openFreshBrowser("stray-test fresh");
-    console.log("READY " + b.pid);
-    await new Promise(() => {});`);
-  try {
-    assert.ok(await until(() => /READY \d+/.test(run.out), 60_000), `the run did not start: ${run.out}`);
-    const recorded = run.recorded();
-    assert.equal(recorded.length, 3, `the server and both browsers are recorded for the sweep: ${recorded}`);
-    assert.ok(recorded.every(alive), "THE SETUP: the children are running");
+    await m.openFreshBrowser("stray-test fresh");
+    console.log("READY");
+    await new Promise(() => {});`, async run => {
+    assert.ok(await ready(run), `the run did not start: ${run.out}`);
+    const kids = run.recorded();
+    assert.deepEqual(run.lines().map(([, k]) => k), ["server", "browser", "browser"], "the server and both browsers are recorded");
+    assert.ok(kids.every(alive), "THE SETUP: the children are running");
     run.child.kill("SIGTERM");
-    assert.ok(await until(() => recorded.every(p => !alive(p)), 20_000), `a child outlived the signal: ${recorded.filter(alive)}`);
-  } finally {
-    await run.stop();
-  }
+    await run.exited;
+    const left = kids.filter(alive);
+    assert.deepEqual(left, [], `alive when the page-host exited (done did not stop them): ${left}`);
+  });
 });
 
-await t("**a page-host run SIGKILLed (nothing of it runs) still leaves no child -- its SERVER too: each one's watchdog ends it within seconds, no next run needed**", async () => {
-  const run = hostRun("killed", `
+await t("**`done` ALONE: a page-host whose run never finishes ends by its OWN budget, its children gone the instant it exits**", async () => {
+  await withHost("budget", `
+    await m.openPageHost("budget-test", { budgetMs: 15000 });
+    console.log("READY");
+    await new Promise(() => {});`, async run => {
+    assert.ok(await ready(run), `the run did not start: ${run.out}`);
+    const kids = run.recorded();
+    assert.ok(kids.length === 2 && kids.every(alive), `THE SETUP: the server and browser are running: ${kids}`);
+    // Its 15 s budget from its start, then `done` stopping the children (seconds each at load): 45 s is ample.
+    const exited = await Promise.race([run.exited, sleep(45_000).then(() => null)]);
+    assert.ok(exited, "the page-host outlived its budget");
+    assert.deepEqual(kids.filter(alive), [], "alive when the page-host exited by its budget");
+  });
+});
+
+await t("**`done` ALONE: a budget that expires while the page-host WAITS FOR ITS NODE stops the node too**", async () => {
+  const ports = { ws: await freePort(), net: await freePort() };
+  await withHost("node-budget", `
+    await m.openPageHost("node-budget", { budgetMs: 5000, node: ${JSON.stringify(ports)} });
+    console.log("READY");`, async run => {
+    assert.ok(await until(() => run.recorded("node").length === 1, 30_000), `the node was never started: ${run.out}`);
+    const kids = run.recorded();
+    assert.ok(kids.every(alive), "THE SETUP: the children are running");
+    const exited = await Promise.race([run.exited, sleep(30_000).then(() => null)]);
+    assert.ok(exited, "the page-host outlived its budget");
+    assert.ok(!run.out.includes("READY") && /exceeded its 5 s budget/.test(run.out), `THE SETUP: the run did not end by its budget while waiting for the node: ${run.out.slice(-600)}`);
+    assert.deepEqual(kids.filter(alive), [], `alive when the page-host exited by its budget (the node was not in done's list?): ${kids.filter(alive)}`);
+  });
+});
+
+await t("**the WATCHDOG ALONE: a page-host SIGKILLed (done never runs) leaves no child -- its server, its browsers, its node -- within seconds**", async () => {
+  const ports = { ws: await freePort(), net: await freePort() };
+  await withHost("killed", `
     await m.openPageHost("killed-test");
     await m.openFreshBrowser("killed-test fresh");
     console.log("READY");
-    await new Promise(() => {});`);
-  try {
-    assert.ok(await until(() => run.out.includes("READY"), 60_000), `the run did not start: ${run.out}`);
-    const recorded = run.recorded();
-    assert.equal(recorded.length, 3, `the server and both browsers are recorded: ${recorded}`);
-    assert.ok(recorded.every(alive), "THE SETUP: the children are running");
+    await m.spawnNode("killed-test node", { ...${JSON.stringify(ports)}, readyMs: 120000 });`, async run => {
+    assert.ok(await ready(run), `the run did not start: ${run.out}`);
+    assert.ok(await until(() => run.recorded("node").length === 1, 30_000), "THE SETUP: the node was never started");
+    const kids = run.recorded();
+    assert.deepEqual(run.lines().map(([, k]) => k), ["server", "browser", "browser", "node"]);
+    assert.ok(kids.every(alive), "THE SETUP: the children are running");
     run.child.kill("SIGKILL");
-    const gone = await until(() => recorded.every(p => !alive(p)), 12_000);
-    assert.ok(gone, `a child outlived its SIGKILLed page-host (the server is ${recorded[0]}): ${recorded.filter(alive)}`);
-  } finally {
-    await run.stop();
-  }
+    const gone = await until(() => kids.every(p => !alive(p)), 12_000);
+    assert.ok(gone, `a child outlived its SIGKILLed page-host: ${run.lines().filter(([p]) => alive(Number(p))).map(l => l.join(" ")).join("; ")}`);
+  });
 });
 
-await t("**a page-host whose run never finishes ends by its OWN budget, and every child with it**", async () => {
-  const run = hostRun("budget", `
-    await m.openPageHost("budget-test", { budgetMs: 4000 });
-    console.log("READY");
-    await new Promise(() => {});`);
-  try {
-    assert.ok(await until(() => run.out.includes("READY"), 60_000), `the run did not start: ${run.out}`);
-    const recorded = run.recorded();
-    assert.ok(recorded.length >= 2 && recorded.every(alive), `THE SETUP: the server and browser are running: ${recorded}`);
-    // Nobody signals it: its budget (4 s) must end it.
-    assert.ok(await until(() => !alive(run.child.pid) && recorded.every(p => !alive(p)), 20_000), `the page-host outlived its budget, or left: ${[run.child.pid, ...recorded].filter(alive)}`);
-  } finally {
-    await run.stop();
-  }
+await t("**the launcher: a child whose record cannot be written NEVER STARTS, and openFreshBrowser rejects naming why**", async () => {
+  // PAGE_HOST_PIDFILE is a DIRECTORY: the launcher cannot append to it.
+  const pidsDir = join(dir, "not-a-file");
+  mkdirSync(pidsDir, { recursive: true });
+  // Its OWN TMPDIR, so a profile under it can only be this test's (earlier tests' browsers may still be exiting).
+  const own = join(dir, "unrecorded");
+  mkdirSync(own, { recursive: true });
+  const script = `import("${join(ROOT, "tests/page-host.mjs")}").then(m => m.openFreshBrowser("unrecorded")).then(() => console.log("STARTED"), e => console.log("REJECTED " + e.message));`;
+  const r = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", env: { ...process.env, TMPDIR: own, PAGE_HOST_PIDFILE: pidsDir }, timeout: 60_000 });
+  assert.match(r.stdout, /REJECTED [\s\S]*could not record browser/, r.stdout + r.stderr);
+  const running = spawnSync("bash", ["-c", `ps -ww -axo pid,command | grep -F -- "--user-data-dir=${own}/" | grep -v grep || true`], { encoding: "utf8" }).stdout.trim();
+  assert.equal(running, "", `a browser started without its record: ${running}`);
 });
 
-await t("**a run that never came up is STOPPED by this file, not left (the 10-hour Chrome): hostRun's stop ends the page-host and its children**", async () => {
-  // A setup that never says READY: a page-host with a long budget and its children running, the test giving up.
-  const run = hostRun("never-ready", `
+await t("**openFreshBrowser stops a browser that never announced (its caller gets no handle to stop it)**", async () => {
+  await withHost("no-announce", `
+    // Long enough for the launcher to record and start Chrome, far too short for Chrome to announce its DevTools port.
+    await m.openFreshBrowser("no-announce", { readyMs: 150 }).then(() => console.log("STARTED"), e => console.log("REJECTED " + e.message));
+    console.log("SETTLED");
+    await new Promise(() => {});`, async run => {
+    assert.ok(await until(() => run.out.includes("SETTLED"), 30_000), `openFreshBrowser never settled: ${run.out}`);
+    assert.match(run.out, /REJECTED/, "THE SETUP: the browser announced within 150 ms");
+    const kids = run.recorded("browser");
+    assert.equal(kids.length, 1, "THE SETUP: the browser was not recorded");
+    assert.deepEqual(kids.filter(alive), [], "the browser that never announced is still running, with the page-host alive");
+  });
+});
+
+await t("**withHost STOPS a run that never came up (the 10-hour Chrome): the test's failure does not leave its page-host**", async () => {
+  let run;
+  await assert.rejects(withHost("never-ready", `
     await m.openPageHost("never-ready", { budgetMs: 120000 });
     await m.openFreshBrowser("never-ready fresh");
-    await new Promise(() => {});`);
-  let recorded = [];
-  try {
-    assert.ok(await until(() => run.recorded().length === 3, 60_000), `THE SETUP: the children never started: ${run.recorded()}`);
-    recorded = run.recorded();
-    assert.ok(!(await until(() => run.out.includes("READY"), 1_000)), "THE SETUP: it said READY");
-  } finally {
-    assert.ok(await run.stop(), "stop() did not end the run");
-  }
-  assert.ok(!alive(run.child.pid) && recorded.every(p => !alive(p)), `left behind: ${[run.child.pid, ...recorded].filter(alive)}`);
+    await new Promise(() => {});`, async r => {
+    run = r;
+    assert.ok(await until(() => r.recorded().length === 3, 60_000), `THE SETUP: the children never started: ${r.recorded()}`);
+    // The test gives up waiting, as test 3 did under load on 2026-09-26.
+    assert.ok(await ready(r, 1_000), "the run did not say READY");
+  }), /the run did not say READY/);
+  const left = [run.child.pid, ...run.recorded()].filter(alive);
+  assert.deepEqual(left, [], `left behind by a failed test: ${left}`);
 });
 
 rmSync(dir, { recursive: true, force: true });
