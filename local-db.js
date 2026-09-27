@@ -47,6 +47,7 @@
 
 const now = () => Date.now();
 
+import { browserStorage } from "./storage.js";
 /** A durable write the browser refused. Nothing stored changed. */
 export class NotSaved extends Error {
   constructor(what, cause) {
@@ -70,7 +71,7 @@ export class LocalDb {
    */
   notices = [];
 
-  constructor(storage = globalThis.localStorage, key = "craftec.builder.db.v1", { onNotice } = {}) {
+  constructor(storage = browserStorage, key = "craftec.builder.db.v1", { onNotice } = {}) {
     this.#storage = storage;
     // The old single-blob key doubles as the namespace, so two LocalDbs over
     // different keys stay apart exactly as they did.

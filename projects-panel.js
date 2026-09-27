@@ -5,6 +5,7 @@
 // component, so "browse" is a scan and "open" is a read — there is no separate
 // index to keep in step.
 
+import { browserStorage } from "./storage.js";
 import { PROJECT,
   defineProjectDomains, createProject, listProjects, openProject,
   addComponent, componentsOf, removeComponent, setComponentProps, saveDefinition,
@@ -506,7 +507,7 @@ export async function mountProjects(host, {
   // project has. A caller that supplies none gets its definition left alone.
   getDefinition = null,
   setCanvas,          // (components, project) => load them, and project's definition, into the builder
-  storage = globalThis.localStorage,
+  storage = browserStorage,
   onChange = () => {},
   // Told when a save finds a component that another tab also changed (its
   // version was kept). No default: with nobody to tell, `saveCanvas` fails
