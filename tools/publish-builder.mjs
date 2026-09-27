@@ -96,20 +96,30 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const tS = Date.now();
       await view.navigate(`http://127.0.0.1:${V}/v1/contract/web/${r.address}/`, { ms: STEP_MS });
       const frame = `127.0.0.1:${V}/v1/contract/web/${r.address}/?__sandbox=1`;
-      const state = () => view.evaluateIn(frame, `const s = document.getElementById("save-state"); return { sdk: document.getElementById("sdk")?.textContent ?? null, unsaved: s && !s.hidden ? s.innerText : "", chips: document.querySelectorAll("#palette .chip").length, comps: document.querySelectorAll("#canvas .comp, .rt-comp").length };`).catch(e => ({ error: e.message }));
+      // WHAT THE BUILDER ITSELF SAYS (its `__craftworksProject` seam): a project OPEN, its draft read and attached to
+      // the owner's tree, nothing pending, no error, and no write still on its way (`saving`). The save LINE alone is
+      // not enough: it is hidden while no project is open yet, so an empty line proved nothing (a 9 ms "save").
+      const state = () => view.evaluateIn(frame, `const p = globalThis.__craftworksProject?.() ?? null; const s = document.getElementById("save-state");
+        return { sdk: document.getElementById("sdk")?.textContent ?? null, chips: document.querySelectorAll("#palette .chip").length,
+          id: p?.id ?? null, loaded: !!p?.draft?.loaded, attached: !!p?.draft?.attached, pending: !!p?.draft?.pending, error: p?.draft?.error ? String(p.draft.error) : null,
+          saving: p?.saving ?? null, line: s && !s.hidden ? s.innerText : "", comps: document.querySelectorAll("#canvas .comp, .rt-comp").length };`).catch(e => ({ fail: e.message }));
+      const open = x => !!x && !x.fail && !!x.id && x.loaded && x.attached;
+      const saved = x => open(x) && !x.pending && !x.error && x.saving === 0;
       let s = null;
-      while (Date.now() - tS < STEP_MS) { s = await state(); if (/^SDK /.test(s?.sdk ?? "") && s.chips > 0) break; await new Promise(ok => setTimeout(ok, 1000)); }
+      while (Date.now() - tS < STEP_MS) { s = await state(); if (/^SDK /.test(s?.sdk ?? "") && s.chips > 0 && open(s)) break; await new Promise(ok => setTimeout(ok, 1000)); }
       if (!/^SDK /.test(s?.sdk ?? "")) throw new Error(`the builder did not reach SDK ready on V: ${JSON.stringify(s)}`);
+      if (!open(s)) throw new Error(`no project OPEN on V (its draft read and attached) in ${STEP_MS / 1000} s: ${JSON.stringify(s)}`);
+      const before = s.comps;
       await view.evaluateIn(frame, `[...document.querySelectorAll("#palette .chip")][0].click(); return 1;`);
       const tE = Date.now();
-      let saved = false;
+      let done = false;
       while (Date.now() - tE < STEP_MS) {
         s = await state();
-        if (s && !s.error && s.unsaved === "") { saved = true; break; }
-        await new Promise(ok => setTimeout(ok, 1000));
+        if (saved(s)) { done = true; break; }
+        await new Promise(ok => setTimeout(ok, 500));
       }
-      if (!saved) throw new Error(`the builder's edit was not saved on V in ${STEP_MS / 1000} s: ${JSON.stringify(s)}`);
-      console.log(`PASS  the builder SAVES on V: an edit made, the unsaved line gone in ${Date.now() - tE} ms (no port asked: the serving node)`);
+      if (!done) throw new Error(`the builder's edit was not saved on V in ${STEP_MS / 1000} s: ${JSON.stringify(s)}`);
+      console.log(`PASS  the builder SAVES on V: project ${s.id.slice(0, 8)} open, an edit made (${before} -> ${s.comps} components), its draft attached with nothing pending and nothing saving, in ${Date.now() - tE} ms (no port asked: the serving node)`);
     } finally {
       await v.stop();
     }
