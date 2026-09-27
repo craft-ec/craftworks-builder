@@ -52,3 +52,24 @@ export function treeRow({ name, address, state, words, nowMs }) {
       throw new Error(`assets: unknown repair state ${JSON.stringify(state.phase)}`);
   }
 }
+
+/**
+ * ONE repair pass over the owner's own tree, on a COLD page: `handle.tree(headId, { seq })` opens a page of its own
+ * that holds none of the tree (the project's own page wrote it and would ask the node nothing), the pass runs there, and
+ * the page is closed after. Returns `{ done, cancel }`: `done` resolves with the SDK's report; `cancel()` stops it.
+ * A Cancel pressed while that page is still OPENING wins: the pass is never started, the page is closed, and `done`
+ * resolves with the SDK's own cancelled word (`cancelled`, from status.repairOutcome) and nothing counted.
+ */
+export function repairPass(handle, { cancelled: cancelledWord }) {
+  let tree = null, cancelled = false;
+  const done = (async () => {
+    tree = await handle.tree(handle.headId(), { seq: handle.headSeq() });
+    try {
+      if (cancelled) return { rows: 0, outcome: cancelledWord, missing: 0, putBack: 0, rejected: 0, givenUp: 0, parityMismatched: 0, pending: 0, damaged: [], why: null };
+      return await tree.db.repairAll();
+    } finally {
+      tree.close();
+    }
+  })();
+  return { done, cancel: () => { cancelled = true; tree?.db.repairAllCancel(); } };
+}

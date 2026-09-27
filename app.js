@@ -16,6 +16,7 @@ import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
 import { readDeviceSettings, writeDeviceSettings } from "./projects.js";
 import { mountAssets } from "./assets-panel.js";
+import { repairPass } from "./assets.js";
 import { createProjectRuntime } from "./project-runtime.js";
 import { draftChanged, keyOf, keyed } from "./definition.js";
 
@@ -827,19 +828,7 @@ render();
     const say = text => view.replaceChildren(Object.assign(document.createElement("div"), { className: "stubbed", textContent: text }));
     if (!handle?.headId?.()) return say("Publish this project first: repair reads its tree from your node.");
     if (!sdkReady?.status?.repairOutcome) return say("This SDK build has no repairAll(): nothing to show.");
-    const repair = () => {
-      let tree = null, cancelled = false;
-      const done = (async () => {
-        tree = await handle.tree(handle.headId(), { seq: handle.headSeq() });
-        try {
-          if (cancelled) tree.db.repairAllCancel();
-          return await tree.db.repairAll();
-        } finally {
-          tree.close();
-        }
-      })();
-      return { done, cancel: () => { cancelled = true; tree?.db.repairAllCancel(); } };
-    };
+    const repair = () => repairPass(handle, { cancelled: sdkReady.status.repairOutcome.CANCELLED });
     const host = document.createElement("div");
     view.replaceChildren(host);
     mountAssets(host, {
