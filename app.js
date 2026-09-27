@@ -16,6 +16,7 @@ import { LocalDb } from "./local-db.js";
 import { mountProjects } from "./projects-panel.js";
 import { readDeviceSettings, writeDeviceSettings } from "./projects.js";
 import { mountAssets } from "./assets-panel.js";
+import { repairPass } from "./assets.js";
 import { createProjectRuntime } from "./project-runtime.js";
 import { draftChanged, keyOf, keyed } from "./definition.js";
 
@@ -811,23 +812,31 @@ $("preview").onclick = () => { preview = !preview; rt.invalidate(); render(); };
 render();
 
 // ---- THE ASSETS TAB (the owner's first repair goal) -----------------------------------------------------------------
-// A header button that swaps the main area for the tab: this app's tree and Repair now, which runs the SDK's
-// `repairAll()` on the project's session. An SDK without it says THAT, and nothing else: nothing presented as measured.
+// A header button that swaps the main area for the tab: this person's tree, Repair now and Cancel. A pass runs on a
+// COLD page of the owner's own tree (`handle.tree(headId)`: its own page, holding none of the tree), so every block is
+// asked of the node -- the project's own page wrote the tree and holds it, and would ask the node nothing. The page is
+// closed when the pass ends. The words are the SDK's (`sdk.status`); an SDK without `repairAll()` says so.
 {
   const button = $("assets"), view = $("assets-view"), mainEl = document.querySelector("main");
-  button.onclick = () => {
+  button.onclick = async () => {
     const on = view.hidden;
     view.hidden = !on;
     mainEl.hidden = on;
     button.classList.toggle("on", on);
     if (!on) return;
-    const session = rt?.session?.session ?? null;
-    if (typeof session?.repairAll !== "function") {
-      view.replaceChildren(Object.assign(document.createElement("div"), { className: "stubbed", textContent: session ? "This SDK build has no repairAll(): nothing to show." : "Publish this project first: repair reads its tree from your node." }));
-      return;
-    }
+    const handle = rt?.session ?? null;
+    const say = text => view.replaceChildren(Object.assign(document.createElement("div"), { className: "stubbed", textContent: text }));
+    if (!handle?.headId?.()) return say("Publish this project first: repair reads its tree from your node.");
+    if (!sdkReady?.status?.repairOutcome) return say("This SDK build has no repairAll(): nothing to show.");
+    const repair = () => repairPass(handle, { cancelled: sdkReady.status.repairOutcome.CANCELLED });
+    const check = () => repairPass(handle, { cancelled: sdkReady.status.repairOutcome.CANCELLED, putBack: false });
     const host = document.createElement("div");
     view.replaceChildren(host);
-    mountAssets(host, { session, tree: () => ({ name: app.name || "This app's data", address: `craftec://${app.tree.realm}/${app.tree.identity ?? "‹you›"}/` }) });
+    mountAssets(host, {
+      repair,
+      check,
+      words: { repairOutcome: Object.values(sdkReady.status.repairOutcome), groupHealth: Object.values(sdkReady.status.groupHealth) },
+      tree: () => ({ name: app.name || "Your data", address: `register ${handle.headId()}` }),
+    });
   };
 }

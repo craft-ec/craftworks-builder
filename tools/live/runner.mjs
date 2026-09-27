@@ -36,11 +36,22 @@ const sh = (cmd, args, opts = {}) => {
   return r.stdout.trim();
 };
 
-/** The machine as a run sees it: cores, 1-min load, free memory and disk. */
+/**
+ * CPU IDLE %, as `top` measures it over one second (its SECOND sample: the first covers the time since boot). On macOS
+ * the 1-min load average counts WAITING threads, not CPU use -- the box read load 171 with the CPU 44% idle (main,
+ * 2026-09-27) -- so a run's slowness is explained by this, beside the load.
+ */
+export function cpuIdle() {
+  const m = sh("/usr/bin/top", ["-l", "2", "-n", "0", "-s", "1"]).match(/CPU usage:[^\n]*?([\d.]+)% idle/g);
+  const last = m?.at(-1)?.match(/([\d.]+)% idle/);
+  return last ? Number(last[1]) : null;
+}
+
+/** The machine as a run sees it: cores, 1-min load, CPU idle %, free memory and disk. */
 export function machine() {
   const load1 = Number(sh("/usr/sbin/sysctl", ["-n", "vm.loadavg"]).replace(/[{}]/g, "").trim().split(/\s+/)[0]);
   const freeDiskKb = Number(sh("/bin/df", ["-Pk", ROOT]).split("\n")[1].split(/\s+/)[3]);
-  return { cores: cpus().length, load1, free_mem_mb: Math.round(freemem() / 1048576), free_disk_gb: Math.round(freeDiskKb / 1048576) };
+  return { cores: cpus().length, load1, cpu_idle_pct: cpuIdle(), free_mem_mb: Math.round(freemem() / 1048576), free_disk_gb: Math.round(freeDiskKb / 1048576) };
 }
 
 /** Who else is on the box: RECORDED, never a reason to refuse (the owner's node is always one). */
@@ -98,13 +109,22 @@ export function header(readers = defaultReaders()) {
  * THE LOAD GATE: wait (polling every `pollS`) until the 1-min load is under `cores`, for at most
  * `waitS`. Returns `{ ok, waited_s, load1, cores }`; the caller prints "not run: box busy" on !ok.
  */
-export async function loadGate({ waitS, pollS = 15, read = machine, now = () => Date.now() } = {}) {
+/**
+ * THE GATE a run starts behind, by `mode`: "load" (the 1-min load below the core count -- the default), "idle" (the CPU
+ * at least IDLE_MIN % idle, `top`'s measure: the load average counts waiting threads on macOS), or "none" (no wait:
+ * the caller says so in its lines). Returns what it saw either way.
+ */
+export const IDLE_MIN = 25;
+export async function loadGate({ waitS, pollS = 15, read = machine, now = () => Date.now(), mode = "load" } = {}) {
   const t0 = now();
   for (;;) {
     const m = read();
     const waited = Math.round((now() - t0) / 1000);
-    if (m.load1 < m.cores) return { ok: true, waited_s: waited, load1: m.load1, cores: m.cores };
-    if (waited >= waitS) return { ok: false, waited_s: waited, load1: m.load1, cores: m.cores };
+    const seen = { waited_s: waited, load1: m.load1, cores: m.cores, cpu_idle_pct: m.cpu_idle_pct ?? null, mode };
+    const open = mode === "none" || (mode === "idle" ? (m.cpu_idle_pct ?? 0) >= IDLE_MIN : m.load1 < m.cores);
+    if (mode !== "load" && mode !== "idle" && mode !== "none") throw new Refused(`--gate ${mode}: not load, idle or none`);
+    if (open) return { ok: true, ...seen };
+    if (waited >= waitS) return { ok: false, ...seen };
     await sleep(pollS * 1000);
   }
 }
@@ -202,8 +222,8 @@ export class Nodes {
   constructor(runDir, { bin = process.env.LIVE_FREENET ?? "freenet", eventLog = true } = {}) {
     this.runDir = runDir; this.bin = bin; this.eventLog = eventLog; this.list = [];
   }
-  async start(label, { readyMs = 60_000 } = {}) {
-    const ws = freePort("tcp"), net = freePort("udp");
+  async start(label, { readyMs = 60_000, ports = null } = {}) {
+    const ws = ports?.ws ?? freePort("tcp"), net = ports?.net ?? freePort("udp");
     for (const p of [ws, net]) if (RESERVED.includes(p)) throw new Error(`${label}: ${p} is somebody else's node`);
     const dir = join(this.runDir, "nodes", label);
     for (const d of ["data", "config", "log", "webapp_cache"]) mkdirSync(join(dir, d), { recursive: true });
@@ -214,7 +234,7 @@ export class Nodes {
     const child = spawn(this.bin, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") }, detached: false });
     child.stdout.on("data", d => appendFileSync(out, d));
     child.stderr.on("data", d => appendFileSync(out, d));
-    const node = { label, ws, net, dir, pid: child.pid, started_ms: Date.now() };
+    const node = { label, ws, net, dir, pid: child.pid, started_ms: Date.now(), child };
     this.list.push(node);
     const deadline = Date.now() + readyMs;
     while (Date.now() < deadline) {
@@ -223,6 +243,20 @@ export class Nodes {
       await sleep(250);
     }
     throw new Error(`${label}: ws ${ws} did not open within ${readyMs} ms; see ${out}`);
+  }
+  /**
+   * STOP `node` (its recorded pid: TERM, verified gone, KILL after 10 s), run `between()` while it is down (its dirs
+   * untouched by anyone else), then START it again on the SAME dirs and ports. Returns the restarted node.
+   */
+  async restart(node, between = async () => {}, { readyMs = 60_000 } = {}) {
+    const gone = () => node.child ? node.child.exitCode !== null || node.child.signalCode !== null : spawnSync("kill", ["-0", String(node.pid)]).status !== 0;
+    try { process.kill(node.pid, "SIGTERM"); } catch {}
+    for (let i = 0; i < 40 && !gone(); i++) await sleep(250);
+    if (!gone()) { try { process.kill(node.pid, "SIGKILL"); } catch {} for (let i = 0; i < 20 && !gone(); i++) await sleep(250); }
+    if (!gone()) throw new Error(`${node.label}: pid ${node.pid} did not stop`);
+    this.list = this.list.filter(n => n !== node);
+    await between();
+    return this.start(node.label, { readyMs, ports: { ws: node.ws, net: node.net } });
   }
   /** End every node through realnet-nodes.sh; returns its report lines and whether every node was proven gone. */
   end(runFailed) {
