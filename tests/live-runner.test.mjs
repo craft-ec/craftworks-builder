@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ownTmp } from "./page-host.mjs";
-import { Refused, header, loadGate, resolvable, runArm, sdkRan, summarize } from "../tools/live/runner.mjs";
+import { Nodes, PRIVATE_MARKER, Refused, header, loadGate, resolvable, runArm, sdkRan, summarize } from "../tools/live/runner.mjs";
 import { keyBytes, touches, touchedIn } from "../tools/live/eventlog.mjs";
 
 const fixtures = fileURLToPath(new URL("./fixtures/live/", import.meta.url));
@@ -245,6 +245,14 @@ await t("**every opener's recording is read in its app's frame** (open-fresh-nod
   const src = readFileSync(fileURLToPath(new URL("../tools/live/scenarios/open-fresh-nodes.mjs", import.meta.url)), "utf8");
   assert.match(src, /recordPageTrace\(ctx, tab, name, [^\n]*\{ frame: frameOf\(O\.ws\), read: OPENER_TRACE \}\)/, "open-fresh-nodes does not read each opener's recording in its frame through the loader's seam");
   assert.ok(src.indexOf("recordPageTrace(ctx, tab, name") < src.indexOf("await b.stop()"), "the opener's recording is read after its browser stopped");
+});
+
+await t("**every node's data dir carries the private-node mark** (its nonce), the only dir node-forget opens", async () => {
+  const runDir = join(base, "mark");
+  // A `freenet` that exits at once: the dirs, and the mark, are made before the spawn.
+  await assert.rejects(new Nodes(runDir, { bin: "/usr/bin/true", eventLog: false }).start("M", { readyMs: 2_000 }), /exited before its ws port opened/);
+  const mark = readFileSync(join(runDir, "nodes", "M", "data", PRIVATE_MARKER), "utf8");
+  assert.match(mark, /^\d+-\d+\n$/, `the mark holds no nonce: ${JSON.stringify(mark)}`);
 });
 
 rmSync(base, { recursive: true, force: true });
