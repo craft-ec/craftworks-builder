@@ -49,6 +49,7 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
   const unconfirmed = () => (answeredLost() ? 0 : order.length - confirmedCount());
   // `lose`: the n-th row the handoff makes is ROLLED BACK by the node.
   let made = 0, lost = null;
+  const marks = [];
   const stateOf = key => (key === lost ? "ROLLED_BACK" : order.indexOf(key) < confirmedCount() ? "CLEAN" : answeredLost() ? "ROLLED_BACK" : "PENDING");
   const noRoom = () => {
     refusals += 1;
@@ -81,6 +82,13 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
     },
     update(d, id, patch) { write(`${d}/${id}#u${order.length}`); Object.assign(rows.get(`${d}/${id}`).fields, JSON.parse(patch)); return JSON.stringify(record(d, id)); },
     delete(d, id) { write(`${d}/${id}#d`); return rows.delete(`${d}/${id}`); },
+    // The SDK's marker doors (sdk#547): a marker is a createAt at the domain's own slot in the reserved domain.
+    // Each marker call records whether EVERY row the handoff made read saved at that moment (§19's E2).
+    mark_published: d => {
+      marks.push([...rows.keys()].filter(k => !k.startsWith("craftworks.") && !k.startsWith("schema/")).every(k => stateOf(k) === "CLEAN"));
+      return session.create_at("craftworks.published", `marker/${d}`, "{}");
+    },
+    is_published: d => rows.has(`craftworks.published/marker/${d}`),
   };
   return {
     session,
@@ -88,6 +96,7 @@ function roomySession({ cap = 256, confirmMs = 300, stopAt = Infinity, foreign =
     sleep: async ms => { clock += ms; },
     clock: () => clock,
     refusals: () => refusals,
+    marks: () => marks,
     stored: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`)).length,
     /** Rows of `d` that read CLEAN right now — what "confirmed" must equal. */
     clean: d => [...rows.keys()].filter(k => k.startsWith(`${d}/`) && stateOf(k) === "CLEAN").length,
@@ -194,4 +203,13 @@ await t("THE CONTROL: a refusal that is NOT retryable is thrown at once, not wai
   const before = node.clock();
   await assert.rejects(go, e => e.code === "TOO_LARGE_TO_SEND");
   assert.ok(node.clock() - before < 1000, "a refusal that waiting cannot fix was waited on");
+});
+
+await t("**the domain is marked published LAST (§19's E2): only once every row the handoff made reads SAVED**", async () => {
+  const node = roomySession({ cap: 20 });
+  const { go } = run(node, 60);
+  await go;
+  assert.ok(node.marks().length > 0, "THE SETUP: no marker was written, so the order was not seen");
+  assert.ok(node.refusals() > 0, "THE SETUP: every row was confirmed at once, so 'saved before the marker' could not have failed");
+  assert.deepStrictEqual(node.marks(), node.marks().map(() => true), "a domain was marked published while a row it holds was not yet saved");
 });

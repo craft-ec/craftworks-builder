@@ -250,24 +250,30 @@ await t("**S2: the SAME project id from a device with no history: the live edit 
 
 // ---- the marker is ACKNOWLEDGED, like any row (builder#88) -------------------
 
-/** A node over a real Db that accepts the MARKER write and then loses it — once. Counts writes. */
+/**
+ * A node over a real Db that accepts the MARKER write and then loses it — once. Counts writes. The loss is what the
+ * node would show (the marker's record absent, the domain not published): the SDK refuses an ordinary delete of the
+ * reserved domain, so the rollback is this node's answer, not a write.
+ */
 function losesTheMarker() {
   const db = new sdk.Db();
   let lose = true;
+  const lost = new Map();   // marker id -> its domain, while the node shows it rolled back
   const writes = { rows: 0, markers: 0 };
   const target = new Proxy(db, { get(o, k) {
     const v = Reflect.get(o, k);
-    if (k === "createAt") return async (d, ...a) => {
-      const r = await v.call(o, d, ...a);
-      if (d === PUBLISHED_DOMAIN) {
-        writes.markers += 1;
-        if (lose) await o.delete(d, r.record.id);   // the node rolled it back
-      } else writes.rows += 1;
+    if (k === "markPublished") return async d => {
+      const r = await v.call(o, d);
+      writes.markers += 1;
+      if (lose) lost.set(r.record.id, d);   // the node rolled it back
       return r;
     };
+    if (k === "createAt") return async (...a) => { writes.rows += 1; return v.apply(o, a); };
+    if (k === "get") return async (d, id) => (d === PUBLISHED_DOMAIN && lost.has(id) ? null : v.call(o, d, id));
+    if (k === "isPublished") return async d => ([...lost.values()].includes(d) ? false : v.call(o, d));
     return typeof v === "function" ? v.bind(o) : v;
   } });
-  return { db, target, writes, heal: () => { lose = false; } };
+  return { db, target, writes, heal: () => { lose = false; lost.clear(); } };
 }
 
 await t("**a marker the node LOSES fails the publish — it is not reported done over a domain that reads not-live**", async () => {
@@ -275,7 +281,7 @@ await t("**a marker the node LOSES fails the publish — it is not reported done
   await src.put("tasks", { title: "first" });
   const node = losesTheMarker();
   await assert.rejects(run(src, node.target), /did not reach the node/);
-  assert.strictEqual(await node.db.get(PUBLISHED_DOMAIN, sdk.slotFrom(0, "domain", "tasks")), null, "and indeed nothing marks it live");
+  assert.strictEqual(await node.target.isPublished("tasks"), false, "and indeed nothing marks it live");
   // Through the runtime: the phase says so.
   const { createProjectRuntime } = await import("../project-runtime.js");
   const lost = losesTheMarker();
@@ -314,7 +320,7 @@ await t("a SECOND completion leaves ONE marker per domain", async () => {
 
 await t("THE CONTROL: a publish that did not complete marks nothing live", async () => {
   const { dst } = await attempted();
-  assert.strictEqual(await dst.schema(PUBLISHED_DOMAIN), null, "no marker domain before a completion");
+  assert.strictEqual(await dst.isPublished("tasks"), false, "no marker before a completion");
 });
 
 await t("**the reserved domain is never an APP's**: not preloaded, not bound by the published app — though it IS in the tree", async () => {

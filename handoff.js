@@ -83,16 +83,14 @@ export const sameFields = (a, b) => sameRows([a ?? {}], [b ?? {}]);
 /**
  * The reserved domain the "is this domain live?" markers live in, in the
  * target. Never a domain an app may have: an app that names it is refused.
+ * The SDK owns it (craftworks-sdk P2, ARCHITECTURE §19): an ordinary write of
+ * `craftworks.*` is refused by type, and the markers are written and read only
+ * through its doors, `markPublished(d)` and `isPublished(d)`.
  */
 export const PUBLISHED_DOMAIN = "craftworks.published";
-const PUBLISHED_SCHEMA = { type: "Published", fields: [] };
-const markerSlot = (slotFrom, d) => slotFrom(0, "domain", d);
 
-/** Is domain `d` live in `target`: has a publish into it completed? Reads only. */
-async function isLive(target, slotFrom, d) {
-  if (!(await target.schema(PUBLISHED_DOMAIN))) return false;
-  return Boolean(await target.get(PUBLISHED_DOMAIN, markerSlot(slotFrom, d)));
-}
+/** Is domain `d` live in `target`: has a publish into it completed? Reads only (the SDK's door). */
+const isLive = (target, d) => target.isPublished(d);
 
 /**
  * The slot seed row `i` of domain `d` is published at. `seedMs` is the project
@@ -196,7 +194,7 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
       copies.push({ slot, row: r });
     }
     const deletes = source ? (await source.deleted(d)).map(t => slotOf(d, t)).filter(slot => !bySlot.has(slot)) : [];
-    plan.push({ d, copies, deletes, live: await isLive(target, slotFrom, d) });
+    plan.push({ d, copies, deletes, live: await isLive(target, d) });
   }
 
   // ONE LOOP: room (builder#94). The target holds a bounded number of writes
@@ -267,9 +265,8 @@ export async function handoff({ source, target, app, schemas, slotFrom, namespac
   const markers = [];
   const marking = tracker(target, markers, confirm, plan.length);
   const markerRoom = fn => roomFor(fn, marking, markers);
-  await markerRoom(() => target.define(PUBLISHED_DOMAIN, PUBLISHED_SCHEMA));
   for (const { d } of plan) {
-    const m = await markerRoom(() => target.createAt(PUBLISHED_DOMAIN, markerSlot(slotFrom, d), {}));
+    const m = await markerRoom(() => target.markPublished(d));
     markers.push({ domain: PUBLISHED_DOMAIN, id: m.record.id });
   }
   await settled(marking);
