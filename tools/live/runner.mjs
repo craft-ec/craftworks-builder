@@ -222,19 +222,21 @@ export class Nodes {
   constructor(runDir, { bin = process.env.LIVE_FREENET ?? "freenet", eventLog = true } = {}) {
     this.runDir = runDir; this.bin = bin; this.eventLog = eventLog; this.list = [];
   }
-  async start(label, { readyMs = 60_000, ports = null } = {}) {
+  async start(label, { readyMs = 60_000, ports = null, mode = "network" } = {}) {
+    // `local`: a node that never joins the network (`freenet local`) -- what it loses, no peer hands back.
+    if (!["network", "local"].includes(mode)) throw new Error(`${label}: mode ${mode} is not network|local`);
     const ws = ports?.ws ?? freePort("tcp"), net = ports?.net ?? freePort("udp");
     for (const p of [ws, net]) if (RESERVED.includes(p)) throw new Error(`${label}: ${p} is somebody else's node`);
     const dir = join(this.runDir, "nodes", label);
     for (const d of ["data", "config", "log", "webapp_cache"]) mkdirSync(join(dir, d), { recursive: true });
-    const args = ["network", "--ws-api-address", "127.0.0.1", "--ws-api-port", String(ws), "--network-port", String(net),
+    const args = [mode, "--ws-api-address", "127.0.0.1", "--ws-api-port", String(ws), "--network-port", String(net),
       "--data-dir", join(dir, "data"), "--config-dir", join(dir, "config"), "--log-dir", join(dir, "log"), "--disable-auto-update",
       ...(this.eventLog ? ["--enable-event-log", "true"] : [])];
     const out = join(dir, "log", "console.out");
     const child = spawn(this.bin, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FREENET_WEBAPP_CACHE_DIR: join(dir, "webapp_cache") }, detached: false });
     child.stdout.on("data", d => appendFileSync(out, d));
     child.stderr.on("data", d => appendFileSync(out, d));
-    const node = { label, ws, net, dir, pid: child.pid, started_ms: Date.now(), child };
+    const node = { label, mode, ws, net, dir, pid: child.pid, started_ms: Date.now(), child };
     this.list.push(node);
     const deadline = Date.now() + readyMs;
     while (Date.now() < deadline) {
@@ -246,7 +248,7 @@ export class Nodes {
   }
   /**
    * STOP `node` (its recorded pid: TERM, verified gone, KILL after 10 s), run `between()` while it is down (its dirs
-   * untouched by anyone else), then START it again on the SAME dirs and ports. Returns the restarted node.
+   * untouched by anyone else), then START it again on the SAME dirs, ports and mode. Returns the restarted node.
    */
   async restart(node, between = async () => {}, { readyMs = 60_000 } = {}) {
     const gone = () => node.child ? node.child.exitCode !== null || node.child.signalCode !== null : spawnSync("kill", ["-0", String(node.pid)]).status !== 0;
@@ -256,7 +258,7 @@ export class Nodes {
     if (!gone()) throw new Error(`${node.label}: pid ${node.pid} did not stop`);
     this.list = this.list.filter(n => n !== node);
     await between();
-    return this.start(node.label, { readyMs, ports: { ws: node.ws, net: node.net } });
+    return this.start(node.label, { readyMs, mode: node.mode, ports: { ws: node.ws, net: node.net } });
   }
   /** End every node through realnet-nodes.sh; returns its report lines and whether every node was proven gone. */
   end(runFailed) {

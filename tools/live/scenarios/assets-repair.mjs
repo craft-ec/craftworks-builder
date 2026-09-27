@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT } from "../runner.mjs";
-import { backedUp, browser, builderServer, comp, ROWS as ROW_STATES, sleep, STEP_MS, until } from "../page.mjs";
+import { backedUp, browser, builderServer, comp, OPENER_TRACE, recordPageTrace, ROWS as ROW_STATES, sleep, STEP_MS, until } from "../page.mjs";
 
 const APP = {
   name: "live assets-repair",
@@ -66,7 +66,9 @@ export async function run(ctx) {
   const { say } = ctx;
   if (!process.env.LIVE_FORGET || !existsSync(process.env.LIVE_FORGET)) throw new Error(`LIVE_FORGET must name node-forget (craftworks-sdk probe/); got ${process.env.LIVE_FORGET ?? "unset"}`);
   if (!existsSync(BLOCK_WASM)) throw new Error(`no ${BLOCK_WASM}: build the builder first`);
-  let P = await ctx.nodes.start("P");
+  // LOCAL: P never joins the network. On the network the peers the publish put a block on hand it back (run
+  // 2026-09-27T08-16: P forgot 8, its GETs then answered found 6, silent 2) -- a loss must be of the only copy.
+  let P = await ctx.nodes.start("P", { mode: "local" });
 
   // 1. A plain publish, in a browser kept for the whole run (the project is in its profile).
   const port = await builderServer(ctx);
@@ -102,7 +104,7 @@ export async function run(ctx) {
   // The mount's db (runtime.js's seam): "" until the store can state its root, so waited for.
   const root = await until(tab, `return globalThis.__craftworks?.db?.root?.() || null;`, 60_000, null, 500);
   if (!root) { say("FAIL  the page states no tree root: node-forget cannot tell the head's tree from older versions"); return { failed: true }; }
-  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws}, backed up in ${Date.now() - t0} ms; root ${root}`);
+  say(`PUBLISHED ${pub.address} (${rows.length} rows) on P :${P.ws} (local), backed up in ${Date.now() - t0} ms; root ${root}`);
 
   // 2. P loses m blocks of GROUPS groups, from its own store, while it is stopped.
   let forgot = [];
@@ -128,8 +130,14 @@ export async function run(ctx) {
   const rTab = await r.tab("reader");
   await rTab.navigate(`http://127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/`).catch(() => {});
   const hasRows = `const r = [...(${comp("Table", "notes")}?.querySelectorAll("tbody tr td:first-child") ?? [])].map(td => td.textContent); return ${JSON.stringify(rows)}.every(t => r.includes(t)) || null;`;
-  const read = await until(rTab, hasRows, STEP_MS, `127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/?__sandbox=1`, 500);
+  const frame = `127.0.0.1:${P.ws}/v1/contract/web/${pub.address}/?__sandbox=1`;
+  const read = await until(rTab, hasRows, STEP_MS, frame, 500);
   say(read ? `READER a fresh reader on P shows all ${rows.length} rows` : `READER a fresh reader on P did NOT show all ${rows.length} rows within ${STEP_MS / 1000} s`);
+  // The reader's own recording, pass or fail: which reads it sent, how each ended -- a reader that stops is read, not
+  // guessed (run 2026-09-27T08-42: P's log shows its 5 NotFounds, then nothing).
+  const shown = await rTab.evaluateIn(frame, `const t = ${comp("Table", "notes")}; return { rows: t?.querySelectorAll("tbody tr").length ?? null, text: (document.body?.innerText ?? "").slice(0, 400) };`).catch(e => ({ unreadable: e.message }));
+  say(`READER shows ${JSON.stringify(shown)}`);
+  await recordPageTrace(ctx, rTab, "reader", read ? "rows" : "no rows", { frame, read: OPENER_TRACE });
   await r.stop();
 
   // 4. The Assets tab: DEGRADED -> REPAIRING -> REPAIRED, then WHOLE.
@@ -137,8 +145,11 @@ export async function run(ctx) {
   const shots = join(ctx.dir, "shots");
   mkdirSync(shots, { recursive: true });
   const capture = async name => {
-    const png = await tab.send("Page.captureScreenshot", { format: "png" }).catch(() => null);
-    if (png?.data) writeFileSync(join(shots, `${name}.png`), Buffer.from(png.data, "base64"));
+    // CDP answers `{ result: { data } }` (tools/shots.mjs); a capture that fails is SAID, never skipped silently.
+    const r = await tab.send("Page.captureScreenshot", { format: "png" }).catch(e => ({ error: e.message }));
+    const data = r?.result?.data;
+    if (data) writeFileSync(join(shots, `${name}.png`), Buffer.from(data, "base64"));
+    else say(`SHOT  ${name}: not captured (${JSON.stringify(r).slice(0, 200)})`);
   };
   const first = await assetsCheck(tab);
   await capture("1-degraded");
