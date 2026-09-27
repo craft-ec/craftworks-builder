@@ -32,7 +32,7 @@ const blobOf = bytes => URL.createObjectURL(new Blob([bytes]));
 // THE OPEN'S PHASES, for the tools that time it (a realnet step time is one
 // number from navigate to rows, and cannot say where a slow open went): ms
 // since this page's navigation began, stamped once as each phase ends —
-// loader (the container served, this module running), files (app.json,
+// loader (the container served, this module running), files (pointer.json,
 // artefacts.json and the decoder), sdk (both bundles raced, decoded, linked, the
 // SDK's wasm verified and loaded), opened (this node's signer asked, the app's
 // tree and the user's own opened), head (the app's tree has a head by the time
@@ -46,13 +46,14 @@ try {
   // This container's own files, through the SDK's one fetch: waited on (and
   // named while waiting), never ended by a status (rule 8, craftworks-sdk#340).
   const json = async f => JSON.parse(await servedText({ url: `./${f}` }, { onWait: w => say(`${w.says ?? "waiting"}: ${f}`) }));
-  const [art, app, dec] = await Promise.all([
+  // THE POINTER (ARCHITECTURE §19, the bootstrap): whose tree the app is in -- the app itself is data there, never in
+  // this site. Read as bytes: its one reader is the SDK's (`openPointer`), which also checks it is THIS site's.
+  const [art, pointer, dec] = await Promise.all([
     json("artefacts.json"),
-    json("app.json"),
+    served({ url: "./pointer.json" }, { onWait: w => say(`${w.says ?? "waiting"}: pointer.json`) }),
     served({ url: "./decoder.wasm" }, { onWait: w => say(`${w.says ?? "waiting"}: decoder.wasm`) }).then(decoder),
   ]);
   mark("files");
-  const head = app?.publisher?.head;
 
   // 1. Both bundles raced at once, neither waiting on the other: the session
   // needs the provisioning artefacts when it OPENS. The signer's bytes only
@@ -68,14 +69,16 @@ try {
     shown();
     return { spec: { ...shape }, raced, ...openPieces(dec, shape, raced.pieces) };
   };
-  const [core, provisioning] = await Promise.all([race("app", art.pieces.core), race("signer", art.pieces.provisioning)]);
+  // THE BUILD'S ONE PIECE SET (ARCHITECTURE §19): the SDK, the runtime and the contract code, one bundle.
+  if (!art.pieces?.app) throw new Error("this site's artefacts.json names no `app` piece set: it was published by a builder from before app-as-data");
+  const bundle = await race("app", art.pieces.app);
 
   // 2. The modules, linked; the SDK's wasm verified by its hash on the way in.
   // The SDK modules the STARTER serves -- the SDK's own list, carried in this container's artefacts.json
   // (craftworks-sdk#408): a bundle module importing one gets this container's copy (one instance).
   if (!Array.isArray(art.starter) || art.starter.length === 0) throw new Error("this app's artefacts.json names no `starter`: republish it with a builder that carries the SDK's list");
   const starter = new Set(art.starter.map(m => `sdk/${m}`));
-  const urls = linkModules(core.files, { external: p => (starter.has(p) ? here(`./${p}`) : null) });
+  const urls = linkModules(bundle.files, { external: p => (starter.has(p) ? here(`./${p}`) : null) });
   const moduleOf = p => {
     if (!urls.has(p)) throw new Error(`the app's pieces hold no ${p}`);
     return import(urls.get(p));
@@ -87,33 +90,32 @@ try {
     return { urls: [blobOf(bytes)], sha256: e.sha256 };
   };
   // The content-hash cache (`artefactBytes`) is the SDK's, in the bundle: it verifies each artefact by its own hash.
-  const [{ load }, { artefactBytes }, { mountApp, sourceOf }, { openPublished }] =
-    await Promise.all(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js"].map(moduleOf));
+  const [{ load }, { artefactBytes }, { mountApp, sourceOf }, { openPublished }, { appOf }, { codeOf }] =
+    await Promise.all(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js", "definition.js", "app-code.js"].map(moduleOf));
   say("Loading the SDK…");
   // Verified by its hash (never an end short of a mismatch: rule 8), the status naming it while it waits.
-  const sdk = await load(await artefactBytes(artefact(core, "sdk"), { onWait: w => say(`${w.says}: ${art.sdk.file}`) }));
+  const sdk = await load(await artefactBytes(artefact(bundle, "sdk"), { onWait: w => say(`${w.says}: ${art.sdk.file}`) }));
   mark("sdk");
   say("Connecting…");
-  // The APP's id (craftworks-sdk#267): the space its data was written
-  // under, which this view reads. Both ids are checked by the SDK's own rules
-  // (`sdk.ids`), now it is loaded.
-  if (!sdk.ids.hex32(head ?? "")) throw new Error("app.json names no publisher head, so there is nothing to show");
-  const appId = app?.publisher?.app;
-  try {
-    sdk.ids.app(appId ?? "");
-  } catch (e) {
-    throw new Error(`app.json names no publisher app, so there is no space to read (${e?.message ?? e})`);
-  }
+  // WHOSE TREE, WHICH APP: the pointer, checked against this page's own link and read by the SDK (`openPointer`,
+  // sdk#558) -- a pointer copied from another site is refused, never read.
+  const code = name => {
+    const bytes = bundle.files.get(`sdk/${name}`);
+    if (!bytes) throw new Error(`the ${name} contract code is not in the app's pieces`);
+    return bytes;
+  };
+  const { app: appId, registerId: head } = sdk.openPointer(pointer, location.pathname, code("site.wasm"), code("register.wasm"));
   const opened = await openPublished(sdk, {
     head,
-    // The version it was published at (craftworks-sdk#349); an app.json from
-    // before it names none, and is read at whatever head the node has.
-    seq: app.publisher.seq ?? 0,
+    // THE FLOOR: the site exists, so the app was published at least once (§19: floored from the site's existence).
+    seq: 1,
     app: appId,
     port: Number(location.port),
-    artefacts: { signer: artefact(provisioning, "signer"), block: artefact(provisioning, "block"), register: artefact(provisioning, "register") },
-    ownData: (app.components ?? []).some(c => sourceOf(c) === "mine"),
+    artefacts: { signer: artefact(bundle, "signer"), block: artefact(bundle, "block"), register: artefact(bundle, "register") },
+    ownData: false,
   });
+  // THE APP: its published definition, read from its owner's tree by the one head walk.
+  const records = await opened.backends.publisher.definition("app");
   mark("opened");
   // THE OPENER'S PAGE RECORDINGS (builder#160): `__craftworksOpen.pageTrace()` returns ONE STRING, the dump of each
   // page this open runs (`== asked`, `== view`; `openPublished`), read when asked. READ-ONLY by type: a string is all
@@ -132,8 +134,8 @@ try {
 
   // 4. Repair, in the background: a piece this load asked and did not get is
   // PUT back. Never in the way of the app, and a refusal is only logged.
-  const webappCode = core.files.get("sdk/webapp.wasm");
-  for (const b of [core, provisioning]) {
+  const webappCode = bundle.files.get("sdk/webapp.wasm");
+  for (const b of [bundle]) {
     repairPieces({ spec: b.spec, bundle: b.bundle, raced: b.raced, sdk, session: opened.asked.session, webappCode, subtle: crypto.subtle })
       .then(r => { if (r.length) console.info("craftworks: load pieces repaired", r); })
       .catch(e => console.warn("craftworks: load piece repair failed", e));
@@ -146,7 +148,20 @@ try {
   // Below the published version the status says so, in the SDK's words
   // (craftworks-sdk#349): the view waits for it, never shows an older one.
   const counting = setInterval(() => say(opened.waitingFor() || `Reading… ${Math.round((Date.now() - t0) / 1000)} s`), 1000);
-  const reading = mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
+  // AN APP WITH CODE OF ITS OWN (`meta.entry`, its `f/` records): its modules linked as the pieces' are, and its
+  // entry STARTED with the SDK this loader loaded; otherwise a definition, mounted by the runtime.
+  const own = codeOf(records);
+  const app = own ? null : appOf(records);
+  if (app && (app.components ?? []).some(c => sourceOf(c) === "mine")) await opened.openMine();
+  const reading = own
+    ? (async () => {
+        const codeUrls = linkModules(own.files, { external: p => (urls.has(p) ? urls.get(p) : starter.has(p) ? here(`./${p}`) : null) });
+        if (!codeUrls.has(own.entry)) throw new Error(`the app's entry ${own.entry} is not one of its code files`);
+        const m = await import(codeUrls.get(own.entry));
+        if (typeof m.start !== "function") throw new Error(`the app's entry ${own.entry} exports no start()`);
+        await m.start({ sdk, opened, root: document.getElementById("app"), files: own.files, urls: codeUrls });
+      })()
+    : mountApp(document.getElementById("app"), sdk, app, () => {}, opened.backends, "published", { alive: () => true, seed: false, canWrite: opened.canWrite });
   try { await reading; } finally { clearInterval(counting); }
   // No event says when the head arrives, and no timer watches for it (every
   // published app runs this): the head is stamped as known BY the first rows.
@@ -155,7 +170,7 @@ try {
   // Mounted: a component whose read ENDED says so on the page (the runtime);
   // the status names it too, so the page is never quietly half-empty.
   const ended = [...document.querySelectorAll(".rt-read")].map(e => e.textContent);
-  say(ended.length ? ended.join(" · ") : (app.name ?? ""), ended.length > 0);
+  say(ended.length ? ended.join(" · ") : (app?.name ?? ""), ended.length > 0);
 } catch (e) {
   // THE FIRST THING A PERSON CAN SEND: which piece or artefact, which hash, what failed.
   say(`This app could not open: ${e.message}`, true);

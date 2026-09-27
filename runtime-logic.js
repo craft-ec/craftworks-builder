@@ -200,9 +200,20 @@ export async function openPublished(sdk, { head, seq = 0, app, port, artefacts, 
   // is said on each of its components: "View only: <why>").
   if (ownsApp && own.answer !== "yes") throw new Error(`this node holds the key to the app's data, but its tree did not open: ${own.why}`);
   const view = ownsApp ? null : await asked.tree(head, { seq });
+  const backends = { publisher: ownsApp ? asked.db : view.db, mine: ownData ? asked.db : null };
   return {
     asked,
-    backends: { publisher: ownsApp ? asked.db : view.db, mine: ownData ? asked.db : null },
+    backends,
+    // The user's OWN tree, opened once the app is known to have a `mine` component (the loader reads the definition
+    // first, from the app's tree): the asked session's, as `ownData` would have opened it.
+    openMine: async () => {
+      if (backends.mine) return;
+      if (!ownsApp) {
+        const r = await asked.openOwn();
+        if (r?.answer !== "yes") return;
+      }
+      backends.mine = asked.db;
+    },
     waitingFor: () => view?.waitingFor?.() ?? "",
     // The app's tree's head, "" until it has one (for timing an open).
     headId: () => (ownsApp ? asked.headId?.() : view.headId?.()) ?? "",

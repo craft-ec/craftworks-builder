@@ -1,6 +1,6 @@
 import { loadSdk } from "./sdk-loader.js";
 import { browserStorage, storageNote } from "./storage.js";
-import { publishApp } from "./publish-app.js";
+import { publishSite } from "./publish-app.js";
 import { readBuilderFile, readSdkManifest } from "./builder-files.js";
 import { mount as mountVersions, readBuildInfo } from "./versions-panel.js";
 import { stamp, drift, short } from "./project-versions.js";
@@ -440,22 +440,17 @@ let republishing = false, republishError = "";
 async function putOnNetwork(handle, db) {
   let warn = "", put = null;
   try {
-    put = await publishApp(app, {
-      sdk: sdkReady, session: handle.session, headId: handle.headId(), headSeq: handle.headSeq(), appId: appIdOf(openedProject?.id, sdkReady?.ids),
+    // PUBLISH (ARCHITECTURE §19): the definition in ONE write, made after the handoff's rows are saved (this runs in
+    // `after`), and the site only at the first publish or when the build changed -- one call, `publishSite`.
+    if (typeof rt.treeDb?.publishDefinition !== "function") throw new Error("publish: the owner's tree has no `publishDefinition` door, so the app cannot be published");
+    put = await publishSite(appIdOf(openedProject?.id, sdkReady?.ids), {
+      sdk: sdkReady, db: rt.treeDb, session: handle.session,
       manifest: await readSdkManifest(),
       read: readBuilderFile, subtle: crypto.subtle,
-      // Unchanged since the last acknowledged publication (same bundle at
-      // the same link, same SDK): nothing is published again.
       last: openedProject?.publication ?? null,
       sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
     });
     appAddress = put.address;
-    // THE PUBLISHED DEFINITION follows what was put: the draft, in ONE write, made after the handoff's rows are
-    // saved (this runs in `after`). "Changed since publish" is the draft against it (§19 P3; P5 makes this write
-    // the whole of Publish).
-    // REQUIRED, never a silent no-op: without the door the published definition would stay behind the site.
-    if (typeof rt.treeDb?.publishDefinition !== "function") throw new Error("publish: the owner's tree has no `publishDefinition` door, so the published definition cannot follow the app");
-    await rt.treeDb.publishDefinition();
     changedSincePublish = false;
     // The acceptance seam: what was published, for the tools that open it
     // elsewhere. ITS OWN global: `__craftworks` belongs to the MOUNT, and the
@@ -467,9 +462,9 @@ async function putOnNetwork(handle, db) {
     const rec = await projects?.published?.({
       sourceRoot: db?.root?.() ?? null,
       sdkVersion: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null,
-      ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: handle.headId(), headSeq: put.seq } : {}),
+      ...(put ? { bundleHash: put.bundleHash, appContractId: put.address, head: handle.headId(), headSeq: put.version ?? null } : {}),
     });
-    if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.seq };
+    if (rec && openedProject && put) openedProject.publication = { app_contract_id: put.address, bundle_hash: put.bundleHash, sdk_version: sdkSelfReport?.sdkRev ?? bakedInfo?.sdkRev ?? null, head_seq: put.version ?? null };
   } catch (e) { warn = warn || `history: ${e.message}`; }
   return warn;
 }

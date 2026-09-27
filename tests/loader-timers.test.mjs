@@ -28,7 +28,7 @@ globalThis.setInterval = (fn, ms) => { const id = realSetInterval(() => {}, 1 <<
 globalThis.clearInterval = id => { live.delete(id); realClearInterval(id); };
 const status = { textContent: "", className: "" };
 globalThis.document = { getElementById: id => (id === "status" ? status : {}) };
-globalThis.location = { href: "http://127.0.0.1:7509/v1/contract/web/app/", port: "7509" };
+globalThis.location = { href: "http://127.0.0.1:7509/v1/contract/web/app/", pathname: "/v1/contract/web/app/", port: "7509" };
 
 /** A copy of the REAL loader in its own directory, beside stubs; `rows` says whether the app's first read ever answers. */
 function page(name, { rows, head }) {
@@ -37,22 +37,25 @@ function page(name, { rows, head }) {
   copyFileSync(join(ROOT, "app-loader/loader.js"), join(dir, "loader.js"));
   // The SDK and the runtime as the loader now reaches them (craftworks-sdk#347): the STARTER's modules (served.js,
   // pieces.js) beside it, and the rest through `linkModules` -- stubbed to hand back file URLs of these stubs.
-  writeFileSync(join(dir, "sdk/index.js"), `export const load = async () => ({ ids: { hex32: s => /^[0-9a-f]{64}$/.test(s), app: () => true } });\n`);
+  writeFileSync(join(dir, "sdk/index.js"), `export const load = async () => ({ ids: { hex32: s => /^[0-9a-f]{64}$/.test(s), app: () => true }, openPointer: () => ({ app: "t", registerId: "a".repeat(64) }) });\n`);
   writeFileSync(join(dir, "sdk/artefacts.js"), `export const artefactBytes = async () => new Uint8Array(0);\n`);
   const shape = { k: 1, m: 0, payload: 1, bundle_len: 1, pieces: [{ address: "p", sha256: "0" }] };
   writeFileSync(join(dir, "sdk/served.js"), `export const served = async () => new Uint8Array(0);
 export const raceK = async () => ({ pieces: [new Uint8Array(0)], verified: 1, asked: [0] });
-export const servedText = async ({ url }) => url.endsWith("app.json") ? JSON.stringify({ name: "T", components: [], publisher: { head: "a".repeat(64), app: "t" } }) : JSON.stringify({ pieces: { core: ${JSON.stringify(shape)}, provisioning: ${JSON.stringify(shape)} }, starter: ["served.js", "pieces.js", "rto.js"], sdk: { file: "s", sha256: "0" }, signer: { file: "signer.wasm", sha256: "0" }, block: { file: "block.wasm", sha256: "0" }, register: { file: "register.wasm", sha256: "0" } });\n`);
+export const servedText = async () => JSON.stringify({ pieces: { app: ${JSON.stringify(shape)} }, starter: ["served.js", "pieces.js", "rto.js"], sdk: { file: "s", sha256: "0" }, signer: { file: "signer.wasm", sha256: "0" }, block: { file: "block.wasm", sha256: "0" }, register: { file: "register.wasm", sha256: "0" } });\n`);
   const url = f => `${pathToFileURL(dir).href}/${f}`;
   writeFileSync(join(dir, "sdk/pieces.js"), `export const decoder = async () => ({});
-const files = new Map(["sdk/s", "sdk/signer.wasm", "sdk/block.wasm", "sdk/register.wasm", "sdk/webapp.wasm"].map(f => [f, new Uint8Array(0)]));
+const files = new Map(["sdk/s", "sdk/signer.wasm", "sdk/block.wasm", "sdk/register.wasm", "sdk/site.wasm", "sdk/webapp.wasm"].map(f => [f, new Uint8Array(0)]));
 export const openPieces = () => ({ files, bundle: new Uint8Array(0) });
-export const linkModules = () => new Map(${JSON.stringify(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js"])}.map(p => [p, ${JSON.stringify(url(""))} + p]));
+export const linkModules = () => new Map(${JSON.stringify(["sdk/index.js", "sdk/artefacts.js", "runtime.js", "runtime-logic.js", "definition.js", "app-code.js"])}.map(p => [p, ${JSON.stringify(url(""))} + p]));
 export const repairPieces = async () => [];\n`);
   writeFileSync(join(dir, "runtime.js"), `export const sourceOf = () => "publisher";
 export const mountApp = () => ${rows ? "Promise.resolve()" : "new Promise(() => {})"};\n`);
   // The page recordings: read from `globalThis.__traces` WHEN ASKED, so a test can move them and see a live read.
-  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)}, pageTrace: () => ({ ...globalThis.__traces }) });\n`);
+  // The app's definition, read from its tree (§19 P5): a definition-only app with no components.
+  writeFileSync(join(dir, "definition.js"), `export const appOf = () => ({ name: "T", components: [] });\n`);
+  writeFileSync(join(dir, "app-code.js"), `export const codeOf = () => null;\n`);
+  writeFileSync(join(dir, "runtime-logic.js"), `export const openPublished = async () => ({ asked: { session: {} }, backends: { publisher: { definition: async () => [] } }, openMine: async () => {}, canWrite: () => ({ answer: "no" }), waitingFor: () => "", headId: () => ${JSON.stringify(head)}, pageTrace: () => ({ ...globalThis.__traces }) });\n`);
   return dir;
 }
 

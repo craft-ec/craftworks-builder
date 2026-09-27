@@ -93,12 +93,13 @@ const hex = bytes =>
  *
  * Returns the files, their total size, and the bundle hash.
  */
-export async function packageApp(app, { carried, manifest, pieces, subtle, ids }) {
+export async function packageStarter({ carried, manifest, pieces, subtle, ids }) {
   // The SDK's id rules (`sdk.ids`): the manifest's shapes are checked by them.
-  if (!ids?.hex32 || !ids?.module) throw new Error("packageApp: no sdk.ids, so the SDK's manifest cannot be checked");
+  if (!ids?.hex32 || !ids?.module) throw new Error("packageStarter: no sdk.ids, so the SDK's manifest cannot be checked");
   // An app that names no pieces carries no SDK and has nothing to rebuild one
   // from: a starter that cannot open.
-  for (const b of ["core", "provisioning"]) {
+  // THE BUILD'S ONE PIECE SET (ARCHITECTURE §19; sdk P4's publish_app): `app`.
+  for (const b of ["app"]) {
     const shape = pieces?.[b];
     const ok = shape && Number.isInteger(shape.k) && Number.isInteger(shape.m) && Array.isArray(shape.pieces) &&
       shape.pieces.length === shape.k + shape.m &&
@@ -159,13 +160,12 @@ export async function packageApp(app, { carried, manifest, pieces, subtle, ids }
     files[path] = contents;
   }
 
-  // WHAT THE APP IS, and what it needs. One file, so a reader can see an
-  // app's whole dependency surface without unpacking anything.
+  // WHAT THE STARTER LOADS: the build's piece set and the SDK's artefacts. NO app.json -- the app is data in its
+  // owner's tree (ARCHITECTURE §19), and the site's pointer, which names that tree, is composed by the SDK.
   // Compact: the starter is the one fetch nothing races (craftworks-sdk#347), so no byte is spent on layout.
-  files["app.json"] = JSON.stringify(app);
   files["artefacts.json"] = JSON.stringify(
     {
-      pieces: { core: pieces.core, provisioning: pieces.provisioning },
+      pieces: { app: pieces.app },
       // What the loader links as the STARTER's own (its `external`): the SDK's list, carried, never retyped.
       starter: manifest.starter,
       ...Object.fromEntries(

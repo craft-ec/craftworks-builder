@@ -2,16 +2,16 @@
 //
 // usage: node tools/cut-pieces.mjs <load-pieces binary>
 //
-// Which files go in which bundle is publish-app.js's (`coreFiles`, `PROVISIONING_FILES`); the bundle format, the
-// cut and each piece's container are the SDK's `load-pieces` (its one implementation). This only calls it once per
-// bundle and writes `sdk/pieces.json`: per bundle `{ k, m, payload, bundle_len, pieces: [{ address, sha256 }] }`,
+// Which files the build's ONE bundle holds is publish-app.js's (`appBundleFiles`: ARCHITECTURE §19, the build's one
+// piece set); the bundle format, the cut and each piece's container are the SDK's `load-pieces` (its one
+// implementation). This calls it once and writes `sdk/pieces.json`: `{ app: { k, m, payload, bundle_len, pieces: [{ address, sha256 }] } }`,
 // the sha256 being of the piece's SERVED bytes (what a loader verifies), and `sdk/pieces/<bundle>/piece-<i>.webapp`
 // (the container state publish PUTs). The same SDK and builder build cut the same pieces.
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { loadSdk } from "../sdk-loader.js";
-import { coreFiles, PROVISIONING_FILES, PIECE_M, PIECE_PAYLOAD, STARTER_LIMIT, starterOf } from "../publish-app.js";
+import { appBundleFiles, PIECE_M, PIECE_PAYLOAD, STARTER_LIMIT, starterOf } from "../publish-app.js";
 
 const tool = process.argv[2];
 if (!tool) throw new Error("usage: node tools/cut-pieces.mjs <load-pieces binary>");
@@ -19,7 +19,8 @@ const sdk = await loadSdk(readFileSync("sdk/craftworks_sdk_bg.wasm"));
 const manifest = JSON.parse(readFileSync("sdk/artefacts.json", "utf8"));
 
 const out = {};
-for (const [name, files] of [["core", coreFiles(manifest, sdk.ids)], ["provisioning", PROVISIONING_FILES]]) {
+rmSync("sdk/pieces", { recursive: true, force: true });
+for (const [name, files] of [["app", appBundleFiles(manifest, sdk.ids)]]) {
   const dir = `sdk/pieces/${name}`;
   rmSync(dir, { recursive: true, force: true });
   const args = ["sdk/webapp.wasm", String(PIECE_PAYLOAD), String(PIECE_M), dir, ...Object.entries(files).map(([at, from]) => `${at}=${from}`)];
@@ -39,12 +40,10 @@ for (const [name, files] of [["core", coreFiles(manifest, sdk.ids)], ["provision
 }
 writeFileSync("sdk/pieces.json", `${JSON.stringify(out, null, 2)}\n`);
 
-// THE STARTER, MEASURED (main's ruling): one container under STARTER_LIMIT, or no build. An app with no components
-// and a placeholder head and app id: app.json is the only per-app file, and it is small.
+// THE STARTER, MEASURED (main's ruling): one container under STARTER_LIMIT, or no build. It is the same for every
+// app of this build (the pointer the SDK adds is ~200 B).
 const read = async p => readFileSync(p);
-const { state } = await starterOf({ name: "" }, {
-  sdk, headId: "0".repeat(64), appId: "app", manifest, pieces: out, read, subtle: crypto.subtle, code: readFileSync("sdk/webapp.wasm"),
-});
+const { state } = await starterOf({ sdk, manifest, pieces: out, read, subtle: crypto.subtle });
 console.log(`  starter: ${state.length} B (limit ${STARTER_LIMIT} B)`);
 if (state.length > STARTER_LIMIT) {
   throw new Error(`the starter is ${state.length} B, over its ${STARTER_LIMIT} B limit: it is the one fetch nothing races`);
