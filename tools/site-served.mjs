@@ -13,17 +13,12 @@
 // the record needs a client-API GET, which only the SDK's encoder may frame (a second encoder here is refused, as
 // frame-put's rule says).
 import { createHash } from "node:crypto";
+import { served, sleepFor } from "../sdk/served.js";
 
-/** What `port`'s node serves as the site `address`'s app.json: `{ sha256, components }`, or `{ status }` / `{ error }`. */
-export async function siteServed(port, address, { fetchImpl = globalThis.fetch, ms = 30_000 } = {}) {
-  let r;
-  try {
-    r = await fetchImpl(`http://127.0.0.1:${port}/v1/contract/web/${address}/app.json`, { signal: AbortSignal.timeout(ms) });
-  } catch (e) {
-    return { error: e.name === "TimeoutError" ? `no answer within ${ms} ms` : e.message };
-  }
-  if (!r.ok) return { status: r.status };
-  const bytes = new Uint8Array(await r.arrayBuffer());
+const appJson = (port, address) => `http://127.0.0.1:${port}/v1/contract/web/${address}/app.json`;
+
+/** A served app.json's version: its sha256 (16 hex) and component count. */
+function version(bytes) {
   let components = null;
   try {
     components = JSON.parse(new TextDecoder().decode(bytes)).components?.length ?? null;
@@ -31,6 +26,38 @@ export async function siteServed(port, address, { fetchImpl = globalThis.fetch, 
     components = null;
   }
   return { sha256: createHash("sha256").update(bytes).digest("hex").slice(0, 16), components };
+}
+
+/** What a round that did not return said: the node's HTTP status, or the failure's words. */
+const notServed = (w, ms) => {
+  if (w?.statuses?.length) return { status: w.statuses.at(-1) };
+  const said = (w?.failures ?? []).join("; ");
+  return { error: /abort|timeout|timed out/i.test(said) ? `no answer within ${ms} ms` : said || "no answer" };
+};
+
+/**
+ * What `port`'s node serves as the site `address`'s app.json, in ONE round: `{ sha256, components }`, or `{ status }`
+ * / `{ error }`. Through the SDK's one fetch (`served`, #126), GET only, the request bounded by `ms`.
+ */
+export async function siteServed(port, address, { fetchImpl, ms = 30_000 } = {}) {
+  const once = new AbortController();
+  let said = null;
+  try {
+    const bytes = await served({ url: appJson(port, address) }, {
+      fetch: fetchImpl,
+      rec: null,
+      name: "the site's app.json",
+      signal: once.signal,
+      init: { cache: "no-store", signal: AbortSignal.timeout(ms) },
+      onWait: w => {
+        said = w;
+        once.abort();
+      },
+    });
+    return version(bytes);
+  } catch {
+    return notServed(said, ms);
+  }
 }
 
 /** The line realnet prints: each node's served version, and whether they agree. */
@@ -49,17 +76,37 @@ export function servedLine(when, served) {
  * Returns `{ served: true, after, reads, last }`, or `{ served: false, after, reads, last }` -- `last` is what the node
  * served at the end (a version, a status, an error), so a real propagation failure reads as one.
  */
-export async function untilServed(port, address, wanted, { ms, everyMs = 2_000, fetchImpl = globalThis.fetch, now = Date.now, sleep = t => new Promise(r => setTimeout(r, t)) } = {}) {
+export async function untilServed(port, address, wanted, { ms, fetchImpl, now = Date.now, sleep } = {}) {
   if (!Number.isFinite(ms) || ms <= 0) throw new Error("untilServed needs a bound `ms`");
   const t0 = now();
   let reads = 0, last = null;
-  for (;;) {
-    // Each read has its own bound (a GET, at most 30 s); the step's bound `ms` is checked between reads.
-    last = await siteServed(port, address, { fetchImpl, ms: Math.min(30_000, ms) });
-    reads += 1;
-    if (wanted(last)) return { served: true, after: now() - t0, reads, last };
-    if (now() - t0 + everyMs > ms) return { served: false, after: now() - t0, reads, last };
-    await sleep(everyMs);
+  try {
+    // THE SDK's ONE FETCH (`served`): re-asked on the page's back-off until the node serves what `wanted` accepts; a
+    // version it does not accept is "not yet" (never final), and the step's bound ends it (the `signal`).
+    await served({ url: appJson(port, address) }, {
+      fetch: fetchImpl,
+      rec: null,
+      name: "the site's app.json",
+      now,
+      // The page's back-off, CAPPED at what is left of the bound: a sleep never carries the wait past `ms`.
+      sleep: (t, sig) => (sleep ?? sleepFor)(Math.max(0, Math.min(t, ms - (now() - t0))), sig),
+      signal: { get aborted() { return now() - t0 >= ms; } },
+      init: { cache: "no-store", signal: AbortSignal.timeout(Math.min(30_000, ms)) },
+      check: bytes => {
+        reads += 1;
+        last = version(bytes);
+        return wanted(last) ? null : { says: servedWords(last), answer: false };
+      },
+      onWait: w => {
+        if (w?.statuses?.length) {
+          reads += 1;
+          last = { status: w.statuses.at(-1) };
+        }
+      },
+    });
+    return { served: true, after: now() - t0, reads, last };
+  } catch (e) {
+    return { served: false, after: now() - t0, reads, last: last ?? { error: e.message } };
   }
 }
 

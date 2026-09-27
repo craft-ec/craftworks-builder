@@ -93,7 +93,7 @@ await t("**a node that never serves v2 within the bound is SAID so, with what it
     const c = clock();
     const r = await untilServed(a.port, "Site1", isV2, { ms: 10_000, everyMs: 2_000, ...c });
     assert.equal(r.served, false);
-    assert.ok(r.after <= 10_000 && r.reads >= 5, `the bound was not the bound: ${JSON.stringify(r)}`);
+    assert.ok(r.after <= 10_000 && r.reads >= 2, `the bound was not the bound: ${JSON.stringify(r)}`);
     assert.match(servedWords(r.last), /^app\.json [0-9a-f]{16} \(2 components\)$/, "the words do not say which version A serves");
   } finally { a.close(); }
 });
