@@ -52,6 +52,10 @@ chmodSync(join(bin, "freenet"), 0o755);
 
 const sh = (script, ...args) => spawnSync("/bin/sh", ["-c", `${MARKED} ${script}`, "check", ...args.map(String)]).status === 0;
 const marked = (pid, mark) => sh('marked "$1" "$2"', pid, mark);
+// The CHROMES (not their launcher's or watchdog's shell, whose command line carries the same --user-data-dir) with a
+// profile under `root`: the main process only, as a command line that STARTS with the Chrome binary.
+const chromesUnder = root => spawnSync("ps", ["-ww", "-axo", "pid=,command="], { encoding: "utf8" }).stdout.split("\n")
+  .map(l => l.trim()).filter(l => l.slice(l.indexOf(" ") + 1).startsWith(CHROME) && l.includes(`--user-data-dir=${root}/`) && !l.includes("--type="));
 const linesIn = pids => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").filter(Boolean).map(l => l.split("\t")) : []);
 
 // ONE page-host run: a child process running `body` (page-host imported as `m`), with its own pidfile. `fn(run)` drives
@@ -216,22 +220,33 @@ await t("**the launcher: a child whose record cannot be written NEVER STARTS, an
   const script = `import("${join(ROOT, "tests/page-host.mjs")}").then(m => m.openFreshBrowser("unrecorded")).then(() => console.log("STARTED"), e => console.log("REJECTED " + e.message));`;
   const r = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", env: { ...process.env, TMPDIR: own, PAGE_HOST_PIDFILE: pidsDir }, timeout: 60_000 });
   assert.match(r.stdout, /REJECTED [\s\S]*could not record browser/, r.stdout + r.stderr);
-  const running = spawnSync("bash", ["-c", `ps -ww -axo pid,command | grep -F -- "--user-data-dir=${own}/" | grep -v grep || true`], { encoding: "utf8" }).stdout.trim();
-  assert.equal(running, "", `a browser started without its record: ${running}`);
+  assert.deepEqual(chromesUnder(own), [], "a browser started without its record");
 });
 
 await t("**openFreshBrowser stops a browser that never announced (its caller gets no handle to stop it)**", async () => {
-  await withHost("no-announce", `
-    // Long enough for the launcher to record and start Chrome, far too short for Chrome to announce its DevTools port.
-    await m.openFreshBrowser("no-announce", { readyMs: 150 }).then(() => console.log("STARTED"), e => console.log("REJECTED " + e.message));
-    console.log("SETTLED");
-    await new Promise(() => {});`, async run => {
-    assert.ok(await until(() => run.out.includes("SETTLED"), 30_000), `openFreshBrowser never settled: ${run.out}`);
-    assert.match(run.out, /REJECTED/, "THE SETUP: the browser announced within 150 ms");
-    const kids = run.recorded("browser");
-    assert.equal(kids.length, 1, "THE SETUP: the browser was not recorded");
-    assert.deepEqual(kids.filter(alive), [], "the browser that never announced is still running, with the page-host alive");
-  });
+  // Whether Chrome announces within a deadline is the machine's speed, so no ONE deadline makes a stable setup: each
+  // deadline here runs under its own TMPDIR, and EVERY rejection must leave no browser with a profile under it. At
+  // least one must have been RECORDED before it rejected, or nothing here was measured.
+  let measured = 0;
+  const cases = [];
+  for (const readyMs of [1, 40, 150, 600]) {
+    const own = join(dir, `no-announce-${readyMs}`);
+    mkdirSync(own, { recursive: true });
+    const said = await withHost(`no-announce-${readyMs}`, `
+      await m.openFreshBrowser("no-announce", { readyMs: ${readyMs} }).then(() => console.log("STARTED"), e => console.log("REJECTED " + e.message));
+      console.log("SETTLED");
+      await new Promise(() => {});`, async run => {
+      assert.ok(await until(() => run.out.includes("SETTLED"), 60_000), `openFreshBrowser never settled: ${run.out}`);
+      const rejected = run.out.includes("REJECTED");
+      const recorded = run.recorded("browser").length;
+      const running = chromesUnder(own);
+      if (rejected) assert.deepEqual(running, [], `readyMs ${readyMs}: a browser that never announced is still running, the page-host alive`);
+      return { readyMs, rejected, recorded };
+    }, { TMPDIR: own });
+    cases.push(said);
+    if (said.rejected && said.recorded > 0) measured += 1;
+  }
+  assert.ok(measured > 0, `THE SETUP: no deadline both started a browser and rejected before it announced: ${JSON.stringify(cases)}`);
 });
 
 await t("**withHost STOPS a run that never came up (the 10-hour Chrome): the test's failure does not leave its page-host**", async () => {
